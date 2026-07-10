@@ -57,10 +57,10 @@ try {
         lines.forEach(function(line) {
             if (!line || line.indexOf("Row:") < 0) return;
             
-            var addressMatch = line.match(/address=([^,]*)/);
-            var bodyMatch = line.match(/body=([^,]*)/);
-            var dateMatch = line.match(/date=([^,]*)/);
-            var typeMatch = line.match(/type=([^,]*)/);
+            var addressMatch = line.match(/address=(.*?)(?:, body=)/);
+            var bodyMatch = line.match(/body=(.*?)(?:, date=)/);
+            var dateMatch = line.match(/date=(.*?)(?:, type=)/);
+            var typeMatch = line.match(/type=(\d+)/);
             
             if (addressMatch && bodyMatch && dateMatch && typeMatch) {
                 var address = addressMatch[1];
