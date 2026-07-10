@@ -16,13 +16,8 @@ const PORT = process.env.PORT || '3000';
 const payload = {
   timeout: 60, // 超时时间（秒）
   script: `
-app.intent({
-    action: "VIEW",
-    data: "https://www.baidu.com",
-    packageName: "com.android.chrome",
-    flags: ["ACTIVITY_NEW_TASK"]
-});
-console.log("Chrome launched, browsing baidu.com...");
+app.openUrl("https://www.baidu.com");
+console.log("Launched browser, navigating to baidu.com...");
 sleep(5000);
   `.trim()
 };
