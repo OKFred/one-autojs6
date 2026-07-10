@@ -101,14 +101,16 @@ PC 服务端提供了以下 HTTP 接口：
 * **请求参数**:
   - `script` (string, 必须): 需要在 Auto.js 中执行的 JavaScript 脚本。
   - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会执行强杀。
-* **cURL 示例**:
+* **测试脚本示例**:
+  您可以使用根目录下的 `test_dispatch.js` 脚本来快速发起测试。该脚本使用 Node.js 原生的 `fetch` 发送任务并自动轮询最终状态。
+  
+  运行方法:
   ```bash
-  curl -X POST http://192.168.12.240:3000/api/tasks \
-    -H "Content-Type: application/json" \
-    -d '{
-      "timeout": 15,
-      "script": "app.intent({ action: '\''VIEW'\'', data: '\''https://www.baidu.com'\'', packageName: '\''com.android.chrome'\'', flags: ['\''ACTIVITY_NEW_TASK'\''] }); sleep(5000);"
-    }'
+  # 直接运行
+  node test_dispatch.js
+  
+  # 加载 pc/.env 配置运行 (Node 20.6+)
+  node --env-file=pc/.env test_dispatch.js
   ```
 * **返回响应**:
   ```json
