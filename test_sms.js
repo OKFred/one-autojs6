@@ -1,5 +1,5 @@
 /**
- * 读取最近一条短信的测试脚本
+ * 读取所有短信的测试脚本 (返回结构化 JSON 数组)
  * 
  * 运行方式:
  *   node --env-file=pc/.env test_sms.js
@@ -12,41 +12,80 @@ const payload = {
   timeout: 30, // 30秒超时
   script: `
 try {
-    // 方式一：使用 ContentResolver 尝试直接查询 (移除了 limit 1 避免某些系统下 ContentResolver 语法报错)
+    // 方式一：使用 ContentResolver 进行原生数据库查询 (获取收发信箱的全部短信)
     var Uri = android.net.Uri;
     var cursor = context.getContentResolver().query(
-        Uri.parse("content://sms/inbox"),
-        ["address", "body", "date"],
+        Uri.parse("content://sms/"),
+        ["address", "body", "date", "type"],
         null,
         null,
         "date desc"
     );
     
-    if (cursor != null && cursor.moveToFirst()) {
-        var address = cursor.getString(0);
-        var body = cursor.getString(1);
-        var date = cursor.getLong(2);
-        cursor.close();
-        
-        var dateObj = new java.util.Date(date);
-        var sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-        taskResult = "From: " + address + "\\nTime: " + sdf.format(dateObj) + "\\nContent: " + body;
-    } else {
-        if (cursor != null) cursor.close();
-        // 方式二：通过 Root 执行 content query 命令行，使用 head -n 1 截取第一行（替代不支持的 --limit 选项）
-        var res = shell("content query --uri content://sms/inbox --projection address:body:date --sort 'date desc' | head -n 1", true);
-        if (res && res.code == 0 && res.result) {
-            taskResult = res.result;
-        } else {
-            taskResult = "No SMS found or failed to read database";
+    var smsList = [];
+    if (cursor != null) {
+        while (cursor.moveToNext()) {
+            var address = cursor.getString(0);
+            var body = cursor.getString(1);
+            var date = cursor.getLong(2);
+            var type = cursor.getInt(3);
+            
+            var dateObj = new java.util.Date(date);
+            var sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+            var formattedDate = sdf.format(dateObj);
+            
+            smsList.push({
+                time: String(formattedDate),
+                from: type === 1 ? String(address) : "Me",
+                to: type === 2 ? String(address) : "Me",
+                content: String(body)
+            });
         }
+        cursor.close();
+        taskResult = JSON.stringify(smsList);
+    } else {
+        throw new Error("Cursor is null");
     }
 } catch (e) {
-    console.log("Normal SMS read failed: " + e + ". Trying root command...");
-    // 方式二：通过 Root 执行 content query 命令行，使用 head -n 1 截取第一行（替代不支持的 --limit 选项）
-    var res = shell("content query --uri content://sms/inbox --projection address:body:date --sort 'date desc' | head -n 1", true);
+    console.log("Normal SMS ContentResolver read failed: " + e + ". Trying root command...");
+    
+    // 方式二：通过 Root 执行 content query 命令行（免授权），查询所有短信
+    var res = shell("content query --uri content://sms/ --projection address:body:date:type --sort 'date desc'", true);
     if (res && res.code == 0 && res.result) {
-        taskResult = res.result;
+        var lines = res.result.split("\\n");
+        var smsList = [];
+        lines.forEach(function(line) {
+            if (!line || line.indexOf("Row:") < 0) return;
+            
+            var addressMatch = line.match(/address=([^,]*)/);
+            var bodyMatch = line.match(/body=([^,]*)/);
+            var dateMatch = line.match(/date=([^,]*)/);
+            var typeMatch = line.match(/type=([^,]*)/);
+            
+            if (addressMatch && bodyMatch && dateMatch && typeMatch) {
+                var address = addressMatch[1];
+                var body = bodyMatch[1];
+                var dateVal = parseInt(dateMatch[1]);
+                var typeVal = parseInt(typeMatch[1]);
+                
+                var formattedDate = "";
+                try {
+                    var dateObj = new java.util.Date(dateVal);
+                    var sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+                    formattedDate = sdf.format(dateObj);
+                } catch(err) {
+                    formattedDate = String(dateVal);
+                }
+                
+                smsList.push({
+                    time: formattedDate,
+                    from: typeVal === 1 ? address : "Me",
+                    to: typeVal === 2 ? address : "Me",
+                    content: body
+                });
+            }
+        });
+        taskResult = JSON.stringify(smsList);
     } else {
         taskResult = "Error reading SMS: " + e.toString() + " | Root error: " + (res ? res.error : "unknown");
     }
@@ -56,7 +95,7 @@ try {
 
 async function run() {
   const url = `http://${PC_IP}:${PORT}/api/tasks`;
-  console.log(`[SMS TEST] Dispatching SMS task to ${url}...`);
+  console.log(`[SMS LIST TEST] Dispatching task to query all SMS to ${url}...`);
 
   try {
     const response = await fetch(url, {
@@ -72,11 +111,11 @@ async function run() {
     }
 
     const result = await response.json();
-    console.log('[SMS TEST] Task created. Response:', result);
+    console.log('[SMS LIST TEST] Task created. Response:', result);
     
     if (result.success && result.taskId) {
       const taskId = result.taskId;
-      console.log(`[SMS TEST] Polling status for task: ${taskId}`);
+      console.log(`[SMS LIST TEST] Polling status for task: ${taskId}`);
       
       const interval = setInterval(async () => {
         try {
@@ -89,9 +128,23 @@ async function run() {
             
             if (status !== 'EXECUTING') {
               console.log(`\n========================================`);
-              console.log(`[SMS TEST] Task completed with status: ${status}`);
-              console.log(`[SMS TEST] Returned SMS Details:\n`);
-              console.log(statusData.task.message);
+              console.log(`[SMS LIST TEST] Task completed with status: ${status}`);
+              console.log(`[SMS LIST TEST] Returned SMS List:\n`);
+              
+              const rawMessage = statusData.task.message;
+              try {
+                // 尝试解析 JSON 数组并进行表格美化输出
+                const smsArray = JSON.parse(rawMessage);
+                if (Array.isArray(smsArray)) {
+                  console.table(smsArray);
+                  console.log(`[SMS LIST TEST] Total retrieved: ${smsArray.length} messages.`);
+                } else {
+                  console.log(rawMessage);
+                }
+              } catch(e) {
+                // 如果解析失败（例如返回了错误提示），直接输出纯文本
+                console.log(rawMessage);
+              }
               console.log(`========================================\n`);
               clearInterval(interval);
             } else {
@@ -99,13 +152,13 @@ async function run() {
             }
           }
         } catch (err) {
-          console.error('[SMS TEST] Polling error:', err.message);
+          console.error('[SMS LIST TEST] Polling error:', err.message);
         }
       }, 1500);
     }
 
   } catch (error) {
-    console.error('[SMS TEST] Failed:', error.message);
+    console.error('[SMS LIST TEST] Failed:', error.message);
   }
 }
 
