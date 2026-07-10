@@ -55,24 +55,33 @@ sleep(1000);
 sleep(5000);
 console.log("Baidu search result loaded, grabbing page contents...");
 
-// 5. 抓取屏幕上的文本节点信息并筛选 杭州 关键字
-var results = [];
-var nodes = className("android.widget.TextView").find();
-if (nodes.empty()) {
-    nodes = className("android.view.View").find();
+// 5. 循环滚动 4 次，抓取整个网页的全部文字内容（解决 Android 只能抓取当前可视区域无障碍节点的限制）
+var results = {};
+for (var scrollCount = 0; scrollCount < 4; scrollCount++) {
+    var nodes = className("android.widget.TextView").find();
+    if (nodes.empty()) {
+        nodes = className("android.view.View").find();
+    }
+    
+    nodes.forEach(function(node) {
+        var txt = node.text();
+        if (txt && txt.trim().length > 0) {
+            results[txt.trim()] = true; // 去重保存
+        }
+    });
+    
+    if (scrollCount < 3) {
+        console.log("Scrolling down to load more content... (Step " + (scrollCount + 1) + ")");
+        // 向上滑动屏幕以向下滚动网页
+        // swipe(startX, startY, endX, endY, duration_ms)
+        swipe(500, 1500, 500, 450, 600);
+        sleep(1500); // 等待网页数据加载及无障碍树刷新
+    }
 }
 
-nodes.forEach(function(node) {
-    var txt = node.text();
-    if (txt && txt.trim().length > 0) {
-        var cleanTxt = txt.trim();
-        results.push(cleanTxt);
-    }
-});
-
-// 将筛选出来的文字切片提取回传
-var allText = results.slice(0, 30).join(" | ");
-console.log("Grabbed DOM contents: " + allText);
+// 汇总全部去重后的文本
+var allText = Object.keys(results).join(" | ");
+console.log("Grabbed DOM contents (length: " + allText.length + ")");
 
 // 将抓取到的内容赋值给 taskResult，它会被移动端自动捕捉并 POST 回 PC 服务端
 taskResult = allText;
