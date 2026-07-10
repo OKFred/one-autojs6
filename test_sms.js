@@ -12,14 +12,14 @@ const payload = {
   timeout: 30, // 30秒超时
   script: `
 try {
-    // 方式一：使用 ContentResolver 尝试直接查询
+    // 方式一：使用 ContentResolver 尝试直接查询 (移除了 limit 1 避免某些系统下 ContentResolver 语法报错)
     var Uri = android.net.Uri;
     var cursor = context.getContentResolver().query(
         Uri.parse("content://sms/inbox"),
         ["address", "body", "date"],
         null,
         null,
-        "date desc limit 1"
+        "date desc"
     );
     
     if (cursor != null && cursor.moveToFirst()) {
@@ -33,8 +33,8 @@ try {
         taskResult = "From: " + address + "\\nTime: " + sdf.format(dateObj) + "\\nContent: " + body;
     } else {
         if (cursor != null) cursor.close();
-        // 方式二：通过 Root 执行 content query 命令行（免授权）
-        var res = shell("content query --uri content://sms/inbox --projection address:body:date --sort 'date desc' --limit 1", true);
+        // 方式二：通过 Root 执行 content query 命令行，使用 head -n 1 截取第一行（替代不支持的 --limit 选项）
+        var res = shell("content query --uri content://sms/inbox --projection address:body:date --sort 'date desc' | head -n 1", true);
         if (res && res.code == 0 && res.result) {
             taskResult = res.result;
         } else {
@@ -43,8 +43,8 @@ try {
     }
 } catch (e) {
     console.log("Normal SMS read failed: " + e + ". Trying root command...");
-    // 方式二：通过 Root 执行 content query 命令行（免授权）
-    var res = shell("content query --uri content://sms/inbox --projection address:body:date --sort 'date desc' --limit 1", true);
+    // 方式二：通过 Root 执行 content query 命令行，使用 head -n 1 截取第一行（替代不支持的 --limit 选项）
+    var res = shell("content query --uri content://sms/inbox --projection address:body:date --sort 'date desc' | head -n 1", true);
     if (res && res.code == 0 && res.result) {
         taskResult = res.result;
     } else {
