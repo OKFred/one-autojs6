@@ -1,0 +1,18 @@
+{
+  "name": "one-autojs6-mobile",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/client.ts",
+  "scripts": {
+    "start": "tsx src/client.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "mqtt": "^5.10.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

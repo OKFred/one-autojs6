@@ -1,0 +1,5 @@
+packages:
+  - 'pc'
+  - 'mobile'
+allowBuilds:
+  esbuild: true
