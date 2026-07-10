@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { createBroker } from 'aedes';
+import Aedes from 'aedes';
 import net from 'net';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -27,7 +27,7 @@ const tasks: Record<string, Task> = {};
 // ==========================================
 // 1. 初始化 Aedes MQTT Broker
 // ==========================================
-const aedes = createBroker();
+const aedes = (Aedes as any)();
 const mqttServer = net.createServer(aedes.handle);
 
 mqttServer.listen(MQTT_PORT, () => {
