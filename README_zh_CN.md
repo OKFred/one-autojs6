@@ -56,23 +56,11 @@ pnpm install
 
 #### PC 端配置：`pc/.env`
 
-在 `pc/` 目录下创建 `.env` 文件，内容如下：
-
-```env
-PORT=3000
-MQTT_PORT=1883
-PC_IP=192.168.12.240   # 替换为您 PC 端的实际局域网 IP
-```
+在 `pc/` 目录下创建 `.env` 文件，内容参考[.env.example](.env.example)
 
 #### 移动端配置：`mobile/.env`
 
-在 `mobile/` 目录下创建 `.env` 文件，内容如下：
-
-```env
-MQTT_BROKER_URL=mqtt://192.168.12.240:1883  # 替换为 PC 端的 IP 和 MQTT 端口
-AUTOJS_PACKAGE_NAME=org.autojs.autojs6       # Auto.js v6 的应用包名
-TEMP_SCRIPT_DIR=/sdcard/Download             # 存放临时执行脚本的共享目录
-```
+在 `mobile/` 目录下创建 `.env` 文件，内容参考[.env.example](.env.example)
 
 ### 3. 运行服务
 
@@ -122,21 +110,23 @@ PC 服务端提供了以下 HTTP 接口：
   - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会执行强杀。
 - **测试脚本示例**:
   您可以使用 `test/scripts/test_browser.js` 脚本来快速发起浏览器网页内容抓取测试。该脚本使用 Node.js 原生的 `fetch` 发送任务并自动轮询最终状态。
-  
+
   运行方法:
+
   ```bash
   # 直接运行
   node test/scripts/test_browser.js
-  
+
   # 加载 pc/.env 配置运行 (Node 20.6+)
   node --env-file=pc/.env test/scripts/test_browser.js
   ```
-  
+
   另外，您也可以使用 `test/scripts/test_sms.js` 脚本来快速测试获取手机上全部短信的记录（通过 Root 级 content query 命令行查询，并以表格美化输出）：
+
   ```bash
   # 直接运行
   node test/scripts/test_sms.js
-  
+
   # 加载配置运行
   node --env-file=pc/.env test/scripts/test_sms.js
   ```
