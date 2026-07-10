@@ -115,69 +115,87 @@ try {
 }
 `;
 
-      // 3. 将脚本写入移动端本地临时文件
+      // 3. 将脚本先写入 Termux 本地私有目录下的临时文件（防 EPERM 权限报错）
       const tempFileName = `autojs_temp_${taskId}.js`;
-      const tempFilePath = path.join(TEMP_SCRIPT_DIR, tempFileName);
+      const localTempPath = path.join(process.cwd(), `local_${tempFileName}`);
+      const targetTempPath = path.join(TEMP_SCRIPT_DIR, tempFileName);
       
       try {
-        fs.writeFileSync(tempFilePath, wrappedScript, 'utf8');
-        console.log(`[CLIENT] Temporary script written to ${tempFilePath}`);
+        fs.writeFileSync(localTempPath, wrappedScript, 'utf8');
+        console.log(`[CLIENT] Local temporary script written to ${localTempPath}`);
       } catch (err: any) {
-        console.error(`[CLIENT] Failed to write temporary script to ${tempFilePath}:`, err);
-        sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to write script: ${err.message}`);
+        console.error(`[CLIENT] Failed to write local temporary script to ${localTempPath}:`, err);
+        sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to write local script: ${err.message}`);
         return;
       }
 
-      // 4. 设置本地超时强杀定时器
-      const timeoutTimer = setTimeout(() => {
-        console.warn(`[CLIENT] Task ${taskId} timeout (${timeout}s) reached! Initiating force-kill...`);
-        
-        // 强杀 Auto.js 和 Chrome 浏览器
-        const killCmds = [
-          `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
-          `su -c "am force-stop com.android.chrome"`
-        ];
+      // 4. 使用 Root 权限将文件搬运至目标路径，并赋予 777 权限以确保 Auto.js 能够跨沙盒读取
+      const prepareCommand = `su -c "cp ${localTempPath} ${targetTempPath} && chmod 777 ${targetTempPath} && rm -f ${localTempPath}"`;
+      console.log(`[CLIENT] Copying script to target path using root: ${prepareCommand}`);
 
-        killCmds.forEach((cmd) => {
-          exec(cmd, (err: any) => {
-            if (err) {
-              console.error(`[CLIENT] Error running force-stop command "${cmd}":`, err.message);
-            } else {
-              console.log(`[CLIENT] Command executed successfully: ${cmd}`);
-            }
-          });
-        });
-
-        // 强杀后，主动向 PC 报告超时失败
-        sendHttpCallback(
-          callbackUrl, 
-          taskId, 
-          'FAILURE', 
-          `Timeout: Script execution exceeded ${timeout}s. Termux client killed the application.`
-        );
-
-        // 清理本地资源
-        cleanupTask(taskId);
-      }, timeout * 1000);
-
-      // 缓存任务信息
-      activeTasks[taskId] = {
-        timeoutTimer,
-        tempFilePath
-      };
-
-      // 5. 通过 Root 命令启动 Auto.js 载入脚本
-      const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${tempFilePath} -t text/javascript"`;
-      console.log(`[CLIENT] Executing shell command to start Auto.js: ${runCommand}`);
-
-      exec(runCommand, (err: any) => {
+      exec(prepareCommand, (err: any) => {
         if (err) {
-          console.error(`[CLIENT] Failed to launch Auto.js:`, err.message);
-          sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to launch Auto.js intent: ${err.message}`);
-          cleanupTask(taskId);
-        } else {
-          console.log(`[CLIENT] Task ${taskId} is now running in Auto.js`);
+          console.error(`[CLIENT] Root copy failed:`, err.message);
+          sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Root copy failed: ${err.message}`);
+          try {
+            if (fs.existsSync(localTempPath)) fs.unlinkSync(localTempPath);
+          } catch {}
+          return;
         }
+
+        console.log(`[CLIENT] Script successfully moved to ${targetTempPath} with 777 permissions`);
+
+        // 5. 设置本地超时强杀定时器
+        const timeoutTimer = setTimeout(() => {
+          console.warn(`[CLIENT] Task ${taskId} timeout (${timeout}s) reached! Initiating force-kill...`);
+          
+          // 强杀 Auto.js 和 Chrome 浏览器
+          const killCmds = [
+            `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
+            `su -c "am force-stop com.android.chrome"`
+          ];
+
+          killCmds.forEach((cmd) => {
+            exec(cmd, (err: any) => {
+              if (err) {
+                console.error(`[CLIENT] Error running force-stop command "${cmd}":`, err.message);
+              } else {
+                console.log(`[CLIENT] Command executed successfully: ${cmd}`);
+              }
+            });
+          });
+
+          // 强杀后，主动向 PC 报告超时失败
+          sendHttpCallback(
+            callbackUrl, 
+            taskId, 
+            'FAILURE', 
+            `Timeout: Script execution exceeded ${timeout}s. Termux client killed the application.`
+          );
+
+          // 清理本地资源
+          cleanupTask(taskId);
+        }, timeout * 1000);
+
+        // 缓存任务信息
+        activeTasks[taskId] = {
+          timeoutTimer,
+          tempFilePath: targetTempPath
+        };
+
+        // 6. 通过 Root 命令启动 Auto.js 载入脚本
+        const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetTempPath} -t text/javascript"`;
+        console.log(`[CLIENT] Executing shell command to start Auto.js: ${runCommand}`);
+
+        exec(runCommand, (err: any) => {
+          if (err) {
+            console.error(`[CLIENT] Failed to launch Auto.js:`, err.message);
+            sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to launch Auto.js intent: ${err.message}`);
+            cleanupTask(taskId);
+          } else {
+            console.log(`[CLIENT] Task ${taskId} is now running in Auto.js`);
+          }
+        });
       });
 
     } else if (topic === 'autojs6/status') {
@@ -232,10 +250,22 @@ function cleanupTask(taskId: string) {
       if (fs.existsSync(task.tempFilePath)) {
         fs.unlinkSync(task.tempFilePath);
         console.log(`[CLIENT] Temp script deleted: ${task.tempFilePath}`);
+        delete activeTasks[taskId];
+        return;
       }
     } catch (err: any) {
-      console.error(`[CLIENT] Error deleting temp script ${task.tempFilePath}:`, err.message);
+      console.warn(`[CLIENT] Normal unlink failed (might be permissions): ${err.message}. Retrying with root...`);
     }
+
+    // 普通删除失败（或被抛出权限异常），使用 su -c 强制删除
+    const cleanCmd = `su -c "rm -f ${task.tempFilePath}"`;
+    exec(cleanCmd, (err: any) => {
+      if (err) {
+        console.error(`[CLIENT] Failed to delete temp script using root: ${err.message}`);
+      } else {
+        console.log(`[CLIENT] Temp script deleted using root: ${task.tempFilePath}`);
+      }
+    });
   }
 
   delete activeTasks[taskId];
