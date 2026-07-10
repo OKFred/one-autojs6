@@ -1,104 +1,90 @@
-# 基于 MQTT + HonoJS + Auto.js v6 的任务调度控制系统
+[中文说明 (README_zh_CN.md)](README_zh_CN.md)
 
-本项目实现了一个基于 **MQTT 消息总线** 和 **HonoJS Web 服务** 的移动端（Termux）脚本自动下发、执行、超时控制与结果回传的轻量级系统。
+# Task Scheduling and Control System based on MQTT + HonoJS + Auto.js v6
 
----
-
-## 架构概览
-
-- **PC 端 (pc/)**:
-  - 基于 **HonoJS** 运行 HTTP 服务。
-  - 内置 **Aedes MQTT Broker** 作为消息中转站。
-  - 提供任务下发和结果回调 API，并维护内存中的任务执行状态表。
-  - 拥有主动轮询机制，若任务超时超过 `timeout + 10s`，自动判定为失败 (`TIMEOUT_MISSING`)。
-- **移动端 (mobile/)**:
-  - 运行在 **Termux** 环境下的 Node.js TypeScript 守护进程。
-  - 订阅 MQTT 任务队列，动态为下发的脚本注入异常捕获与 HTTP 回传逻辑，生成临时脚本。
-  - 使用 Root 权限的 Android `am` 指令拉起 **Auto.js v6** 运行脚本。
-  - 支持双向强杀与清理机制：当执行超时自动强杀 Auto.js 和 Chrome；当任务成功时接收 PC 通知自动清理临时文件及定时器。
-- **Demo 应用 (demo_chrome.js)**:
-  - 提供的测试脚本，用于打开 Chrome 浏览器并访问百度网。
+This project implements a lightweight system for automatic script dispatching, execution, timeout control, and result callback for mobile devices (Termux), built on **MQTT message broker** and **HonoJS Web Service**.
 
 ---
 
-## 环境准备
+## Architecture Overview
 
-### 1. PC 端
+- **PC Server (pc/)**:
+  - Runs HTTP service based on **HonoJS**.
+  - Built-in **Aedes MQTT Broker** as the message transmission hub.
+  - Provides task creation and callback API, maintaining the active state of tasks in memory.
+  - Active timeout polling: Automatically marks tasks as `FAILURE` (`TIMEOUT_MISSING`) if they exceed `timeout + 10s` without callback.
+- **Mobile Client (mobile/)**:
+  - Runs as a Node.js TypeScript daemon inside **Termux**.
+  - Subscribes to MQTT task queue, injects try-catch and HTTP callback logic into dispatched scripts, and writes to temporary files.
+  - Uses Root privilege Android `am` command to launch **Auto.js v6** to run the script.
+  - Supports dual force-stop and cleanup mechanisms: Kills Auto.js and Chrome upon timeout; automatically cleans up temporary files and timers on success.
+- **Demo Script (demo_chrome.js)**:
+  - An example script that opens Chrome browser and navigates to `baidu.com`.
 
-- 已安装 Node.js (推荐 v20+) 和 **pnpm** (推荐 v10+)。
-- 已通过 USB ADB 正常连接到安卓设备。
+---
 
-### 2. 移动端 (安卓手机)
+## Prerequisites
 
-- **Auto.js v6** 已开启**无障碍服务**与 **Root 权限**。
-- 安装了 **Termux**，且在 Termux 中安装了 `nodejs` 和 `pnpm`：
+### 1. PC Server
+- **Node.js** (v20+ recommended) and **pnpm** (v10+ recommended).
+- Device connected to PC via USB ADB.
+
+### 2. Mobile Device (Android Phone)
+- **Auto.js v6** with **Accessibility Service** and **Root Privileges** enabled.
+- **Termux** installed, along with `nodejs` and `pnpm`:
   ```bash
   pkg install nodejs
   npm install -g pnpm
   ```
-- 移动端与 PC 端处于同一局域网（能够相互 Ping 通）。
+- Mobile device and PC server must be in the same local network (able to ping each other).
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1. 依赖安装
-
-在项目根目录下执行以下命令，该命令会基于 pnpm workspace 自动安装 PC 端和移动端的所有依赖：
-
+### 1. Install Dependencies
+Run the following command at the repository root to automatically install all dependencies for both PC and mobile projects:
 ```bash
 pnpm install
 ```
 
-### 2. 环境配置
+### 2. Environment Configurations
 
-#### PC 端配置：`pc/.env`
-
-在 `pc/` 目录下创建 `.env` 文件，内容如下：
-
+#### PC Server Configuration: `pc/.env`
+Create a `.env` file under the `pc/` directory:
 ```env
 PORT=3000
 MQTT_PORT=1883
-PC_IP=192.168.12.240   # 替换为您 PC 端的实际局域网 IP
+PC_IP=192.168.12.240   # Replace with your PC's local IP address
 ```
 
-#### 移动端配置：`mobile/.env`
-
-在 `mobile/` 目录下创建 `.env` 文件，内容如下：
-
+#### Mobile Client Configuration: `mobile/.env`
+Create a `.env` file under the `mobile/` directory:
 ```env
-MQTT_BROKER_URL=mqtt://192.168.12.240:1883  # 替换为 PC 端的 IP 和 MQTT 端口
-AUTOJS_PACKAGE_NAME=org.autojs.autojs6       # Auto.js v6 的应用包名
-TEMP_SCRIPT_DIR=/sdcard/Download             # 存放临时执行脚本的共享目录
+MQTT_BROKER_URL=mqtt://192.168.12.240:1883  # Replace with PC IP and MQTT Port
+AUTOJS_PACKAGE_NAME=org.autojs.autojs6       # Package name of Auto.js v6
+TEMP_SCRIPT_DIR=/sdcard/Download             # Shared directory for temp scripts
 ```
 
-### 3. 运行服务
+### 3. Run Services
 
-#### 启动 PC 端主服务
-
-在根目录下运行：
-
+#### Start PC Server
+Run the following command at the root:
 ```bash
 pnpm --filter one-autojs6-pc dev
 ```
-
-启动成功后，控制台会输出：
-
+Upon startup, the console will print:
 ```text
 [MQTT] Broker is running on port 1883
 [HTTP] Server is running on http://localhost:3000
 ```
 
-#### 启动移动端守护进程
-
-将整个目录或 `mobile/` 文件夹拷贝到手机的 Termux 路径中，在 `mobile/` 目录下执行：
-
+#### Start Mobile Client (Termux)
+Copy the `mobile/` folder into your phone's Termux workspace and run:
 ```bash
 pnpm start
 ```
-
-启动成功后，控制台会显示已成功连接 MQTT 并订阅相关主题：
-
+Upon startup, the console will display:
 ```text
 [CLIENT] Connected to MQTT Broker successfully.
 [CLIENT] Subscribed to topic: autojs6/tasks
@@ -107,39 +93,35 @@ pnpm start
 
 ---
 
-## 接口使用说明
+## API Documentation
 
-PC 服务端提供了以下 HTTP 接口：
+PC Server provides the following HTTP endpoints:
 
-### 1. 下发任务
-
+### 1. Create a Task
 - **URL**: `POST /api/tasks`
 - **Content-Type**: `application/json`
-- **请求参数**:
-  - `script` (string, 必须): 需要在 Auto.js 中执行的 JavaScript 脚本。
-  - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会执行强杀。
-- **测试脚本示例**:
-  您可以使用 `test/scripts/test_browser.js` 脚本来快速发起浏览器网页内容抓取测试。该脚本使用 Node.js 原生的 `fetch` 发送任务并自动轮询最终状态。
-  
-  运行方法:
+- **Request Body**:
+  - `script` (string, required): The JavaScript script to execute in Auto.js.
+  - `timeout` (number, optional, default: 30): Timeout duration in seconds, after which mobile client kills the task.
+- **Testing Scripts**:
+  You can run `test/scripts/test_browser.js` to dispatch a task that opens Chrome, searches on Baidu, scrapes DOM text contents, and returns the result:
   ```bash
-  # 直接运行
+  # Run directly
   node test/scripts/test_browser.js
   
-  # 加载 pc/.env 配置运行 (Node 20.6+)
+  # Run with pc/.env config (Node 20.6+)
   node --env-file=pc/.env test/scripts/test_browser.js
   ```
   
-  另外，您也可以使用 `test/scripts/test_sms.js` 脚本来快速测试获取手机上全部短信的记录（通过 Root 级 content query 命令行查询，并以表格美化输出）：
+  Or run `test/scripts/test_sms.js` to fetch all SMS records from the mobile database and print them as a neat console table:
   ```bash
-  # 直接运行
+  # Run directly
   node test/scripts/test_sms.js
   
-  # 加载配置运行
+  # Run with configuration
   node --env-file=pc/.env test/scripts/test_sms.js
   ```
-
-- **返回响应**:
+- **Response**:
   ```json
   {
     "success": true,
@@ -148,25 +130,24 @@ PC 服务端提供了以下 HTTP 接口：
   }
   ```
 
-### 2. 查询任务状态
-
+### 2. Query Task Status
 - **URL**: `GET /api/tasks/:taskId`
-- **返回响应**:
-  - 如果任务存在：
+- **Response**:
+  - If task exists:
     ```json
     {
       "success": true,
       "task": {
         "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
         "script": "...",
-        "status": "SUCCESS", // 可选值为: EXECUTING, SUCCESS, FAILURE, MISSING
+        "status": "SUCCESS", // Options: EXECUTING, SUCCESS, FAILURE, MISSING
         "timeout": 60,
         "createdAt": 1720601234567,
         "message": "Script execution succeeded"
       }
     }
     ```
-  - 如果任务不存在（MISSING）：
+  - If task is missing:
     ```json
     {
       "success": true,
@@ -176,18 +157,17 @@ PC 服务端提供了以下 HTTP 接口：
     }
     ```
 
-### 3. 获取所有任务列表
-
+### 3. Get All Tasks
 - **URL**: `GET /api/tasks`
 
 ---
 
-## 强杀与超时说明
+## Timeout & Force-Kill Details
 
-1. **移动端本地强杀**:
-   在收到任务时，移动端会在本地启动一个 `setTimeout`。如果代码执行时长超过 `timeout`，移动端会通过 Root Shell 执行以下强杀命令：
-   - `su -c "am force-stop org.autojs.autojs6"` (强杀 Auto.js 应用)
-   - `su -c "am force-stop com.android.chrome"` (强杀 Chrome 浏览器)
-     并在完成后，主动向 PC 的 `/api/callback` 回报 `FAILURE`，状态附带原因为本地超时强杀。
-2. **PC 端兜底标记失败**:
-   若移动端在 `timeout + 10s` 时间内没有通过 HTTP 发送成功或失败的回调（可能由于设备断网、Termux 进程挂掉或脚本卡死导致本地超时器失效），PC 服务端内的轮询线程会自动扫描到并强制将任务状态标记为 `FAILURE`，并将错误信息置为 `Timeout Failure: No response received after timeout + 10s grace period`。
+1. **Mobile Force-Kill**:
+   Upon receiving a task, the mobile client starts a `setTimeout` timer. If the execution exceeds `timeout` seconds, the client executes Root Shell commands to force-stop the apps:
+   - `su -c "am force-stop org.autojs.autojs6"` (Kill Auto.js)
+   - `su -c "am force-stop com.android.chrome"` (Kill Chrome)
+   It then posts a `FAILURE` callback to PC server.
+2. **PC Polling Fallback**:
+   If the mobile device goes offline or fails to callback within `timeout + 10s`, the PC server's background thread will scan the task and automatically mark it as `FAILURE` with reason: `Timeout Failure: No response received after timeout + 10s grace period`.
