@@ -130,6 +130,15 @@ PC 服务端提供了以下 HTTP 接口：
   # 加载 pc/.env 配置运行 (Node 20.6+)
   node --env-file=pc/.env test_dispatch.js
   ```
+  
+  另外，您也可以使用 `test_sms.js` 脚本来快速测试短信获取任务（利用 ContentResolver 与 Root 级命令行双通道备份）：
+  ```bash
+  # 直接运行
+  node test_sms.js
+  
+  # 加载配置运行
+  node --env-file=pc/.env test_sms.js
+  ```
 
 - **返回响应**:
   ```json
