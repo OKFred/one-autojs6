@@ -35,9 +35,15 @@ click(inputX, inputY);
 console.log("Clicked search input box to focus. Position: " + inputX + ", " + inputY);
 sleep(1500);
 
-// 3. 使用 Root 权限的 shell input text 输入 "ip" (能真实触动网页 DOM 的键盘输入与交互监听)
-shell("input text 'ip'", true);
-console.log("Inputted 'ip' into search box via shell input.");
+// 3. 将 "杭州" 拷贝至系统剪切板，并触发粘贴（或通过 setText 写入）以完美绕过 Android Shell 不支持中文输入的限制
+setClip("杭州");
+sleep(500);
+var pasted = searchInput.paste();
+if (!pasted) {
+    console.log("Accessibility paste not supported, falling back to setText.");
+    searchInput.setText("杭州");
+}
+console.log("Inputted '杭州' into search box.");
 sleep(1500);
 
 // 4. 发送回车键事件 (KeyCode 66) 触发百度搜索
@@ -49,7 +55,7 @@ sleep(1000);
 sleep(5000);
 console.log("Baidu search result loaded, grabbing page contents...");
 
-// 5. 抓取屏幕上的文本节点信息并筛选 IP 关键字
+// 5. 抓取屏幕上的文本节点信息并筛选 杭州 关键字
 var results = [];
 var nodes = className("android.widget.TextView").find();
 if (nodes.empty()) {
