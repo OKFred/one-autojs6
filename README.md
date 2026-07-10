@@ -6,7 +6,7 @@
 
 ## 架构概览
 
-- **PC 端 (pc/)**: 
+- **PC 端 (pc/)**:
   - 基于 **HonoJS** 运行 HTTP 服务。
   - 内置 **Aedes MQTT Broker** 作为消息中转站。
   - 提供任务下发和结果回调 API，并维护内存中的任务执行状态表。
@@ -24,24 +24,28 @@
 ## 环境准备
 
 ### 1. PC 端
-* 已安装 Node.js (推荐 v20+) 和 **pnpm** (推荐 v10+)。
-* 已通过 USB ADB 正常连接到安卓设备。
+
+- 已安装 Node.js (推荐 v20+) 和 **pnpm** (推荐 v10+)。
+- 已通过 USB ADB 正常连接到安卓设备。
 
 ### 2. 移动端 (安卓手机)
-* **Auto.js v6** 已开启**无障碍服务**与 **Root 权限**。
-* 安装了 **Termux**，且在 Termux 中安装了 `nodejs` 和 `pnpm`：
+
+- **Auto.js v6** 已开启**无障碍服务**与 **Root 权限**。
+- 安装了 **Termux**，且在 Termux 中安装了 `nodejs` 和 `pnpm`：
   ```bash
   pkg install nodejs
   npm install -g pnpm
   ```
-* 移动端与 PC 端处于同一局域网（能够相互 Ping 通）。
+- 移动端与 PC 端处于同一局域网（能够相互 Ping 通）。
 
 ---
 
 ## 快速开始
 
 ### 1. 依赖安装
+
 在项目根目录下执行以下命令，该命令会基于 pnpm workspace 自动安装 PC 端和移动端的所有依赖：
+
 ```bash
 pnpm install
 ```
@@ -49,7 +53,9 @@ pnpm install
 ### 2. 环境配置
 
 #### PC 端配置：`pc/.env`
+
 在 `pc/` 目录下创建 `.env` 文件，内容如下：
+
 ```env
 PORT=3000
 MQTT_PORT=1883
@@ -57,7 +63,9 @@ PC_IP=192.168.12.240   # 替换为您 PC 端的实际局域网 IP
 ```
 
 #### 移动端配置：`mobile/.env`
+
 在 `mobile/` 目录下创建 `.env` 文件，内容如下：
+
 ```env
 MQTT_BROKER_URL=mqtt://192.168.12.240:1883  # 替换为 PC 端的 IP 和 MQTT 端口
 AUTOJS_PACKAGE_NAME=org.autojs.autojs6       # Auto.js v6 的应用包名
@@ -67,22 +75,30 @@ TEMP_SCRIPT_DIR=/sdcard/Download             # 存放临时执行脚本的共享
 ### 3. 运行服务
 
 #### 启动 PC 端主服务
+
 在根目录下运行：
+
 ```bash
 pnpm --filter one-autojs6-pc dev
 ```
+
 启动成功后，控制台会输出：
+
 ```text
 [MQTT] Broker is running on port 1883
 [HTTP] Server is running on http://localhost:3000
 ```
 
 #### 启动移动端守护进程
+
 将整个目录或 `mobile/` 文件夹拷贝到手机的 Termux 路径中，在 `mobile/` 目录下执行：
+
 ```bash
 pnpm start
 ```
+
 启动成功后，控制台会显示已成功连接 MQTT 并订阅相关主题：
+
 ```text
 [CLIENT] Connected to MQTT Broker successfully.
 [CLIENT] Subscribed to topic: autojs6/tasks
@@ -96,23 +112,26 @@ pnpm start
 PC 服务端提供了以下 HTTP 接口：
 
 ### 1. 下发任务
-* **URL**: `POST /api/tasks`
-* **Content-Type**: `application/json`
-* **请求参数**:
+
+- **URL**: `POST /api/tasks`
+- **Content-Type**: `application/json`
+- **请求参数**:
   - `script` (string, 必须): 需要在 Auto.js 中执行的 JavaScript 脚本。
   - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会执行强杀。
-* **测试脚本示例**:
+- **测试脚本示例**:
   您可以使用根目录下的 `test_dispatch.js` 脚本来快速发起测试。该脚本使用 Node.js 原生的 `fetch` 发送任务并自动轮询最终状态。
-  
+
   运行方法:
+
   ```bash
   # 直接运行
   node test_dispatch.js
-  
+
   # 加载 pc/.env 配置运行 (Node 20.6+)
   node --env-file=pc/.env test_dispatch.js
   ```
-* **返回响应**:
+
+- **返回响应**:
   ```json
   {
     "success": true,
@@ -122,8 +141,9 @@ PC 服务端提供了以下 HTTP 接口：
   ```
 
 ### 2. 查询任务状态
-* **URL**: `GET /api/tasks/:taskId`
-* **返回响应**:
+
+- **URL**: `GET /api/tasks/:taskId`
+- **返回响应**:
   - 如果任务存在：
     ```json
     {
@@ -132,7 +152,7 @@ PC 服务端提供了以下 HTTP 接口：
         "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
         "script": "...",
         "status": "SUCCESS", // 可选值为: EXECUTING, SUCCESS, FAILURE, MISSING
-        "timeout": 15,
+        "timeout": 60,
         "createdAt": 1720601234567,
         "message": "Script execution succeeded"
       }
@@ -149,16 +169,17 @@ PC 服务端提供了以下 HTTP 接口：
     ```
 
 ### 3. 获取所有任务列表
-* **URL**: `GET /api/tasks`
+
+- **URL**: `GET /api/tasks`
 
 ---
 
 ## 强杀与超时说明
 
-1. **移动端本地强杀**: 
+1. **移动端本地强杀**:
    在收到任务时，移动端会在本地启动一个 `setTimeout`。如果代码执行时长超过 `timeout`，移动端会通过 Root Shell 执行以下强杀命令：
    - `su -c "am force-stop org.autojs.autojs6"` (强杀 Auto.js 应用)
    - `su -c "am force-stop com.android.chrome"` (强杀 Chrome 浏览器)
-   并在完成后，主动向 PC 的 `/api/callback` 回报 `FAILURE`，状态附带原因为本地超时强杀。
+     并在完成后，主动向 PC 的 `/api/callback` 回报 `FAILURE`，状态附带原因为本地超时强杀。
 2. **PC 端兜底标记失败**:
    若移动端在 `timeout + 10s` 时间内没有通过 HTTP 发送成功或失败的回调（可能由于设备断网、Termux 进程挂掉或脚本卡死导致本地超时器失效），PC 服务端内的轮询线程会自动扫描到并强制将任务状态标记为 `FAILURE`，并将错误信息置为 `Timeout Failure: No response received after timeout + 10s grace period`。

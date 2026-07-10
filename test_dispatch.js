@@ -14,7 +14,7 @@ const PORT = process.env.PORT || '3000';
 
 // 待下发的测试任务载荷 (Cat 默认为 autojs6)
 const payload = {
-  timeout: 15, // 超时时间（秒）
+  timeout: 60, // 超时时间（秒）
   script: `
 app.intent({
     action: "VIEW",
