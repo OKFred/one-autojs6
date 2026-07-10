@@ -57,16 +57,30 @@ try {
         lines.forEach(function(line) {
             if (!line || line.indexOf("Row:") < 0) return;
             
-            var addressMatch = line.match(/address=(.*?)(?:, body=)/);
-            var bodyMatch = line.match(/body=(.*?)(?:, date=)/);
-            var dateMatch = line.match(/date=(.*?)(?:, type=)/);
-            var typeMatch = line.match(/type=(\d+)/);
+            var addressMatch = line.match(/address=(.*?)(?:, \\w+=|$)/);
+            var bodyMatch = line.match(/body=(.*?)(?:, \\w+=|$)/);
+            var dateMatch = line.match(/date=(.*?)(?:, \\w+=|$)/);
+            var typeMatch = line.match(/type=(.*?)(?:, \\w+=|$)/);
             
-            if (addressMatch && bodyMatch && dateMatch && typeMatch) {
+            if (addressMatch && bodyMatch) {
                 var address = addressMatch[1];
                 var body = bodyMatch[1];
-                var dateVal = parseInt(dateMatch[1]);
-                var typeVal = parseInt(typeMatch[1]);
+                
+                var dateVal = Date.now();
+                if (dateMatch) {
+                    var parsedDate = parseInt(dateMatch[1]);
+                    if (!isNaN(parsedDate)) {
+                        dateVal = parsedDate;
+                    }
+                }
+                
+                var typeVal = 1; // 默认为收件箱
+                if (typeMatch) {
+                    var parsedType = parseInt(typeMatch[1]);
+                    if (!isNaN(parsedType)) {
+                        typeVal = parsedType;
+                    }
+                }
                 
                 var formattedDate = "";
                 try {
