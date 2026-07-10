@@ -2,7 +2,11 @@
  * 读取所有短信的测试脚本 (返回结构化 JSON 数组)
  * 
  * 运行方式:
- *   node --env-file=pc/.env test_sms.js
+ *   1. 直接运行 (使用默认配置):
+ *      node test/scripts/test_sms.js
+ * 
+ *   2. 加载配置文件运行:
+ *      node --env-file=pc/.env test/scripts/test_sms.js
  */
 
 const PC_IP = process.env.PC_IP || '192.168.12.240';

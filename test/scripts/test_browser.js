@@ -1,12 +1,12 @@
 /**
- * 测试任务下发与状态监控脚本
+ * 测试任务下发与状态监控脚本 (浏览器访问与抓取)
  * 
  * 运行方式:
  *   1. 直接运行 (使用默认配置):
- *      node test_dispatch.js
+ *      node test/scripts/test_browser.js
  * 
  *   2. 加载配置文件运行 (Node.js 20.6+ 支持):
- *      node --env-file=pc/.env test_dispatch.js
+ *      node --env-file=pc/.env test/scripts/test_browser.js
  */
 
 const PC_IP = process.env.PC_IP || '192.168.12.240';

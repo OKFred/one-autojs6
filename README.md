@@ -119,25 +119,24 @@ PC 服务端提供了以下 HTTP 接口：
   - `script` (string, 必须): 需要在 Auto.js 中执行的 JavaScript 脚本。
   - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会执行强杀。
 - **测试脚本示例**:
-  您可以使用根目录下的 `test_dispatch.js` 脚本来快速发起测试。该脚本使用 Node.js 原生的 `fetch` 发送任务并自动轮询最终状态。
-
+  您可以使用 `test/scripts/test_browser.js` 脚本来快速发起浏览器网页内容抓取测试。该脚本使用 Node.js 原生的 `fetch` 发送任务并自动轮询最终状态。
+  
   运行方法:
-
   ```bash
   # 直接运行
-  node test_dispatch.js
-
+  node test/scripts/test_browser.js
+  
   # 加载 pc/.env 配置运行 (Node 20.6+)
-  node --env-file=pc/.env test_dispatch.js
+  node --env-file=pc/.env test/scripts/test_browser.js
   ```
   
-  另外，您也可以使用 `test_sms.js` 脚本来快速测试短信获取任务（利用 ContentResolver 与 Root 级命令行双通道备份）：
+  另外，您也可以使用 `test/scripts/test_sms.js` 脚本来快速测试获取手机上全部短信的记录（通过 Root 级 content query 命令行查询，并以表格美化输出）：
   ```bash
   # 直接运行
-  node test_sms.js
+  node test/scripts/test_sms.js
   
   # 加载配置运行
-  node --env-file=pc/.env test_sms.js
+  node --env-file=pc/.env test/scripts/test_sms.js
   ```
 
 - **返回响应**:
