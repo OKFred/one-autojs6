@@ -17,32 +17,43 @@ const payload = {
   timeout: 60, // 超时时间（秒）
   script: `
 // 1. 启动 Chrome 并打开百度网
-app.intent({
-    action: "VIEW",
-    data: "https://www.baidu.com",
-    packageName: "com.android.chrome",
-    flags: ["ACTIVITY_NEW_TASK"]
-});
+
+app.openUrl("https://www.baidu.com");
 console.log("Launched Chrome, waiting for loading...");
 sleep(5000);
 
-// 2. 查找百度搜索输入框并输入 "ip"
+// 2. 查找百度搜索输入框，先点击聚焦，然后再输入 "ip"
 var searchInput = className("android.widget.EditText").findOne(10000);
 if (!searchInput) {
     throw new Error("Timeout waiting for Baidu search input box");
 }
+
+// 点击输入框中心以聚焦
+var inputX = searchInput.bounds().centerX();
+var inputY = searchInput.bounds().centerY();
+click(inputX, inputY);
+console.log("Clicked search input box to focus. Position: " + inputX + ", " + inputY);
+sleep(1500);
+
 searchInput.setText("ip");
 console.log("Inputted 'ip' into search box.");
-sleep(1000);
+sleep(1500);
 
-// 3. 点击“百度一下”或者直接通过回车搜索
-var searchBtn = text("百度一下").findOne(2000) || desc("百度一下").findOne(2000) || text("搜索").findOne(2000);
+// 3. 双保险触发搜索：同时模拟 Enter 回车键 + 点击输入框右侧约 80 像素的搜索按钮位置
+var searchBtn = text("百度一下").findOne(1000) || desc("百度一下").findOne(1000) || text("搜索").findOne(1000);
 if (searchBtn) {
     searchBtn.click();
-    console.log("Clicked search button.");
+    console.log("Clicked search button by element find.");
 } else {
-    console.log("Search button not found by text, simulating Enter key...");
+    console.log("Search button not found by text, simulating Enter key + coordinate click...");
+    // 1. 模拟回车
     shell("input keyevent 66", true);
+    sleep(500);
+    // 2. 模拟点击输入框右侧 80 像素处的搜索图标 (适用于移动端百度布局)
+    var clickX = searchInput.bounds().right + 80;
+    var clickY = searchInput.bounds().centerY();
+    click(clickX, clickY);
+    console.log("Clicked coordinate: " + clickX + ", " + clickY);
 }
 
 // 4. 等待百度加载搜索结果
