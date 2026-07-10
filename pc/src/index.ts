@@ -9,7 +9,11 @@ dotenv.config();
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const MQTT_PORT = parseInt(process.env.MQTT_PORT || '1883', 10);
-const PC_IP = process.env.PC_IP || '127.0.0.1';
+const PC_IP = process.env.PC_IP;
+if (!PC_IP) {
+  console.error('[ERROR] Environment variable PC_IP is required. Please check your config.');
+  process.exit(1);
+}
 
 // 任务类型定义
 interface Task {

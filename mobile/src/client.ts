@@ -6,7 +6,11 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const MQTT_BROKER_URL = process.env.MQTT_BROKER_URL || 'mqtt://127.0.0.1:1883';
+const MQTT_BROKER_URL = process.env.MQTT_BROKER_URL;
+if (!MQTT_BROKER_URL) {
+  console.error('[ERROR] Environment variable MQTT_BROKER_URL is required. Please check your config.');
+  process.exit(1);
+}
 const AUTOJS_PACKAGE_NAME = process.env.AUTOJS_PACKAGE_NAME || 'org.autojs.autojs6';
 const TEMP_SCRIPT_DIR = process.env.TEMP_SCRIPT_DIR || '/sdcard/Download';
 

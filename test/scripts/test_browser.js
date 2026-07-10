@@ -9,7 +9,11 @@
  *      node --env-file=pc/.env test/scripts/test_browser.js
  */
 
-const PC_IP = process.env.PC_IP || '192.168.12.240';
+const PC_IP = process.env.PC_IP;
+if (!PC_IP) {
+  console.error('[ERROR] Environment variable PC_IP is required. Run with --env-file=pc/.env or export PC_IP.');
+  process.exit(1);
+}
 const PORT = process.env.PORT || '3000';
 
 // 待下发的测试任务载荷 (Cat 默认为 autojs6)
