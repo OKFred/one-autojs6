@@ -92,24 +92,18 @@ try {
     ${script}
     
     console.log("Script executed successfully. Sending success callback.");
-    var res = http.post("${callbackUrl}", {
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            taskId: "${taskId}",
-            status: "SUCCESS",
-            message: "Script execution succeeded"
-        })
+    var res = http.postJson("${callbackUrl}", {
+        taskId: "${taskId}",
+        status: "SUCCESS",
+        message: "Script execution succeeded"
     });
     console.log("Callback sent: " + res.body.string());
 } catch (err) {
     console.error("Script execution failed: " + err);
-    var res = http.post("${callbackUrl}", {
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            taskId: "${taskId}",
-            status: "FAILURE",
-            message: err.toString()
-        })
+    var res = http.postJson("${callbackUrl}", {
+        taskId: "${taskId}",
+        status: "FAILURE",
+        message: err.toString()
     });
     console.log("Callback sent: " + res.body.string());
 }
