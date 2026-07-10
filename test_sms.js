@@ -11,98 +11,59 @@ const PORT = process.env.PORT || '3000';
 const payload = {
   timeout: 30, // 30秒超时
   script: `
-try {
-    // 方式一：使用 ContentResolver 进行原生数据库查询 (获取收发信箱的全部短信)
-    var Uri = android.net.Uri;
-    var cursor = context.getContentResolver().query(
-        Uri.parse("content://sms/"),
-        ["address", "body", "date", "type"],
-        null,
-        null,
-        "date desc"
-    );
-    
+// 直接通过 Root 执行 content query 命令行查询所有短信，免去无障碍应用权限申请的限制
+var res = shell("content query --uri content://sms/ --projection address:body:date:type --sort 'date desc'", true);
+if (res && res.code == 0 && res.result) {
+    var lines = res.result.split("\\n");
     var smsList = [];
-    if (cursor != null) {
-        while (cursor.moveToNext()) {
-            var address = cursor.getString(0);
-            var body = cursor.getString(1);
-            var date = cursor.getLong(2);
-            var type = cursor.getInt(3);
+    lines.forEach(function(line) {
+        if (!line || line.indexOf("Row:") < 0) return;
+        
+        var addressMatch = line.match(/address=(.*?)(?:, \\w+=|$)/);
+        var bodyMatch = line.match(/body=(.*?)(?:, \\w+=|$)/);
+        var dateMatch = line.match(/date=(.*?)(?:, \\w+=|$)/);
+        var typeMatch = line.match(/type=(.*?)(?:, \\w+=|$)/);
+        
+        if (addressMatch && bodyMatch) {
+            var address = addressMatch[1];
+            var body = bodyMatch[1];
             
-            var dateObj = new java.util.Date(date);
-            var sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-            var formattedDate = sdf.format(dateObj);
+            var dateVal = Date.now();
+            if (dateMatch) {
+                var parsedDate = parseInt(dateMatch[1]);
+                if (!isNaN(parsedDate)) {
+                    dateVal = parsedDate;
+                }
+            }
+            
+            var typeVal = 1; // 默认为收件箱
+            if (typeMatch) {
+                var parsedType = parseInt(typeMatch[1]);
+                if (!isNaN(parsedType)) {
+                    typeVal = parsedType;
+                }
+            }
+            
+            var formattedDate = "";
+            try {
+                var dateObj = new java.util.Date(dateVal);
+                var sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+                formattedDate = sdf.format(dateObj);
+            } catch(err) {
+                formattedDate = String(dateVal);
+            }
             
             smsList.push({
-                time: String(formattedDate),
-                from: type === 1 ? String(address) : "Me",
-                to: type === 2 ? String(address) : "Me",
-                content: String(body)
+                time: formattedDate,
+                from: typeVal === 1 ? address : "Me",
+                to: typeVal === 2 ? address : "Me",
+                content: body
             });
         }
-        cursor.close();
-        taskResult = JSON.stringify(smsList);
-    } else {
-        throw new Error("Cursor is null");
-    }
-} catch (e) {
-    console.log("Normal SMS ContentResolver read failed: " + e + ". Trying root command...");
-    
-    // 方式二：通过 Root 执行 content query 命令行（免授权），查询所有短信
-    var res = shell("content query --uri content://sms/ --projection address:body:date:type --sort 'date desc'", true);
-    if (res && res.code == 0 && res.result) {
-        var lines = res.result.split("\\n");
-        var smsList = [];
-        lines.forEach(function(line) {
-            if (!line || line.indexOf("Row:") < 0) return;
-            
-            var addressMatch = line.match(/address=(.*?)(?:, \\w+=|$)/);
-            var bodyMatch = line.match(/body=(.*?)(?:, \\w+=|$)/);
-            var dateMatch = line.match(/date=(.*?)(?:, \\w+=|$)/);
-            var typeMatch = line.match(/type=(.*?)(?:, \\w+=|$)/);
-            
-            if (addressMatch && bodyMatch) {
-                var address = addressMatch[1];
-                var body = bodyMatch[1];
-                
-                var dateVal = Date.now();
-                if (dateMatch) {
-                    var parsedDate = parseInt(dateMatch[1]);
-                    if (!isNaN(parsedDate)) {
-                        dateVal = parsedDate;
-                    }
-                }
-                
-                var typeVal = 1; // 默认为收件箱
-                if (typeMatch) {
-                    var parsedType = parseInt(typeMatch[1]);
-                    if (!isNaN(parsedType)) {
-                        typeVal = parsedType;
-                    }
-                }
-                
-                var formattedDate = "";
-                try {
-                    var dateObj = new java.util.Date(dateVal);
-                    var sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-                    formattedDate = sdf.format(dateObj);
-                } catch(err) {
-                    formattedDate = String(dateVal);
-                }
-                
-                smsList.push({
-                    time: formattedDate,
-                    from: typeVal === 1 ? address : "Me",
-                    to: typeVal === 2 ? address : "Me",
-                    content: body
-                });
-            }
-        });
-        taskResult = JSON.stringify(smsList);
-    } else {
-        taskResult = "Error reading SMS: " + e.toString() + " | Root error: " + (res ? res.error : "unknown");
-    }
+    });
+    taskResult = JSON.stringify(smsList);
+} else {
+    taskResult = "Failed to query SMS database via root: " + (res ? res.error : "unknown");
 }
   `.trim()
 };
