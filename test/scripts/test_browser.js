@@ -14,7 +14,11 @@ if (!PC_IP) {
   console.error('[ERROR] Environment variable PC_IP is required. Run with --env-file=pc/.env or export PC_IP.');
   process.exit(1);
 }
-const PORT = process.env.PORT || '3000';
+const PORT = process.env.PORT;
+if (!PORT) {
+  console.error('[ERROR] Environment variable PORT is required. Run with --env-file=pc/.env or export PORT.');
+  process.exit(1);
+}
 
 // 待下发的测试任务载荷 (Cat 默认为 autojs6)
 const payload = {
