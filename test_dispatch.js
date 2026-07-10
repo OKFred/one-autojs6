@@ -22,39 +22,28 @@ app.openUrl("https://www.baidu.com");
 console.log("Launched Chrome, waiting for loading...");
 sleep(5000);
 
-// 2. 查找百度搜索输入框，先点击聚焦，然后再输入 "ip"
+// 2. 查找百度搜索输入框，先点击聚焦
 var searchInput = className("android.widget.EditText").findOne(10000);
 if (!searchInput) {
     throw new Error("Timeout waiting for Baidu search input box");
 }
 
-// 点击输入框中心以聚焦
+// 物理点击输入框中心以激活光标并唤起输入焦点
 var inputX = searchInput.bounds().centerX();
 var inputY = searchInput.bounds().centerY();
 click(inputX, inputY);
 console.log("Clicked search input box to focus. Position: " + inputX + ", " + inputY);
 sleep(1500);
 
-searchInput.setText("ip");
-console.log("Inputted 'ip' into search box.");
+// 3. 使用 Root 权限的 shell input text 输入 "ip" (能真实触动网页 DOM 的键盘输入与交互监听)
+shell("input text 'ip'", true);
+console.log("Inputted 'ip' into search box via shell input.");
 sleep(1500);
 
-// 3. 双保险触发搜索：同时模拟 Enter 回车键 + 点击输入框右侧约 80 像素的搜索按钮位置
-var searchBtn = text("百度一下").findOne(1000) || desc("百度一下").findOne(1000) || text("搜索").findOne(1000);
-if (searchBtn) {
-    searchBtn.click();
-    console.log("Clicked search button by element find.");
-} else {
-    console.log("Search button not found by text, simulating Enter key + coordinate click...");
-    // 1. 模拟回车
-    shell("input keyevent 66", true);
-    sleep(500);
-    // 2. 模拟点击输入框右侧 80 像素处的搜索图标 (适用于移动端百度布局)
-    var clickX = searchInput.bounds().right + 80;
-    var clickY = searchInput.bounds().centerY();
-    click(clickX, clickY);
-    console.log("Clicked coordinate: " + clickX + ", " + clickY);
-}
+// 4. 发送回车键事件 (KeyCode 66) 触发百度搜索
+shell("input keyevent 66", true);
+console.log("Sent Enter key event via shell.");
+sleep(1000);
 
 // 4. 等待百度加载搜索结果
 sleep(5000);
