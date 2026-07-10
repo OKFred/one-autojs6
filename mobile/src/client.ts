@@ -85,6 +85,7 @@ client.on('message', async (topic: string, payload: Buffer) => {
       // 2. 包装 Auto.js 脚本以注入异常处理和 HTTP 回调
       // Auto.js 的 http.post 是同步阻塞的。
       const wrappedScript = `
+var taskResult = "Script execution succeeded";
 try {
     console.log("Start executing remote script: ${taskId}");
     
@@ -95,7 +96,7 @@ try {
     var res = http.postJson("${callbackUrl}", {
         taskId: "${taskId}",
         status: "SUCCESS",
-        message: "Script execution succeeded"
+        message: String(taskResult)
     });
     console.log("Callback sent: " + res.body.string());
 } catch (err) {
