@@ -17,7 +17,7 @@ const autojsService = AutojsService.getInstance();
  *         schema:
  *           type: string
  *           default: org.autojs.autojs6
- *         description: 要更新的应用包名，若带 "package:" 前缀，服务端将自动清洗
+ *         description: 要更新的应用包名
  *       - in: query
  *         name: mode
  *         required: true
