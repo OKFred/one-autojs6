@@ -20,6 +20,7 @@ interface TaskPayload {
   script: string;
   timeout: number;
   callbackUrl: string;
+  useRoot?: boolean;
 }
 
 interface StatusPayload {
@@ -76,19 +77,14 @@ client.on('message', async (topic: string, payload: Buffer) => {
     const data = JSON.parse(messageStr);
 
     if (topic === 'autojs6/tasks') {
-      const { taskId, cat, script, timeout, callbackUrl } = data as TaskPayload;
+      const { taskId, cat, script, timeout, callbackUrl, useRoot } = data as TaskPayload;
 
-      // 1. 过滤分类
-      if (cat !== 'autojs6') {
-        console.log(`[CLIENT] Ignored task ${taskId} because cat=${cat} (expected 'autojs6')`);
-        return;
-      }
+      if (cat === 'autojs6') {
+        console.log(`[CLIENT] Received Auto.js task ${taskId}. Timeout: ${timeout}s`);
 
-      console.log(`[CLIENT] Received task ${taskId}. Timeout: ${timeout}s`);
-
-      // 2. 包装 Auto.js 脚本以注入异常处理和 HTTP 回调
-      // Auto.js 的 http.post 是同步阻塞的。
-      const wrappedScript = `
+        // 2. 包装 Auto.js 脚本以注入异常处理和 HTTP 回调
+        // Auto.js 的 http.post 是同步阻塞的。
+        const wrappedScript = `
 var taskResult = "Script execution succeeded";
 try {
     console.log("Start executing remote script: ${taskId}");
@@ -114,88 +110,129 @@ try {
 }
 `;
 
-      // 3. 将脚本先写入 Termux 本地私有目录下的临时文件（防 EPERM 权限报错）
-      const tempFileName = `autojs_temp_${taskId}.js`;
-      const localTempPath = path.join(process.cwd(), `local_${tempFileName}`);
-      const targetTempPath = path.join(TEMP_SCRIPT_DIR, tempFileName);
-      
-      try {
-        fs.writeFileSync(localTempPath, wrappedScript, 'utf8');
-        console.log(`[CLIENT] Local temporary script written to ${localTempPath}`);
-      } catch (err: any) {
-        console.error(`[CLIENT] Failed to write local temporary script to ${localTempPath}:`, err);
-        sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to write local script: ${err.message}`);
-        return;
-      }
-
-      // 4. 使用 Root 权限将文件搬运至目标路径，并赋予 777 权限以确保 Auto.js 能够跨沙盒读取
-      const prepareCommand = `su -c "cp ${localTempPath} ${targetTempPath} && chmod 777 ${targetTempPath} && rm -f ${localTempPath}"`;
-      console.log(`[CLIENT] Copying script to target path using root: ${prepareCommand}`);
-
-      exec(prepareCommand, (err: any) => {
-        if (err) {
-          console.error(`[CLIENT] Root copy failed:`, err.message);
-          sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Root copy failed: ${err.message}`);
-          try {
-            if (fs.existsSync(localTempPath)) fs.unlinkSync(localTempPath);
-          } catch {}
+        // 3. 将脚本先写入 Termux 本地私有目录下的临时文件（防 EPERM 权限报错）
+        const tempFileName = `autojs_temp_${taskId}.js`;
+        const localTempPath = path.join(process.cwd(), `local_${tempFileName}`);
+        const targetTempPath = path.join(TEMP_SCRIPT_DIR, tempFileName);
+        
+        try {
+          fs.writeFileSync(localTempPath, wrappedScript, 'utf8');
+          console.log(`[CLIENT] Local temporary script written to ${localTempPath}`);
+        } catch (err: any) {
+          console.error(`[CLIENT] Failed to write local temporary script to ${localTempPath}:`, err);
+          sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to write local script: ${err.message}`);
           return;
         }
 
-        console.log(`[CLIENT] Script successfully moved to ${targetTempPath} with 777 permissions`);
+        // 4. 使用 Root 权限将文件搬运至目标路径，并赋予 777 权限以确保 Auto.js 能够跨沙盒读取
+        const prepareCommand = `su -c "cp ${localTempPath} ${targetTempPath} && chmod 777 ${targetTempPath} && rm -f ${localTempPath}"`;
+        console.log(`[CLIENT] Copying script to target path using root: ${prepareCommand}`);
 
-        // 5. 设置本地超时强杀定时器
-        const timeoutTimer = setTimeout(() => {
-          console.warn(`[CLIENT] Task ${taskId} timeout (${timeout}s) reached! Initiating force-kill...`);
-          
-          // 强杀 Auto.js 和 Chrome 浏览器
-          const killCmds = [
-            `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
-            `su -c "am force-stop com.android.chrome"`
-          ];
+        exec(prepareCommand, (err: any) => {
+          if (err) {
+            console.error(`[CLIENT] Root copy failed:`, err.message);
+            sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Root copy failed: ${err.message}`);
+            try {
+              if (fs.existsSync(localTempPath)) fs.unlinkSync(localTempPath);
+            } catch {}
+            return;
+          }
 
-          killCmds.forEach((cmd) => {
-            exec(cmd, (err: any) => {
-              if (err) {
-                console.error(`[CLIENT] Error running force-stop command "${cmd}":`, err.message);
-              } else {
-                console.log(`[CLIENT] Command executed successfully: ${cmd}`);
-              }
+          console.log(`[CLIENT] Script successfully moved to ${targetTempPath} with 777 permissions`);
+
+          // 5. 设置本地超时强杀定时器
+          const timeoutTimer = setTimeout(() => {
+            console.warn(`[CLIENT] Task ${taskId} timeout (${timeout}s) reached! Initiating force-kill...`);
+            
+            // 强杀 Auto.js 和 Chrome 浏览器
+            const killCmds = [
+              `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
+              `su -c "am force-stop com.android.chrome"`
+            ];
+
+            killCmds.forEach((cmd) => {
+              exec(cmd, (err: any) => {
+                if (err) {
+                  console.error(`[CLIENT] Error running force-stop command "${cmd}":`, err.message);
+                } else {
+                  console.log(`[CLIENT] Command executed successfully: ${cmd}`);
+                }
+              });
             });
+
+            // 强杀后，主动向 PC 报告超时失败
+            sendHttpCallback(
+              callbackUrl, 
+              taskId, 
+              'FAILURE', 
+              `Timeout: Script execution exceeded ${timeout}s. Termux client killed the application.`
+            );
+
+            // 清理本地资源
+            cleanupTask(taskId);
+          }, timeout * 1000);
+
+          // 缓存任务信息
+          activeTasks[taskId] = {
+            timeoutTimer,
+            tempFilePath: targetTempPath
+          };
+
+          // 6. 通过 Root 命令启动 Auto.js 载入脚本
+          const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetTempPath} -t text/javascript"`;
+          console.log(`[CLIENT] Executing shell command to start Auto.js: ${runCommand}`);
+
+          exec(runCommand, (err: any) => {
+            if (err) {
+              console.error(`[CLIENT] Failed to launch Auto.js:`, err.message);
+              sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to launch Auto.js intent: ${err.message}`);
+              cleanupTask(taskId);
+            } else {
+              console.log(`[CLIENT] Task ${taskId} is now running in Auto.js`);
+            }
           });
+        });
 
-          // 强杀后，主动向 PC 报告超时失败
+      } else if (cat === 'shell') {
+        console.log(`[CLIENT] Received Shell task ${taskId}. Timeout: ${timeout}s, useRoot: ${!!useRoot}`);
+
+        // 1. 设置本地超时定时器
+        const timeoutTimer = setTimeout(() => {
+          console.warn(`[CLIENT] Shell Task ${taskId} timeout reached! Killing process...`);
           sendHttpCallback(
-            callbackUrl, 
-            taskId, 
-            'FAILURE', 
-            `Timeout: Script execution exceeded ${timeout}s. Termux client killed the application.`
+            callbackUrl,
+            taskId,
+            'FAILURE',
+            `Timeout: Shell execution exceeded ${timeout}s.`
           );
-
-          // 清理本地资源
           cleanupTask(taskId);
         }, timeout * 1000);
 
-        // 缓存任务信息
+        // 2. 缓存任务信息
         activeTasks[taskId] = {
           timeoutTimer,
-          tempFilePath: targetTempPath
+          tempFilePath: ''
         };
 
-        // 6. 通过 Root 命令启动 Auto.js 载入脚本
-        const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetTempPath} -t text/javascript"`;
-        console.log(`[CLIENT] Executing shell command to start Auto.js: ${runCommand}`);
+        // 3. 执行 Shell 命令
+        const execCmd = useRoot ? `su -c "${script}"` : script;
+        console.log(`[CLIENT] Executing shell command: ${execCmd}`);
+        exec(execCmd, (err: any, stdout: string, stderr: string) => {
+          if (!activeTasks[taskId]) return;
 
-        exec(runCommand, (err: any) => {
+          cleanupTask(taskId);
+
           if (err) {
-            console.error(`[CLIENT] Failed to launch Auto.js:`, err.message);
-            sendHttpCallback(callbackUrl, taskId, 'FAILURE', `Failed to launch Auto.js intent: ${err.message}`);
-            cleanupTask(taskId);
+            console.error(`[CLIENT] Shell execution failed:`, err.message);
+            sendHttpCallback(callbackUrl, taskId, 'FAILURE', stderr || err.message);
           } else {
-            console.log(`[CLIENT] Task ${taskId} is now running in Auto.js`);
+            console.log(`[CLIENT] Shell execution succeeded for task ${taskId}`);
+            sendHttpCallback(callbackUrl, taskId, 'SUCCESS', stdout);
           }
         });
-      });
+      } else {
+        console.log(`[CLIENT] Ignored task ${taskId} because unknown cat=${cat}`);
+      }
 
     } else if (topic === 'autojs6/status') {
       // 收到任务状态更新消息

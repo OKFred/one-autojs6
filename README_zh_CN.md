@@ -101,13 +101,15 @@ pnpm start
 
 PC 服务端提供了以下 HTTP 接口：
 
-### 1. 下发任务
+### 1. 下发通用任务
 
 - **URL**: `POST /api/tasks`
 - **Content-Type**: `application/json`
 - **请求参数**:
-  - `script` (string, 必须): 需要在 Auto.js 中执行的 JavaScript 脚本。
-  - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会执行强杀。
+  - `cat` (string, 可选, 默认 `autojs6`): 任务分类。可设置为 `autojs6` (在 Auto.JS 中执行) 或 `shell` (在 Termux 中直接执行 Shell 脚本)。
+  - `script` (string, 必须): 需要执行的脚本内容（Auto.JS 脚本或 Shell 命令）。
+  - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会强杀任务关联应用/进程。
+  - `useRoot` (boolean, 可选, 默认 false): 仅在 `cat === 'shell'` 时生效。是否以 Root 权限 (`su -c`) 运行该命令。
 - **测试脚本示例**:
   您可以使用 `test/scripts/test_browser.js` 脚本来快速发起浏览器网页内容抓取测试。该脚本使用 Node.js 原生的 `fetch` 发送任务并自动轮询最终状态。
 
@@ -140,7 +142,42 @@ PC 服务端提供了以下 HTTP 接口：
   }
   ```
 
-### 2. 查询任务状态
+### 2. 下发获取设备应用包名列表任务
+
+- **URL**: `POST /api/apps/task`
+- **Content-Type**: `application/json`
+- **Query 参数**:
+  - `type` (string, 可选, 默认 `all`): 过滤的应用类型。可设为 `all` (全部包名)、`third` (仅第三方应用包名)、`system` (仅系统应用包名)。
+  - `timeout` (number, 可选, 默认 15): 任务执行超时时间（秒）。
+- **说明**: 该接口异步下发 Shell 命令 `pm list packages`，执行极快。任务成功后，任务结果的 `message` 字段中将包含返回的包名（以换行符分隔）。
+- **返回响应**:
+  ```json
+  {
+    "success": true,
+    "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "status": "EXECUTING",
+    "message": "Apps package task dispatched"
+  }
+  ```
+
+### 3. 下发获取设备应用详细信息任务
+
+- **URL**: `POST /api/apps/details-task`
+- **Content-Type**: `application/json`
+- **Query 参数**:
+  - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。
+- **说明**: 该接口异步下发 Auto.JS 脚本，通过反射 Android 的 `PackageManager` 获取包含中文名称、包名、版本、是否系统应用等全面信息的 JSON 列表。任务成功后，`message` 字段将包含 JSON 字符串。
+- **返回响应**:
+  ```json
+  {
+    "success": true,
+    "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "status": "EXECUTING",
+    "message": "Apps details task dispatched"
+  }
+  ```
+
+### 4. 查询任务状态
 
 - **URL**: `GET /api/tasks/:taskId`
 - **返回响应**:
@@ -150,11 +187,12 @@ PC 服务端提供了以下 HTTP 接口：
       "success": true,
       "task": {
         "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "script": "...",
+        "cat": "shell",
+        "script": "pm list packages -3",
         "status": "SUCCESS", // 可选值为: EXECUTING, SUCCESS, FAILURE, MISSING
-        "timeout": 60,
+        "timeout": 15,
         "createdAt": 1720601234567,
-        "message": "Script execution succeeded"
+        "message": "package:com.tencent.mm\npackage:com.eg.android.Alipay"
       }
     }
     ```
@@ -168,7 +206,7 @@ PC 服务端提供了以下 HTTP 接口：
     }
     ```
 
-### 3. 获取所有任务列表
+### 5. 获取所有任务列表
 
 - **URL**: `GET /api/tasks`
 
