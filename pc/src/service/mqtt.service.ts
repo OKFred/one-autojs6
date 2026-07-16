@@ -1,12 +1,20 @@
 import Aedes from 'aedes';
 import net from 'net';
 
+/**
+ * MQTT 代理服务类，用于初始化和管理 MQTT Broker 实例。
+ */
 export class MqttService {
   private static instance: MqttService;
   private aedes: any;
 
   private constructor() {}
 
+  /**
+   * 获取 MqttService 单例实例。
+   * 
+   * @returns MqttService 实例
+   */
   public static getInstance(): MqttService {
     if (!MqttService.instance) {
       MqttService.instance = new MqttService();
@@ -14,6 +22,11 @@ export class MqttService {
     return MqttService.instance;
   }
 
+  /**
+   * 初始化并启动 MQTT 代理。
+   * 
+   * @param port - MQTT 代理监听的端口号
+   */
   public init(port: number) {
     this.aedes = (Aedes as any)();
     const mqttServer = net.createServer(this.aedes.handle);
@@ -30,6 +43,12 @@ export class MqttService {
     });
   }
 
+  /**
+   * 向指定的主题发布 MQTT 消息载荷。
+   * 
+   * @param topic - MQTT 主题
+   * @param payload - 消息载荷对象或字符串
+   */
   public publish(topic: string, payload: any) {
     if (!this.aedes) {
       console.error('[MQTT] Broker not initialized.');

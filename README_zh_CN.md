@@ -81,7 +81,13 @@ pnpm --filter one-autojs6-pc dev
 
 #### 启动移动端守护进程
 
-将整个目录或 `mobile/` 文件夹拷贝到手机的 Termux 路径中，在 `mobile/` 目录下执行：
+为了支持**移动端远程自更新与自重启**功能，强烈建议在 `mobile/` 目录下通过以下 **Shell 循环守护命令** 启动客户端进程（它会在客户端拉取 git 更新自更新退出后，自动拉起重新运行）：
+
+```bash
+while true; do pnpm start; sleep 2; done
+```
+
+当然，您也可以使用传统的单次运行命令启动（但这将不支持自更新后的自动重启）：
 
 ```bash
 pnpm start
@@ -136,9 +142,12 @@ PC 服务端提供了以下 HTTP 接口：
 - **返回响应**:
   ```json
   {
-    "success": true,
-    "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "status": "EXECUTING"
+    "ok": true,
+    "message": "Task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
   }
   ```
 
@@ -153,10 +162,12 @@ PC 服务端提供了以下 HTTP 接口：
 - **返回响应**:
   ```json
   {
-    "success": true,
-    "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "status": "EXECUTING",
-    "message": "Apps package task dispatched"
+    "ok": true,
+    "message": "Apps package task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
   }
   ```
 
@@ -170,43 +181,69 @@ PC 服务端提供了以下 HTTP 接口：
 - **返回响应**:
   ```json
   {
-    "success": true,
-    "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "status": "EXECUTING",
-    "message": "Apps details task dispatched"
+    "ok": true,
+    "message": "Apps details task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
   }
   ```
 
-### 4. 查询任务状态
+### 4. 下发移动端自更新任务
+
+- **URL**: `POST /api/devices/update-task`
+- **Content-Type**: `application/json`
+- **Query 参数**:
+  - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。
+- **说明**: 异步下发 `cat = update` 的自更新命令。移动端在本地执行 `git reset --hard HEAD && git pull`，成功后向 PC 回传更新日志，并延时 1.5 秒主动退出进程（由外层守护循环自动重启）。
+- **返回响应**:
+  ```json
+  {
+    "ok": true,
+    "message": "Mobile self-update task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 5. 查询任务状态
 
 - **URL**: `GET /api/tasks/:taskId`
 - **返回响应**:
   - 如果任务存在：
     ```json
     {
-      "success": true,
-      "task": {
-        "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "cat": "shell",
-        "script": "pm list packages -3",
-        "status": "SUCCESS", // 可选值为: EXECUTING, SUCCESS, FAILURE, MISSING
-        "timeout": 15,
-        "createdAt": 1720601234567,
-        "message": "package:com.tencent.mm\npackage:com.eg.android.Alipay"
+      "ok": true,
+      "message": "Retrieve task status successfully",
+      "data": {
+        "task": {
+          "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+          "cat": "shell",
+          "script": "pm list packages -3",
+          "status": "SUCCESS", // 可选值为: EXECUTING, SUCCESS, FAILURE, MISSING
+          "timeout": 15,
+          "createdAt": 1720601234567,
+          "message": "package:com.tencent.mm\npackage:com.eg.android.Alipay"
+        }
       }
     }
     ```
   - 如果任务不存在（MISSING）：
     ```json
     {
-      "success": true,
-      "taskId": "invalid-id",
-      "status": "MISSING",
-      "message": "Task not found in system"
+      "ok": true,
+      "message": "Task not found in system",
+      "data": {
+        "taskId": "invalid-id",
+        "status": "MISSING"
+      }
     }
     ```
 
-### 5. 获取所有任务列表
+### 6. 获取所有任务列表
 
 - **URL**: `GET /api/tasks`
 

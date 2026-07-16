@@ -230,9 +230,53 @@ try {
             sendHttpCallback(callbackUrl, taskId, 'SUCCESS', stdout);
           }
         });
+      } else if (cat === 'update') {
+        console.log(`[CLIENT] Received Self-Update task ${taskId}. Timeout: ${timeout}s`);
+
+        // 1. 设置本地超时定时器
+        const timeoutTimer = setTimeout(() => {
+          console.warn(`[CLIENT] Self-Update Task ${taskId} timeout reached!`);
+          sendHttpCallback(
+            callbackUrl,
+            taskId,
+            'FAILURE',
+            `Timeout: Self-Update execution exceeded ${timeout}s.`
+          );
+          cleanupTask(taskId);
+        }, timeout * 1000);
+
+        // 2. 缓存任务信息
+        activeTasks[taskId] = {
+          timeoutTimer,
+          tempFilePath: ''
+        };
+
+        // 3. 执行 Git 更新命令
+        const updateCmd = 'git reset --hard HEAD && git pull';
+        console.log(`[CLIENT] Executing update command: ${updateCmd}`);
+        exec(updateCmd, (err: any, stdout: string, stderr: string) => {
+          if (!activeTasks[taskId]) return;
+
+          cleanupTask(taskId);
+
+          if (err) {
+            console.error(`[CLIENT] Self-Update execution failed:`, err.message);
+            sendHttpCallback(callbackUrl, taskId, 'FAILURE', stderr || err.message);
+          } else {
+            console.log(`[CLIENT] Self-Update execution succeeded for task ${taskId}`);
+            sendHttpCallback(callbackUrl, taskId, 'SUCCESS', stdout);
+            
+            // 延时 1.5 秒安全退出进程以触发外层守护的重启
+            console.log('[CLIENT] Initiating self-restart in 1.5 seconds...');
+            setTimeout(() => {
+              process.exit(0);
+            }, 1500);
+          }
+        });
       } else {
         console.log(`[CLIENT] Ignored task ${taskId} because unknown cat=${cat}`);
       }
+
 
     } else if (topic === 'autojs6/status') {
       // 收到任务状态更新消息
@@ -248,7 +292,12 @@ try {
 });
 
 /**
- * 辅助方法：通过 Fetch API 向 PC 服务端发送 HTTP 回调
+ * 辅助方法：通过 Fetch API 向 PC 服务端发送 HTTP 回调。
+ * 
+ * @param callbackUrl - 回调的 HTTP URL 地址
+ * @param taskId - 任务 ID
+ * @param status - 执行状态，如 SUCCESS 或 FAILURE
+ * @param message - 回调的消息负载（成功时为返回值，失败时为错误原因）
  */
 function sendHttpCallback(callbackUrl: string, taskId: string, status: string, message: string) {
   fetch(callbackUrl, {
@@ -269,7 +318,9 @@ function sendHttpCallback(callbackUrl: string, taskId: string, status: string, m
 }
 
 /**
- * 辅助方法：清理指定任务的定时器 and 临时文件
+ * 辅助方法：清理指定任务的定时器和临时文件。
+ * 
+ * @param taskId - 需要清理的任务 ID
  */
 function cleanupTask(taskId: string) {
   const task = activeTasks[taskId];

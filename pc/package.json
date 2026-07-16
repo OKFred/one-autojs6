@@ -9,12 +9,15 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",
+    "@hono/swagger-ui": "^0.6.1",
     "aedes": "^0.51.3",
     "dotenv": "^16.4.7",
-    "hono": "^4.6.20"
+    "hono": "^4.6.20",
+    "swagger-jsdoc": "^6.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/swagger-jsdoc": "^6.0.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

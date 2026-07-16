@@ -1,9 +1,12 @@
 import crypto from 'crypto';
 import { MqttService } from './mqtt.service.js';
 
+/**
+ * 任务对象结构定义。
+ */
 export interface Task {
   taskId: string;
-  cat: 'autojs6' | 'shell';
+  cat: 'autojs6' | 'shell' | 'update';
   script: string;
   status: 'EXECUTING' | 'SUCCESS' | 'FAILURE' | 'MISSING';
   timeout: number;
@@ -11,6 +14,9 @@ export interface Task {
   message: string;
 }
 
+/**
+ * 任务管理服务类，在内存中维护任务状态表，并处理超时判定。
+ */
 export class TaskService {
   private static instance: TaskService;
   private tasks: Record<string, Task> = {};
@@ -19,6 +25,11 @@ export class TaskService {
     this.startTimeoutChecker();
   }
 
+  /**
+   * 获取 TaskService 单例实例。
+   * 
+   * @returns TaskService 实例
+   */
   public static getInstance(): TaskService {
     if (!TaskService.instance) {
       TaskService.instance = new TaskService();
@@ -26,7 +37,15 @@ export class TaskService {
     return TaskService.instance;
   }
 
-  public createTask(cat: 'autojs6' | 'shell', script: string, timeout: number): Task {
+  /**
+   * 在内存中创建并初始化一个任务。
+   * 
+   * @param cat - 任务类型，支持 autojs6、shell 或 update
+   * @param script - 待执行脚本或命令内容
+   * @param timeout - 任务超时时间(秒)
+   * @returns 创建完成的 Task 对象实例
+   */
+  public createTask(cat: 'autojs6' | 'shell' | 'update', script: string, timeout: number): Task {
     const taskId = crypto.randomUUID();
     const createdAt = Date.now();
     const task: Task = {
@@ -42,14 +61,33 @@ export class TaskService {
     return task;
   }
 
+  /**
+   * 根据任务 ID 获取任务对象。
+   * 
+   * @param taskId - 任务 ID
+   * @returns 匹配的 Task 对象，未找到则返回 undefined
+   */
   public getTask(taskId: string): Task | undefined {
     return this.tasks[taskId];
   }
 
+  /**
+   * 获取系统中所有的任务列表。
+   * 
+   * @returns 包含所有 Task 的数组
+   */
   public getAllTasks(): Task[] {
     return Object.values(this.tasks);
   }
 
+  /**
+   * 更新任务状态，并在任务完成时通过 MQTT 触发移动端本地资源的清理。
+   * 
+   * @param taskId - 任务 ID
+   * @param status - 更新后的状态，如 SUCCESS 或 FAILURE
+   * @param message - 可选的状态详情信息
+   * @returns 是否成功更新（如果任务不存在或已结束则返回 false）
+   */
   public updateTaskStatus(taskId: string, status: 'SUCCESS' | 'FAILURE', message?: string): boolean {
     const task = this.tasks[taskId];
     if (!task) return false;
@@ -66,6 +104,9 @@ export class TaskService {
     return false;
   }
 
+  /**
+   * 启动任务超时轮询检查器，用于检测并强退失去响应的超时任务。
+   */
   private startTimeoutChecker() {
     setInterval(() => {
       const now = Date.now();
