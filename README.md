@@ -81,7 +81,15 @@ Upon startup, the console will print:
 
 #### Start Mobile Client (Termux)
 
-Copy the `mobile/` folder into your phone's Termux workspace and run:
+Copy the `mobile/` folder into your phone's Termux workspace.
+
+To support **remote self-update and self-restart** of the mobile client, it is highly recommended to run it with the following **Shell loop daemon** (which will automatically restart the client daemon when it pulls git updates and exits):
+
+```bash
+while true; do pnpm start; sleep 2; done
+```
+
+Alternatively, you can start it with the traditional single-run command (but it won't support auto-restart after self-updates):
 
 ```bash
 pnpm start
@@ -101,13 +109,15 @@ Upon startup, the console will display:
 
 PC Server provides the following HTTP endpoints:
 
-### 1. Create a Task
+### 1. Create a General Task
 
 - **URL**: `POST /api/tasks`
 - **Content-Type**: `application/json`
 - **Request Body**:
-  - `script` (string, required): The JavaScript script to execute in Auto.js.
+  - `cat` (string, optional, default: `autojs6`): Task category. Can be set to `autojs6` (runs in Auto.JS6 UI) or `shell` (runs directly in Termux shell).
+  - `script` (string, required): The script content or Shell commands to execute.
   - `timeout` (number, optional, default: 30): Timeout duration in seconds, after which mobile client kills the task.
+  - `useRoot` (boolean, optional, default: false): Only effective when `cat === 'shell'`. Whether to run the command with Root privilege (`su -c`).
 - **Testing Scripts**:
   You can run `test/scripts/test_browser.js` to dispatch a task that opens Chrome, searches on Baidu, scrapes DOM text contents, and returns the result:
 
@@ -132,41 +142,108 @@ PC Server provides the following HTTP endpoints:
 - **Response**:
   ```json
   {
-    "success": true,
-    "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "status": "EXECUTING"
+    "ok": true,
+    "message": "Task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
   }
   ```
 
-### 2. Query Task Status
+### 2. Dispatch Task to Fetch App Package List
+
+- **URL**: `POST /api/apps/task`
+- **Content-Type**: `application/json`
+- **Query Parameters**:
+  - `type` (string, optional, default: `all`): Filter app type. Options: `all` (all packages), `third` (third-party apps only), `system` (system apps only).
+  - `timeout` (number, optional, default: 15): Timeout duration in seconds.
+- **Description**: Asynchronously dispatches the shell command `pm list packages` to retrieve application packages, which runs extremely fast. Upon success, the package list (separated by newlines) will be stored in the task's `message` field.
+- **Response**:
+  ```json
+  {
+    "ok": true,
+    "message": "Apps package task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 3. Dispatch Task to Fetch App Details List
+
+- **URL**: `POST /api/apps/details-task`
+- **Content-Type**: `application/json`
+- **Query Parameters**:
+  - `timeout` (number, optional, default: 30): Timeout duration in seconds.
+- **Description**: Asynchronously dispatches an Auto.js script that queries the Android `PackageManager` via reflection to fetch detailed information (including localized label name, package name, version, and system flag) as a JSON string. Upon success, the JSON data will be stored in the task's `message` field.
+- **Response**:
+  ```json
+  {
+    "ok": true,
+    "message": "Apps details task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 4. Dispatch Task to Update Mobile Client
+
+- **URL**: `POST /api/devices/update-task`
+- **Content-Type**: `application/json`
+- **Query Parameters**:
+  - `timeout` (number, optional, default: 30): Timeout duration in seconds.
+- **Description**: Asynchronously dispatches the self-update task (`cat = update`). The mobile client will pull git updates via `git reset --hard HEAD && git pull`, post back the update log, and exit (triggering the outer loop to restart the client).
+- **Response**:
+  ```json
+  {
+    "ok": true,
+    "message": "Mobile self-update task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 5. Query Task Status
 
 - **URL**: `GET /api/tasks/:taskId`
 - **Response**:
   - If task exists:
     ```json
     {
-      "success": true,
-      "task": {
-        "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "script": "...",
-        "status": "SUCCESS", // Options: EXECUTING, SUCCESS, FAILURE, MISSING
-        "timeout": 60,
-        "createdAt": 1720601234567,
-        "message": "Script execution succeeded"
+      "ok": true,
+      "message": "Retrieve task status successfully",
+      "data": {
+        "task": {
+          "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+          "cat": "shell",
+          "script": "pm list packages -3",
+          "status": "SUCCESS", // Options: EXECUTING, SUCCESS, FAILURE, MISSING
+          "timeout": 15,
+          "createdAt": 1720601234567,
+          "message": "package:com.tencent.mm\npackage:com.eg.android.Alipay"
+        }
       }
     }
     ```
   - If task is missing:
     ```json
     {
-      "success": true,
-      "taskId": "invalid-id",
-      "status": "MISSING",
-      "message": "Task not found in system"
+      "ok": true,
+      "message": "Task not found in system",
+      "data": {
+        "taskId": "invalid-id",
+        "status": "MISSING"
+      }
     }
     ```
 
-### 3. Get All Tasks
+### 6. Get All Tasks
 
 - **URL**: `GET /api/tasks`
 
