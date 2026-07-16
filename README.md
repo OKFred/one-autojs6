@@ -209,7 +209,52 @@ PC Server provides the following HTTP endpoints:
   }
   ```
 
-### 5. Query Task Status
+### 5. Dispatch Task to Check App Update Status
+
+- **URL**: `POST /api/apps/check-update-task`
+- **Content-Type**: `application/json`
+- **Query Parameters**:
+  - `packageName` (string, optional, default: `org.autojs.autojs6`): App package name to inspect.
+  - `latestVersion` (string, optional): Latest version name (e.g., `6.4.0`).
+  - `latestVersionCode` (integer, optional): Latest version code (e.g., `60400`).
+  - `timeout` (number, optional, default: 15): Timeout in seconds.
+- **Description**: Asynchronously dispatches an Auto.js script that queries the Android PackageInfo via reflection and compares local version details with the specified latest version. Upon success, the comparison results (in JSON string format) will be sent back and stored in the task's `message` field.
+- **Response**:
+  ```json
+  {
+    "ok": true,
+    "message": "App check update task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 6. Dispatch Task to Execute App Remote Update
+
+- **URL**: `POST /api/apps/execute-update-task`
+- **Content-Type**: `application/json`
+- **Query Parameters**:
+  - `packageName` (string, optional, default: `org.autojs.autojs6`): Package name to update.
+  - `mode` (string, required, `download` or `store`): Update strategy. `download` will download APK and trigger package installation; `store` will launch app store page and automatically click update button.
+  - `downloadUrl` (string, required when `mode=download`): APK download address.
+  - `storePackage` (string, optional): Specific app store package name (e.g. `com.android.vending`).
+  - `timeout` (number, optional, default: 120): Timeout in seconds.
+- **Description**: Asynchronously dispatches the update automated execution script. In download mode, to ensure connection robustness, the success callback is sent back **immediately after downloading is complete**, right before invoking the system package installer.
+- **Response**:
+  ```json
+  {
+    "ok": true,
+    "message": "App execute update task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 7. Query Task Status
 
 - **URL**: `GET /api/tasks/:taskId`
 - **Response**:
@@ -243,7 +288,7 @@ PC Server provides the following HTTP endpoints:
     }
     ```
 
-### 6. Get All Tasks
+### 8. Get All Tasks
 
 - **URL**: `GET /api/tasks`
 

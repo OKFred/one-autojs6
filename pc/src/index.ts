@@ -10,7 +10,9 @@ import {
   getTaskStatus,
   createAppsTask,
   createAppsDetailsTask,
-  createUpdateTask
+  createUpdateTask,
+  checkUpdateTask,
+  executeUpdateTask
 } from './controller/index.js';
 
 dotenv.config();
@@ -64,6 +66,12 @@ app.post('/api/apps/details-task', createAppsDetailsTask);
 
 // 下发设备自更新任务
 app.post('/api/devices/update-task', createUpdateTask);
+
+// 检查宿主应用版本与更新状态
+app.post('/api/apps/check-update-task', checkUpdateTask);
+
+// 执行宿主应用更新自动化
+app.post('/api/apps/execute-update-task', executeUpdateTask);
 
 // 启动 Hono 服务器
 serve({

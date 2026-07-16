@@ -5,3 +5,5 @@ export { getTaskStatus } from './getTaskStatus.js';
 export { createAppsTask } from './createAppsTask.js';
 export { createAppsDetailsTask } from './createAppsDetailsTask.js';
 export { createUpdateTask } from './createUpdateTask.js';
+export { checkUpdateTask } from './checkUpdateTask.js';
+export { executeUpdateTask } from './executeUpdateTask.js';

@@ -209,7 +209,52 @@ PC 服务端提供了以下 HTTP 接口：
   }
   ```
 
-### 5. 查询任务状态
+### 5. 下发检查宿主应用更新任务
+
+- **URL**: `POST /api/apps/check-update-task`
+- **Content-Type**: `application/json`
+- **Query 参数**:
+  - `packageName` (string, 可选, 默认 `org.autojs.autojs6`): 要检查的 App 包名。
+  - `latestVersion` (string, 可选): 最新版版本号名称（如 `6.4.0`）。
+  - `latestVersionCode` (integer, 可选): 最新版版本号代码（如 `60400`）。
+  - `timeout` (number, 可选, 默认 15): 任务超时时间。
+- **说明**: 异步下发反射读取手机端应用当前安装版本与最新版比对的脚本。检测成功后，结果（JSON 字符串）回传至任务 `message`。
+- **返回响应**:
+  ```json
+  {
+    "ok": true,
+    "message": "App check update task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 6. 下发执行宿主应用更新任务
+
+- **URL**: `POST /api/apps/execute-update-task`
+- **Content-Type**: `application/json`
+- **Query 参数**:
+  - `packageName` (string, 可选, 默认 `org.autojs.autojs6`): 要更新的 App 包名。
+  - `mode` (string, 必选, 支持 `download` 或 `store`): 更新模式，`download` 代表直接从物理链接下载 APK 并唤起覆盖安装，`store` 代表跳转应用商店执行无障碍点击更新。
+  - `downloadUrl` (string, 当 `mode=download` 时必填): APK 下载链接。
+  - `storePackage` (string, 可选): 应用商店包名（如 Google Play `com.android.vending`）。
+  - `timeout` (number, 可选, 默认 120): 任务执行超时时间（秒）。
+- **说明**: 异步下发执行 App 更新的脚本。为保障连接，在直接下载安装模式下，APK 下载完毕后将**立刻回传 SUCCESS 结果**，之后再拉起系统覆盖安装界面。
+- **返回响应**:
+  ```json
+  {
+    "ok": true,
+    "message": "App execute update task dispatched successfully",
+    "data": {
+      "taskId": "a9a3b68f-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "status": "EXECUTING"
+    }
+  }
+  ```
+
+### 7. 查询任务状态
 
 - **URL**: `GET /api/tasks/:taskId`
 - **返回响应**:
@@ -243,7 +288,7 @@ PC 服务端提供了以下 HTTP 接口：
     }
     ```
 
-### 6. 获取所有任务列表
+### 8. 获取所有任务列表
 
 - **URL**: `GET /api/tasks`
 
