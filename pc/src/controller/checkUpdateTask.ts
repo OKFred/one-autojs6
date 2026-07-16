@@ -1,5 +1,11 @@
 import { Context } from 'hono';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { AutojsService } from '../service/autojs.service.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const autojsService = AutojsService.getInstance();
 
@@ -81,37 +87,13 @@ export async function checkUpdateTask(c: Context) {
     const PORT = parseInt(process.env.PORT || '3000', 10);
     const PC_IP = process.env.PC_IP || '';
 
-    // 动态生成比对脚本，在末尾直接赋值给 taskResult 即可由 client 自动回传
-    const script = `
-var context = context || app.context;
-var packageName = "${packageName}";
-var pm = context.getPackageManager();
-var packageInfo = pm.getPackageInfo(packageName, 0);
-var currentVersionName = packageInfo.versionName;
-var currentVersionCode = packageInfo.versionCode;
-
-var latestVersion = "${latestVersion}";
-var latestVersionCodeStr = "${latestVersionCode}";
-var latestVersionCode = latestVersionCodeStr ? parseInt(latestVersionCodeStr, 10) : 0;
-
-var canUpdate = false;
-if (latestVersionCode > 0) {
-    canUpdate = latestVersionCode > currentVersionCode;
-} else if (latestVersion) {
-    canUpdate = latestVersion !== currentVersionName;
-}
-
-var result = {
-    packageName: packageName,
-    currentVersionName: currentVersionName,
-    currentVersionCode: currentVersionCode,
-    latestVersionName: latestVersion || currentVersionName,
-    latestVersionCode: latestVersionCode || currentVersionCode,
-    canUpdate: canUpdate
-};
-
-taskResult = JSON.stringify(result);
-`;
+    // 读取并渲染外部脚本模板
+    const templatePath = path.join(__dirname, '../scripts/check_app_update.js');
+    let script = fs.readFileSync(templatePath, 'utf8');
+    script = script
+      .replace('{{packageName}}', packageName)
+      .replace('{{latestVersion}}', latestVersion)
+      .replace('{{latestVersionCode}}', latestVersionCode);
 
     const task = await autojsService.dispatchTask(script, timeout, PC_IP, PORT);
 

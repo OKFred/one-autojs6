@@ -1,5 +1,11 @@
 import { Context } from 'hono';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { AutojsService } from '../service/autojs.service.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const autojsService = AutojsService.getInstance();
 
@@ -107,108 +113,23 @@ export async function executeUpdateTask(c: Context) {
       return c.json({ ok: false, message: 'downloadUrl is required when mode is "download"', data: {} }, 400);
     }
 
-
     const PORT = parseInt(process.env.PORT || '3000', 10);
     const PC_IP = process.env.PC_IP || '';
 
     let script = '';
 
     if (mode === 'download') {
-      // 下载安装包并拉起系统安装界面
-      script = `
-var downloadUrl = "${downloadUrl}";
-var targetPath = "/sdcard/Download/update_temp.apk";
-
-console.log("Start downloading APK from: " + downloadUrl);
-var urlObj = new java.net.URL(downloadUrl);
-var conn = urlObj.openConnection();
-conn.connect();
-var input = conn.getInputStream();
-var output = new java.io.FileOutputStream(targetPath);
-var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 4096);
-var len;
-while ((len = input.read(buffer)) !== -1) {
-    output.write(buffer, 0, len);
-}
-output.flush();
-output.close();
-input.close();
-console.log("APK download complete. Saved to: " + targetPath);
-
-// 发起覆盖安装意图
-app.installApp(new java.io.File(targetPath));
-taskResult = "APK downloaded successfully and installation dialog is launched.";
-`;
+      // 从外部读取下载更新模板并填充占位符
+      const templatePath = path.join(__dirname, '../scripts/download_app_update.js');
+      script = fs.readFileSync(templatePath, 'utf8');
+      script = script.replace('{{downloadUrl}}', downloadUrl);
     } else {
-      // 应用商店跳转并无障碍点击更新
-      // 增强兼容性：同时通过 text 和 desc (content-description) 进行查找
-      script = `
-auto.waitFor();
-
-var packageName = "${packageName}";
-var storePackage = "${storePackage}";
-
-console.log("Launching app store for: " + packageName);
-var intent = new Intent(Intent.ACTION_VIEW);
-intent.setData(android.net.Uri.parse("market://details?id=" + packageName));
-if (storePackage) {
-    intent.setPackage(storePackage);
-}
-app.startActivity(intent);
-
-// 智能物理坐标与控件树兼容点击函数
-function performClick(uiObject) {
-    if (!uiObject) return false;
-    
-    // 1. 尝试向上寻找可点击的父节点
-    var p = uiObject;
-    while (p && !p.isClickable()) {
-        p = p.parent();
-    }
-    if (p && p.click()) {
-        console.log("Clicked clickable element successfully.");
-        return true;
-    }
-    
-    // 2. 备用手段：暴力物理坐标中点点击
-    var bounds = uiObject.bounds();
-    if (bounds) {
-        var x = bounds.centerX();
-        var y = bounds.centerY();
-        if (x > 0 && y > 0) {
-            console.log("Fallback to coordinate click: (" + x + ", " + y + ")");
-            return click(x, y);
-        }
-    }
-    return false;
-}
-
-// 循环探测并点击更新按钮
-var clicked = false;
-var keywords = ["更新", "升级", "Update", "Upgrade"];
-for (var i = 0; i < 15; i++) {
-    for (var j = 0; j < keywords.length; j++) {
-        var btn = text(keywords[j]).findOne(500) || desc(keywords[j]).findOne(500);
-        if (btn && performClick(btn)) {
-            clicked = true;
-            break;
-        }
-        var btnContains = textContains(keywords[j]).findOne(500) || descContains(keywords[j]).findOne(500);
-        if (btnContains && performClick(btnContains)) {
-            clicked = true;
-            break;
-        }
-    }
-    if (clicked) break;
-    sleep(1000);
-}
-
-if (clicked) {
-    taskResult = "Successfully launched app store page and clicked the update button.";
-} else {
-    throw new Error("Update button not found in app store page within 15 seconds.");
-}
-`;
+      // 从外部读取应用商店无障碍点击更新模板并填充占位符
+      const templatePath = path.join(__dirname, '../scripts/store_app_update.js');
+      script = fs.readFileSync(templatePath, 'utf8');
+      script = script
+        .replace('{{packageName}}', packageName)
+        .replace('{{storePackage}}', storePackage);
     }
 
     const task = await autojsService.dispatchTask(script, timeout, PC_IP, PORT);
