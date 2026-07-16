@@ -84,7 +84,7 @@ pnpm --filter one-autojs6-pc dev
 将 `mobile/` 文件夹拷贝到手机的 Termux 路径中，在 `mobile/` 目录下，直接运行我们提供的守护与自更新脚本启动：
 
 ```bash
-bash run_client.sh
+bash node_daemon.sh
 ```
 
 该脚本会自动拉起 Node 客户端。当您通过 PC 接口下发自更新任务时，守护脚本会拦截客户端发出的退出代码 `99`，自动切换到根目录执行 `git pull`，并自动重启客户端。此外，它也具备进程意外崩溃后自动延时拉起的功能。
@@ -192,7 +192,7 @@ PC 服务端提供了以下 HTTP 接口：
 - **Content-Type**: `application/json`
 - **Query 参数**:
   - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。
-- **说明**: 异步下发 `cat = update` 的自更新命令。移动端 Node 客户端在向服务端回送 SUCCESS 回调后，延时 1.5 秒以状态码 `99` 主动退出进程。外层 Shell 守护脚本（`run_client.sh`）拦截到状态码 `99` 后，自动切换到项目根目录执行 `git pull` 以确保文件操作安全，并自动重新拉起客户端实现平滑重启。
+- **说明**: 异步下发 `cat = update` 的自更新命令。移动端 Node 客户端在向服务端回送 SUCCESS 回调后，延时 1.5 秒以状态码 `99` 主动退出进程。外层 Shell 守护脚本（`node_daemon.sh`）拦截到状态码 `99` 后，自动切换到项目根目录执行 `git pull` 以确保文件操作安全，并自动重新拉起客户端实现平滑重启。
 - **返回响应**:
   ```json
   {

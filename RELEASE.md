@@ -10,10 +10,10 @@ This release introduces major architectural refactoring and introduces advanced 
 ## Key Features & Enhancements / 核心功能与优化
 
 ### 1. Remote Update & Auto-Restart for Mobile Client / 移动端守护进程自更新与平滑重启
-- **Decoupled Architecture**: Disassociated update & git pull logic from the Node process to the host daemon script `run_client.sh`, preventing read/write locks on the running JS runtime.
+- **Decoupled Architecture**: Disassociated update & git pull logic from the Node process to the host daemon script `node_daemon.sh`, preventing read/write locks on the running JS runtime.
 - **Exit Code 99 Signaling**: Client posts callback SUCCESS and exits with exit code `99`. The shell daemon captures it, runs Git reset/pull at the root repository, and automatically respawns the client.
 - **Crash Recovery**: The daemon handles crashes by waiting 5 seconds and auto-relaunching, while normal shutdowns (code 0) terminate gracefully.
-- **Node-Shell 进程级解耦**：将 Git 拉取与依赖安装从 Node 进程内剥离，交由外部守护脚本 `run_client.sh` 执行，彻底根除代码读写冲突与环境被占用导致的异常。
+- **Node-Shell 进程级解耦**：将 Git 拉取与依赖安装从 Node 进程内剥离，交由外部守护脚本 `node_daemon.sh` 执行，彻底根除代码读写冲突与环境被占用导致的异常。
 - **状态码 99 机制**：客户端在成功回传回调后以退出码 `99` 退出进程，由守护脚本拦截，自动回退到项目根目录安全执行 Git 升级并无缝重新启动。
 - **崩溃自动恢复**：守护脚本同时负责了意外崩溃后延时 5 秒自动重启，以及正常退出码 `0` 的安全关闭。
 
