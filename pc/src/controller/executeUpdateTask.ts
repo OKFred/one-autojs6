@@ -107,11 +107,6 @@ export async function executeUpdateTask(c: Context) {
       return c.json({ ok: false, message: 'downloadUrl is required when mode is "download"', data: {} }, 400);
     }
 
-    // 清洗包名参数，去除可能带入的 "package:" 前缀
-    let cleanPackageName = packageName.trim();
-    if (cleanPackageName.startsWith('package:')) {
-      cleanPackageName = cleanPackageName.substring(8);
-    }
 
     const PORT = parseInt(process.env.PORT || '3000', 10);
     const PC_IP = process.env.PC_IP || '';
@@ -150,7 +145,7 @@ taskResult = "APK downloaded successfully and installation dialog is launched.";
       script = `
 auto.waitFor();
 
-var packageName = "${cleanPackageName}";
+var packageName = "${packageName}";
 var storePackage = "${storePackage}";
 
 console.log("Launching app store for: " + packageName);
