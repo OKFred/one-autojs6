@@ -10,12 +10,12 @@ This release introduces major architectural refactoring and introduces advanced 
 ## Key Features & Enhancements / 核心功能与优化
 
 ### 1. Remote Update & Auto-Restart for Mobile Client / 移动端守护进程自更新与平滑重启
-- **Git Self-Update**: Added asynchronous update tasks (`cat = update`) executing `git reset --hard HEAD && git pull`.
-- **Safe Daemon Restart**: Implemented a delay-exit daemon mechanism (`process.exit(0)`) after posting back git stdout logs, which cooperates with the outer Shell loop daemon (`while true; do pnpm start; sleep 2; done`) to achieve a seamless code reload without MQTT connection deadlocks.
-- **CWD Path Isolation**: Resolved parent-directory Git repository retrieval errors by explicitly locking Git execution to the absolute `projectRootDir`, ensuring 100% path independence.
-- **Git 远程自更新**：支持下发异步自更新任务，执行 Git 强制重置与代码拉取。
-- **平滑自重启**：在将 Git 更新日志优先回调上传给 PC 端后，进程延时 1.5 秒主动退出，配合移动端外层 Shell 守护循环自动将其拉起，实现无死锁的平滑代码热重载。
-- **目录隔离保障**：强制指定执行路径为相对于脚本的绝对项目根目录，彻底解决了由于 `cd mobile/` 改变 CWD 导致 Git 找不到父级 `.git` 仓库的路径报错隐患。
+- **Decoupled Architecture**: Disassociated update & git pull logic from the Node process to the host daemon script `run_client.sh`, preventing read/write locks on the running JS runtime.
+- **Exit Code 99 Signaling**: Client posts callback SUCCESS and exits with exit code `99`. The shell daemon captures it, runs Git reset/pull at the root repository, and automatically respawns the client.
+- **Crash Recovery**: The daemon handles crashes by waiting 5 seconds and auto-relaunching, while normal shutdowns (code 0) terminate gracefully.
+- **Node-Shell 进程级解耦**：将 Git 拉取与依赖安装从 Node 进程内剥离，交由外部守护脚本 `run_client.sh` 执行，彻底根除代码读写冲突与环境被占用导致的异常。
+- **状态码 99 机制**：客户端在成功回传回调后以退出码 `99` 退出进程，由守护脚本拦截，自动回退到项目根目录安全执行 Git 升级并无缝重新启动。
+- **崩溃自动恢复**：守护脚本同时负责了意外崩溃后延时 5 秒自动重启，以及正常退出码 `0` 的安全关闭。
 
 ### 2. Host App Version Check & Remote Update / 宿主 App 版本检查与执行更新
 - **App Version Inspection (`POST /api/apps/check-update-task`)**: Dispatches a lightweight reflection script to inspect target app version details (`versionName` & `versionCode`) and performs a comparative update analysis against latest release metadata.

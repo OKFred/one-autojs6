@@ -256,28 +256,15 @@ try {
           tempFilePath: ''
         };
 
-        // 3. 执行 Git 更新命令
-        const updateCmd = 'git reset --hard HEAD && git pull';
-        console.log(`[CLIENT] Executing update command: ${updateCmd}`);
-        exec(updateCmd, { cwd: projectRootDir }, (err: any, stdout: string, stderr: string) => {
-          if (!activeTasks[taskId]) return;
+        // 3. 发送更新回调，随后延时退出以状态码 99 交给外层 Shell 守护脚本更新
+        console.log(`[CLIENT] Dispatching success callback prior to exit...`);
+        sendHttpCallback(callbackUrl, taskId, 'SUCCESS', 'Update signal triggered. Client is exiting with status code 99.');
 
+        setTimeout(() => {
           cleanupTask(taskId);
-
-          if (err) {
-            console.error(`[CLIENT] Self-Update execution failed:`, err.message);
-            sendHttpCallback(callbackUrl, taskId, 'FAILURE', stderr || err.message);
-          } else {
-            console.log(`[CLIENT] Self-Update execution succeeded for task ${taskId}`);
-            sendHttpCallback(callbackUrl, taskId, 'SUCCESS', stdout);
-            
-            // 延时 1.5 秒安全退出进程以触发外层守护的重启
-            console.log('[CLIENT] Initiating self-restart in 1.5 seconds...');
-            setTimeout(() => {
-              process.exit(0);
-            }, 1500);
-          }
-        });
+          console.log('[CLIENT] Exiting with code 99 for self-update...');
+          process.exit(99);
+        }, 1500);
       } else {
         console.log(`[CLIENT] Ignored task ${taskId} because unknown cat=${cat}`);
       }

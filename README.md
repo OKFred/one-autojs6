@@ -83,17 +83,13 @@ Upon startup, the console will print:
 
 Copy the `mobile/` folder into your phone's Termux workspace.
 
-To support **remote self-update and self-restart** of the mobile client, it is highly recommended to run it with the following **Shell loop daemon** (which will automatically restart the client daemon when it pulls git updates and exits):
+To support **remote self-update and self-restart** of the mobile client, directly start it with our provided daemon shell script under `mobile/`:
 
 ```bash
-while true; do pnpm start; sleep 2; done
+bash run_client.sh
 ```
 
-Alternatively, you can start it with the traditional single-run command (but it won't support auto-restart after self-updates):
-
-```bash
-pnpm start
-```
+This script automatically pulls and starts the Node client. When you dispatch a self-update task via PC Server, the daemon script captures the exit code `99` from Node.js, automatically switches to the root project directory to execute `git pull`, and smoothly restarts the client. It also handles automatic delayed restarts in case the process crashes unexpectedly.
 
 Upon startup, the console will display:
 
@@ -196,7 +192,7 @@ PC Server provides the following HTTP endpoints:
 - **Content-Type**: `application/json`
 - **Query Parameters**:
   - `timeout` (number, optional, default: 30): Timeout duration in seconds.
-- **Description**: Asynchronously dispatches the self-update task (`cat = update`). The mobile client will pull git updates via `git reset --hard HEAD && git pull`, post back the update log, and exit (triggering the outer loop to restart the client).
+- **Description**: Asynchronously dispatches the self-update task (`cat = update`). The mobile Node client sends a SUCCESS callback and exits with status code `99` after 1.5s. The outer daemon script (`run_client.sh`) intercepts the exit code, pulls repository updates under the root folder for safety, and automatically restarts the client.
 - **Response**:
   ```json
   {
