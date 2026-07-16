@@ -17,7 +17,7 @@ const autojsService = AutojsService.getInstance();
  *         schema:
  *           type: string
  *           default: org.autojs.autojs6
- *         description: 要更新的应用包名
+ *         description: 要更新的应用包名，若带 "package:" 前缀，服务端将自动清洗
  *       - in: query
  *         name: mode
  *         required: true
@@ -107,6 +107,12 @@ export async function executeUpdateTask(c: Context) {
       return c.json({ ok: false, message: 'downloadUrl is required when mode is "download"', data: {} }, 400);
     }
 
+    // 清洗包名参数，去除可能带入的 "package:" 前缀
+    let cleanPackageName = packageName.trim();
+    if (cleanPackageName.startsWith('package:')) {
+      cleanPackageName = cleanPackageName.substring(8);
+    }
+
     const PORT = parseInt(process.env.PORT || '3000', 10);
     const PC_IP = process.env.PC_IP || '';
 
@@ -140,10 +146,11 @@ taskResult = "APK downloaded successfully and installation dialog is launched.";
 `;
     } else {
       // 应用商店跳转并无障碍点击更新
+      // 增强兼容性：同时通过 text 和 desc (content-description) 进行查找
       script = `
 auto.waitFor();
 
-var packageName = "${packageName}";
+var packageName = "${cleanPackageName}";
 var storePackage = "${storePackage}";
 
 console.log("Launching app store for: " + packageName);
@@ -159,13 +166,14 @@ var clicked = false;
 var keywords = ["更新", "升级", "Update", "Upgrade"];
 for (var i = 0; i < 15; i++) {
     for (var j = 0; j < keywords.length; j++) {
-        var btn = text(keywords[j]).findOne(1000);
+        // 兼容一般控件 text 属性与特殊无障碍 desc (content-description) 属性
+        var btn = text(keywords[j]).findOne(1000) || desc(keywords[j]).findOne(1000);
         if (btn) {
             btn.click();
             clicked = true;
             break;
         }
-        var btnContains = textContains(keywords[j]).findOne(500);
+        var btnContains = textContains(keywords[j]).findOne(500) || descContains(keywords[j]).findOne(500);
         if (btnContains) {
             var p = btnContains;
             while (p && !p.isClickable()) {
