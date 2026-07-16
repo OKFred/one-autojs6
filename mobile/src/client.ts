@@ -3,6 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRootDir = path.resolve(__dirname, '../../');
 
 dotenv.config();
 
@@ -112,7 +117,7 @@ try {
 
         // 3. 将脚本先写入 Termux 本地私有目录下的临时文件（防 EPERM 权限报错）
         const tempFileName = `autojs_temp_${taskId}.js`;
-        const localTempPath = path.join(process.cwd(), `local_${tempFileName}`);
+        const localTempPath = path.join(__dirname, `local_${tempFileName}`);
         const targetTempPath = path.join(TEMP_SCRIPT_DIR, tempFileName);
         
         try {
@@ -254,7 +259,7 @@ try {
         // 3. 执行 Git 更新命令
         const updateCmd = 'git reset --hard HEAD && git pull';
         console.log(`[CLIENT] Executing update command: ${updateCmd}`);
-        exec(updateCmd, (err: any, stdout: string, stderr: string) => {
+        exec(updateCmd, { cwd: projectRootDir }, (err: any, stdout: string, stderr: string) => {
           if (!activeTasks[taskId]) return;
 
           cleanupTask(taskId);
