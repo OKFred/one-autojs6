@@ -13,7 +13,7 @@ const autojsService = AutojsService.getInstance();
  * 异步下发“执行宿主应用远程更新”任务。
  * 
  * @swagger
- * /api/apps/execute-update-task:
+ * /api/apps/execute-update:
  *   post:
  *     tags: [应用更新]
  *     summary: 异步下发执行应用更新任务
@@ -97,7 +97,7 @@ const autojsService = AutojsService.getInstance();
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
-export async function executeUpdateTask(c: Context) {
+export async function executeUpdate(c: Context) {
   try {
     const packageName = c.req.query('packageName') || 'org.autojs.autojs6';
     const mode = c.req.query('mode') || '';

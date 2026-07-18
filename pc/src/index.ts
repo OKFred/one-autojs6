@@ -11,11 +11,11 @@ import {
   handleCallback,
   getAllTasks,
   getTaskStatus,
-  createAppsTask,
-  createAppsDetailsTask,
-  createUpdateTask,
-  checkUpdateTask,
-  executeUpdateTask
+  createApps,
+  createAppsDetails,
+  createUpdate,
+  checkUpdate,
+  executeUpdate
 } from './controller/index.js';
 
 dotenv.config();
@@ -62,19 +62,19 @@ app.get('/api/tasks', getAllTasks);
 app.get('/api/tasks/:taskId', getTaskStatus);
 
 // 下发获取基础应用列表任务 (包名)
-app.post('/api/apps/task', createAppsTask);
+app.post('/api/apps', createApps);
 
 // 下发获取详细应用信息任务 (名称、包名、版本等)
-app.post('/api/apps/details-task', createAppsDetailsTask);
+app.post('/api/apps/details', createAppsDetails);
 
 // 下发设备自更新任务
-app.post('/api/devices/update-task', createUpdateTask);
+app.post('/api/devices/update', createUpdate);
 
 // 检查宿主应用版本与更新状态
-app.post('/api/apps/check-update-task', checkUpdateTask);
+app.post('/api/apps/check-update', checkUpdate);
 
 // 执行宿主应用更新自动化
-app.post('/api/apps/execute-update-task', executeUpdateTask);
+app.post('/api/apps/execute-update', executeUpdate);
 
 // 暴露给前端的配置接口
 app.get('/api/config', (c) => {

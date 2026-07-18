@@ -207,11 +207,11 @@
       
       <div class="control-group">
         <select v-model="selectedCommand">
-          <option value="/api/apps/task?type=all">获取应用包名列表 (apps/task)</option>
-          <option value="/api/apps/details-task?type=all">获取详细应用信息 (apps/details-task)</option>
-          <option value="/api/devices/update-task">设备自更新 (devices/update-task)</option>
-          <option value="/api/apps/check-update-task">检查宿主更新 (check-update-task)</option>
-          <option value="/api/apps/execute-update-task">执行宿主更新 (execute-update-task)</option>
+          <option value="/api/apps">获取应用列表 (apps)</option>
+          <option value="/api/apps/details">获取详细应用信息 (apps/details)</option>
+          <option value="/api/devices/update">设备自更新 (devices/update)</option>
+          <option value="/api/apps/check-update">检查宿主更新 (apps/check-update)</option>
+          <option value="/api/apps/execute-update">执行宿主更新 (apps/execute-update)</option>
         </select>
         <button @click="sendCommand" :disabled="isSending">
           {{ isSending ? '发送中...' : '发送指令' }}

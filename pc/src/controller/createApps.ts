@@ -1,28 +1,34 @@
 import { Context } from 'hono';
-import { TaskService } from '../service/task.service.js';
-import { MqttService } from '../service/mqtt.service.js';
+import { ShellService } from '../service/shell.service.js';
 
-const taskService = TaskService.getInstance();
+const shellService = ShellService.getInstance();
 
 /**
- * 下发移动端自更新与重启任务。
+ * 异步下发获取设备应用包名列表的任务。
  * 
  * @swagger
- * /api/devices/update-task:
+ * /api/apps:
  *   post:
- *     tags: [设备管理]
- *     summary: 下发移动端自更新任务
- *     description: 下发 `cat = update` 的任务，移动端在 Termux 本地执行 `git reset --hard HEAD && git pull`，成功后回传结果并平滑自重启，返回 taskId 供轮询。
+ *     tags: [应用管理]
+ *     summary: 异步下发获取设备应用包名任务
+ *     description: 异步下发 Shell 命令 `pm list packages` 获取应用包名，执行极其迅速，返回 taskId 供轮询。
  *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *           enum: [all, third, system]
+ *           default: all
+ *         description: 过滤应用类型：all(全部)、third(第三方应用)、system(系统应用)
  *       - in: query
  *         name: timeout
  *         schema:
  *           type: integer
- *           default: 30
+ *           default: 15
  *         description: 任务超时时间(秒)
  *     responses:
  *       200:
- *         description: 下发成功
+ *         description: 任务下发成功
  *         content:
  *           application/json:
  *             schema:
@@ -40,7 +46,7 @@ const taskService = TaskService.getInstance();
  *                     status:
  *                       type: string
  *       500:
- *         description: 下发失败
+ *         description: 下发任务失败
  *         content:
  *           application/json:
  *             schema:
@@ -56,39 +62,34 @@ const taskService = TaskService.getInstance();
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
-export async function createUpdateTask(c: Context) {
+export async function createApps(c: Context) {
   try {
-    const timeoutStr = c.req.query('timeout') || '30';
+    const type = c.req.query('type') || 'all';
+    const timeoutStr = c.req.query('timeout') || '15';
     const timeout = parseInt(timeoutStr, 10);
+
+    let pmCmd = 'pm list packages';
+    if (type === 'third') {
+      pmCmd = 'pm list packages -3';
+    } else if (type === 'system') {
+      pmCmd = 'pm list packages -s';
+    }
 
     const PORT = parseInt(process.env.PORT || '3000', 10);
     const PC_IP = process.env.PC_IP || '';
 
-    // 创建 update 任务
-    const updateCmd = 'git reset --hard HEAD && git pull';
-    const task = taskService.createTask('update', updateCmd, timeout);
-
-    const payload = {
-      taskId: task.taskId,
-      cat: 'update',
-      script: updateCmd,
-      timeout,
-      callbackUrl: `http://${PC_IP}:${PORT}/api/callback`
-    };
-
-    MqttService.getInstance().publish('autojs6/tasks', payload);
-    console.log(`[TaskController] Dispatched Self-Update task ${task.taskId} to mobile`);
+    const task = await shellService.dispatchTask(pmCmd, timeout, PC_IP, PORT, false);
 
     return c.json({
       ok: true,
-      message: 'Mobile self-update task dispatched successfully',
+      message: 'Apps package task dispatched successfully',
       data: {
         taskId: task.taskId,
         status: task.status
       }
     });
   } catch (err: any) {
-    console.error('[HTTP] Error creating update task:', err);
+    console.error('[HTTP] Error creating apps list task:', err);
     return c.json({ ok: false, message: err.message, data: {} }, 500);
   }
 }
