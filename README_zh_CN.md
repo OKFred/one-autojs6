@@ -11,6 +11,7 @@
 - **PC 端 (pc/)**:
   - 基于 **HonoJS** 运行 HTTP 服务。
   - 内置 **Aedes MQTT Broker** 作为消息中转站。
+  - 提供静态 Dashboard 控制台（通过 Vue 3 + MQTT WebSocket + ws-scrcpy 实现实时的日志和手机画面监控）。
   - 提供任务下发和结果回调 API，并维护内存中的任务执行状态表。
   - 拥有主动轮询机制，若任务超时超过 `timeout + 10s`，自动判定为失败 (`TIMEOUT_MISSING`)。
 - **移动端 (mobile/)**:
@@ -96,6 +97,20 @@ bash node_daemon.sh
 [CLIENT] Subscribed to topic: autojs6/tasks
 [CLIENT] Subscribed to topic: autojs6/status
 ```
+
+### 4. Web 控制台 (Dashboard)
+
+本项目内置了一个直观的 Web 控制台，支持实时查看 MQTT 消息以及手机屏幕（基于 ws-scrcpy）。
+
+1. 下载并安装 `ws-scrcpy` 投屏依赖：
+   ```bash
+   pnpm run scrcpy:install
+   ```
+2. 启动服务（后端 + 投屏）：
+   ```bash
+   pnpm run dev:all
+   ```
+3. 访问控制台：打开浏览器访问 [http://localhost:3000/dashboard/](http://localhost:3000/dashboard/) 即可。
 
 ---
 

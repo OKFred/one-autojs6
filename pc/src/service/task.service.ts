@@ -97,8 +97,8 @@ export class TaskService {
       task.message = message || 'Completed via callback';
       console.log(`[HTTP] Task ${taskId} updated to ${status}. Msg: ${task.message}`);
 
-      // 发布 MQTT 状态更新，通知移动端清理临时文件和定时器
-      MqttService.getInstance().publish('autojs6/status', { taskId, status });
+      // 发布 MQTT 状态更新，通知移动端清理临时文件和定时器，并向前端推送完整结果
+      MqttService.getInstance().publish('autojs6/status', { taskId, status, message: task.message });
       return true;
     }
     return false;
@@ -119,7 +119,7 @@ export class TaskService {
             console.warn(`[TIMEOUT RUNNER] Task ${task.taskId} judged as FAILURE due to timeout.`);
             
             // 虽然判定失败，但依然尝试给移动端发送清理消息以防移动端之后又连接上来
-            MqttService.getInstance().publish('autojs6/status', { taskId: task.taskId, status: 'FAILURE' });
+            MqttService.getInstance().publish('autojs6/status', { taskId: task.taskId, status: 'FAILURE', message: task.message });
           }
         }
       });

@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>实时监控控制台 (设备投屏 + MQTT)</title>
+  <!-- Vue 3 全局构建版本，支持直接在浏览器中使用 -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <!-- MQTT.js 浏览器版本 -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    /* 重置样式与全局布局 */
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      height: 100vh;
+      background-color: #f5f7fa;
+      overflow: hidden;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      width: 100%;
+    }
+
+    /* 顶部导航栏 */
+    .header {
+      background: #ffffff;
+      padding: 10px 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      z-index: 10;
+    }
+    .header h3 {
+      margin: 0;
+      color: #333;
+      font-weight: 600;
+    }
+
+    /* 操控区 */
+    .control-group {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    select, button {
+      padding: 8px 12px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: 1px solid #dcdfe6;
+      outline: none;
+      transition: all 0.3s;
+    }
+    select {
+      background-color: #fff;
+      color: #606266;
+      min-width: 300px;
+    }
+    select:focus {
+      border-color: #409eff;
+    }
+    button {
+      background-color: #409eff;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button:hover:not(:disabled) {
+      background-color: #66b1ff;
+    }
+    button:disabled {
+      background-color: #a0cfff;
+      cursor: not-allowed;
+    }
+
+    /* 主内容区（左右分栏） */
+    .main-content {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* 左侧：包含结果区域与日志区域的容器 */
+    .left-container {
+      flex: 3; /* 占 75% 宽度 */
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #ebeef5;
+      background: #1e1e1e;
+      overflow: hidden;
+      min-height: 0;
+    }
+    
+    /* 左上：任务执行结果展示 */
+    .result-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border-bottom: 2px solid #333;
+      padding: 15px;
+      color: #e6e6e6;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .result-panel h4 {
+      margin: 0 0 10px 0;
+      color: #67c23a;
+      font-weight: 600;
+    }
+    .result-content {
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* 左下：MQTT 日志终端面板 */
+    .left-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      color: #c5c8c6;
+      padding: 15px;
+      overflow-y: auto;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      min-height: 0;
+    }
+    
+    /* 滚动条美化 */
+    .left-container *::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    .left-container *::-webkit-scrollbar-track {
+      background: #1e1e1e;
+    }
+    .left-container *::-webkit-scrollbar-thumb {
+      background: #555;
+      border-radius: 4px;
+    }
+    .left-container *::-webkit-scrollbar-thumb:hover {
+      background: #777;
+    }
+
+    /* 日志单行样式 */
+    .log-entry {
+      margin-bottom: 6px;
+      word-break: break-all;
+    }
+    .log-entry .time {
+      color: #858585;
+      margin-right: 8px;
+    }
+    .log-entry .topic {
+      color: #569cd6;
+      font-weight: bold;
+      margin-right: 8px;
+    }
+    .log-entry .payload {
+      color: #ce9178;
+    }
+    .log-entry.system .topic { color: #dcdcaa; }
+    .log-entry.error .topic { color: #f44336; }
+    .log-entry.http .topic { color: #4ec9b0; }
+
+    /* 右侧：手机投屏面板 (img) */
+    .right-panel {
+      flex: 1; /* 占 25% 宽度 */
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      position: relative;
+      align-items: center;
+      justify-content: center;
+    }
+    .right-panel img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .ws-hint {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 12px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="header">
+      <h3>实时监控控制台</h3>
+      
+      <!-- 占位，将右侧元素推到右边 -->
+      <div style="flex:1"></div>
+      
+      <div class="control-group">
+        <select v-model="selectedCommand">
+          <option value="/api/apps/task?type=all">获取应用包名列表 (apps/task)</option>
+          <option value="/api/apps/details-task?type=all">获取详细应用信息 (apps/details-task)</option>
+          <option value="/api/devices/update-task">设备自更新 (devices/update-task)</option>
+          <option value="/api/apps/check-update-task">检查宿主更新 (check-update-task)</option>
+          <option value="/api/apps/execute-update-task">执行宿主更新 (execute-update-task)</option>
+        </select>
+        <button @click="sendCommand" :disabled="isSending">
+          {{ isSending ? '发送中...' : '发送指令' }}
+        </button>
+      </div>
+    </div>
+    
+    <div class="main-content">
+      <!-- 左侧：执行结果与实时日志 -->
+      <div class="left-container">
+        <!-- 上半部分：任务执行结果 -->
+        <div class="result-panel">
+          <h4>执行结果展现区</h4>
+          <div class="result-content">{{ taskResult || '等待任务结果...' }}</div>
+        </div>
+        
+        <!-- 下半部分：MQTT 实时日志控制台 -->
+        <div class="left-panel" ref="logContainer">
+          <div v-for="(log, index) in logs" :key="index" :class="['log-entry', log.type]">
+            <span class="time">[{{ log.time }}]</span>
+            <span class="topic">{{ log.topic }}</span>
+            <span class="payload">{{ log.payload }}</span>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 手机原生截屏投屏 img -->
+      <div class="right-panel">
+        <div class="ws-hint">本地原生 ADB 截屏流 (约 1 FPS)</div>
+        <img ref="screenImg" alt="Waiting for screen stream..." />
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { createApp, ref, onMounted, nextTick } = Vue;
+
+    createApp({
+      setup() {
+        const logs = ref([]);
+        const logContainer = ref(null);
+        const screenImg = ref(null);
+        const taskResult = ref('');
+        // 默认选中的指令
+        const selectedCommand = ref('/api/apps/task?type=all');
+        const isSending = ref(false);
+
+        // 统一添加日志的方法
+        const appendLog = (type, topic, payload) => {
+          const now = new Date();
+          const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
+          
+          let parsedPayload = payload;
+          try {
+            // 尝试格式化 JSON 字符串
+            const obj = typeof payload === 'string' ? JSON.parse(payload) : payload;
+            parsedPayload = JSON.stringify(obj);
+          } catch(e) {
+            // 解析失败则保持原样
+          }
+
+          logs.value.push({ type, time, topic, payload: parsedPayload });
+          
+          // 限制最大日志行数，避免内存溢出
+          if (logs.value.length > 1000) {
+            logs.value.shift();
+          }
+          
+          // 自动滚动到底部
+          nextTick(() => {
+            if (logContainer.value) {
+              logContainer.value.scrollTop = logContainer.value.scrollHeight;
+            }
+          });
+        };
+
+        // 初始化 MQTT 连接
+        const setupMqtt = async () => {
+          try {
+            // 1. 先通过内部接口获取后端的 WS 端口
+            const res = await fetch('/api/config');
+            const { data } = await res.json();
+            const wsPort = data.wsPort;
+            
+            appendLog('system', 'SYSTEM', `获取到 MQTT WS 端口: ${wsPort}，正在连接...`);
+
+            // 2. 建立 MQTT WebSocket 连接
+            const client = mqtt.connect(`ws://${window.location.hostname}:${wsPort}`);
+            
+            client.on('connect', () => {
+              appendLog('system', 'SYSTEM', '已成功连接到本地 MQTT Broker (WebSocket)。');
+              
+              // 订阅所有主题
+              client.subscribe('#', (err) => {
+                if (err) {
+                  appendLog('error', 'ERROR', `订阅失败: ${err.message}`);
+                } else {
+                  appendLog('system', 'SYSTEM', '已订阅主题: # (接收所有实时消息)');
+                }
+              });
+            });
+
+            client.on('message', (topic, message) => {
+              const msgStr = message.toString();
+              // 收到消息追加到控制台
+              appendLog('mqtt', topic, msgStr);
+
+              // 如果是状态更新主题，尝试提取任务执行结果展示在左上角
+              if (topic === 'autojs6/status') {
+                try {
+                  const data = JSON.parse(msgStr);
+                  if (data && data.status && data.message) {
+                    // 尝试美化 JSON，如果不是 JSON 就直接显示字符串
+                    let formattedMessage = data.message;
+                    try {
+                      formattedMessage = JSON.stringify(JSON.parse(data.message), null, 2);
+                    } catch (e) {}
+                    
+                    taskResult.value = `[任务状态]: ${data.status}\n[任务 ID]: ${data.taskId}\n[返回数据]:\n${formattedMessage}`;
+                  }
+                } catch(e) {}
+              }
+            });
+
+            client.on('error', (error) => {
+              appendLog('error', 'ERROR', error.message || String(error));
+            });
+            
+            client.on('close', () => {
+              appendLog('system', 'SYSTEM', 'MQTT 连接已关闭');
+            });
+            
+          } catch (error) {
+            appendLog('error', 'ERROR', `初始化 MQTT 失败: ${error.message}`);
+          }
+        };
+
+        // 发送 HTTP 指令
+        const sendCommand = async () => {
+          if (isSending.value) return;
+          isSending.value = true;
+          
+          appendLog('http', 'HTTP_REQ', `-> POST ${selectedCommand.value}`);
+          
+          try {
+            const res = await fetch(selectedCommand.value, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await res.json();
+            appendLog('http', 'HTTP_RES', `<- [${res.status}] ${JSON.stringify(data)}`);
+          } catch (e) {
+            appendLog('error', 'HTTP_ERR', `<- 请求失败: ${e.message}`);
+          } finally {
+            isSending.value = false;
+          }
+        };
+
+        // 初始化屏幕推流连接
+        const setupScreenMqtt = () => {
+          const screenWs = new WebSocket(`ws://${window.location.host}/api/screen`);
+          screenWs.binaryType = 'blob';
+
+          screenWs.onopen = () => {
+            appendLog('system', 'SYSTEM', '已连接到原生截屏流');
+          };
+
+          screenWs.onmessage = (event) => {
+            if (screenImg.value) {
+              const oldUrl = screenImg.value.src;
+              screenImg.value.src = URL.createObjectURL(event.data);
+              if (oldUrl && oldUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(oldUrl); // 释放旧内存
+              }
+            }
+          };
+
+          screenWs.onerror = (error) => {
+            appendLog('error', 'SYSTEM', '原生截屏流连接失败');
+          };
+          
+          screenWs.onclose = () => {
+            appendLog('system', 'SYSTEM', '原生截屏流已断开');
+          };
+        };
+
+        onMounted(() => {
+          setupMqtt();
+          setupScreenMqtt();
+        });
+
+        return {
+          logs,
+          logContainer,
+          screenImg,
+          taskResult,
+          selectedCommand,
+          isSending,
+          sendCommand
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

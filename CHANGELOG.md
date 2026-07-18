@@ -6,4 +6,5 @@
 * **Controller Decoupling / 控制器解耦**: Split task controller into 9 independent routing files / 将单体类解耦拆分为 9 个独立路由控制器文件。
 * **API Output Standard / 统一出参规范**: Enforced `{ ok, message, data: {} }` format, removing nulls / 统一接口响应规范为 `{ ok, message, data: {} }`，剔除 null 属性。
 * **Swagger Docs / Swagger 自动文档**: Integrated JSDoc automatic scanning for Swagger UI live routing / 自动扫描控制器 JSDoc 并于启动时输出 Swagger 访问链接。
+* **Dashboard & MQTT Web / 实时监控面板**: Added a Vue 3 static dashboard with MQTT WebSocket stream and ws-scrcpy iframe support for real-time monitoring / 新增 Vue 3 静态控制台面板，支持通过 WebSocket 实时查看 MQTT 消息，并集成了 ws-scrcpy 手机投屏画面流。
 * **Test Suite / 测试验证脚本**: Added version check, update, and restart scripts in `test/scripts/` / 新增自更新、版本比对、以及执行更新等自动化验证测试脚本。

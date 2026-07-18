@@ -1,8 +1,11 @@
 import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import dotenv from 'dotenv';
 import { MqttService } from './service/mqtt.service.js';
 import { registerSwagger } from './swagger.js';
+import { WebSocketServer } from 'ws';
+import { exec } from 'child_process';
 import {
   createTask,
   handleCallback,
@@ -73,11 +76,49 @@ app.post('/api/apps/check-update-task', checkUpdateTask);
 // 执行宿主应用更新自动化
 app.post('/api/apps/execute-update-task', executeUpdateTask);
 
+// 暴露给前端的配置接口
+app.get('/api/config', (c) => {
+  return c.json({
+    ok: true,
+    message: 'Success',
+    data: {
+      wsPort: MQTT_PORT + 1
+    }
+  });
+});
+
+// 静态网页服务，提供 Dashboard 页面
+app.use('/dashboard/*', serveStatic({ root: './public' }));
+// 重定向 /dashboard 到 /dashboard/index.html
+app.get('/dashboard', (c) => c.redirect('/dashboard/index.html'));
+
 // 启动 Hono 服务器
-serve({
+const server = serve({
   fetch: app.fetch,
   port: PORT
 }, (info) => {
   console.log(`[HTTP] Server is running on http://localhost:${info.port}`);
   console.log(`[HTTP] Swagger UI is available on http://localhost:${info.port}/swagger`);
+});
+
+// 附加基于 WS 的原生简易截屏服务 (用于 Dashboard 的无依赖投屏)
+const wss = new WebSocketServer({ server: server as any, path: '/api/screen' });
+wss.on('connection', (ws) => {
+  console.log('[SCREEN-WS] Client connected for screen mirroring.');
+  // 使用定时器轮询拉取截屏
+  const interval = setInterval(() => {
+    exec('adb exec-out screencap -p', { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+      if (!err && stdout && stdout.length > 0) {
+        if (ws.readyState === ws.OPEN) {
+          // 发送二进制图像给前端
+          ws.send(stdout);
+        }
+      }
+    });
+  }, 1000); // 1秒获取1次，帧率约1FPS
+
+  ws.on('close', () => {
+    console.log('[SCREEN-WS] Client disconnected from screen mirroring.');
+    clearInterval(interval);
+  });
 });

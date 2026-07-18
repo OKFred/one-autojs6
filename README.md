@@ -11,6 +11,7 @@ This project implements a lightweight system for automatic script dispatching, e
 - **PC Server (pc/)**:
   - Runs HTTP service based on **HonoJS**.
   - Built-in **Aedes MQTT Broker** as the message transmission hub.
+  - Provides a static Web Dashboard (implemented via Vue 3 + MQTT WebSocket + ws-scrcpy) for real-time log tracking and device screen monitoring.
   - Provides task creation and callback API, maintaining the active state of tasks in memory.
   - Active timeout polling: Automatically marks tasks as `FAILURE` (`TIMEOUT_MISSING`) if they exceed `timeout + 10s` without callback.
 - **Mobile Client (mobile/)**:
@@ -98,6 +99,21 @@ Upon startup, the console will display:
 [CLIENT] Subscribed to topic: autojs6/tasks
 [CLIENT] Subscribed to topic: autojs6/status
 ```
+
+### 4. Web Dashboard
+
+The project includes an intuitive Web Dashboard for real-time MQTT message monitoring and mobile screen mirroring (powered by ws-scrcpy).
+
+1. Download and install `ws-scrcpy` screen mirroring dependencies:
+   ```bash
+   pnpm run scrcpy:install
+   ```
+2. Start all services (Backend + Mirroring):
+   ```bash
+   pnpm run dev:all
+   ```
+3. Access the dashboard: Open your browser and navigate to [http://localhost:3000/dashboard/](http://localhost:3000/dashboard/).
+
 
 ---
 

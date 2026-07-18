@@ -1,5 +1,8 @@
 import Aedes from 'aedes';
 import net from 'net';
+import http from 'http';
+// @ts-ignore
+import websocket from 'websocket-stream';
 
 /**
  * MQTT 代理服务类，用于初始化和管理 MQTT Broker 实例。
@@ -32,6 +35,14 @@ export class MqttService {
     const mqttServer = net.createServer(this.aedes.handle);
     mqttServer.listen(port, () => {
       console.log(`[MQTT] Broker is running on port ${port}`);
+    });
+
+    // 启动 WebSocket 服务器
+    const wsPort = port + 1;
+    const httpServer = http.createServer();
+    websocket.createServer({ server: httpServer }, this.aedes.handle);
+    httpServer.listen(wsPort, () => {
+      console.log(`[MQTT-WS] Broker WebSocket is running on port ${wsPort}`);
     });
 
     this.aedes.on('client', (client: any) => {
