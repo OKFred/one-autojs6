@@ -4,12 +4,14 @@ var packageName = "{{packageName}}";
 var storePackage = "{{storePackage}}";
 
 console.log("Launching app store for: " + packageName);
-var intent = new Intent(Intent.ACTION_VIEW);
-intent.setData(android.net.Uri.parse("market://details?id=" + packageName));
+var options = {
+    action: "android.intent.action.VIEW",
+    data: "market://details?id=" + packageName
+};
 if (storePackage) {
-    intent.setPackage(storePackage);
+    options.packageName = storePackage;
 }
-app.startActivity(intent);
+app.startActivity(options);
 
 // 智能物理坐标与控件树兼容点击函数
 function performClick(uiObject) {
@@ -38,28 +40,54 @@ function performClick(uiObject) {
     return false;
 }
 
-// 循环探测并点击更新按钮
-var clicked = false;
-var keywords = ["更新", "升级", "Update", "Upgrade"];
-for (var i = 0; i < 15; i++) {
-    for (var j = 0; j < keywords.length; j++) {
-        var btn = text(keywords[j]).findOne(500) || desc(keywords[j]).findOne(500);
-        if (btn && performClick(btn)) {
-            clicked = true;
-            break;
-        }
-        var btnContains = textContains(keywords[j]).findOne(500) || descContains(keywords[j]).findOne(500);
-        if (btnContains && performClick(btnContains)) {
-            clicked = true;
-            break;
-        }
+// 循环探测按钮
+var clickedBtn = null;
+var foundState = ""; // 'update', 'open', 'install'
+
+var updateKeywords = ["更新", "升级", "Update", "UPDATE", "update", "Upgrade", "UPGRADE"];
+var openKeywords = ["打开", "Open", "OPEN", "open"];
+var installKeywords = ["安装", "下载", "Install", "INSTALL", "install", "Download", "DOWNLOAD", "获取", "Get", "GET"];
+
+for (var i = 0; i < 20; i++) {
+    for (var j = 0; j < updateKeywords.length; j++) {
+        var btn = textContains(updateKeywords[j]).findOne(50) || descContains(updateKeywords[j]).findOne(50);
+        if (btn) { clickedBtn = btn; foundState = "update"; break; }
     }
-    if (clicked) break;
+    if (clickedBtn) break;
+    
+    for (var j = 0; j < openKeywords.length; j++) {
+        var btn = textContains(openKeywords[j]).findOne(50) || descContains(openKeywords[j]).findOne(50);
+        if (btn) { clickedBtn = btn; foundState = "open"; break; }
+    }
+    if (clickedBtn) break;
+    
+    for (var j = 0; j < installKeywords.length; j++) {
+        var btn = textContains(installKeywords[j]).findOne(50) || descContains(installKeywords[j]).findOne(50);
+        if (btn) { clickedBtn = btn; foundState = "install"; break; }
+    }
+    if (clickedBtn) break;
+    
     sleep(1000);
 }
 
-if (clicked) {
-    taskResult = "Successfully launched app store page and clicked the update button.";
+if (clickedBtn) {
+    console.log("Found widget for state: " + foundState);
+    if (foundState === "open") {
+        taskResult = "无需更新，已经是最新版本 (已检测到“打开”按钮)。";
+    } else {
+        if (!performClick(clickedBtn)) {
+            // fallback if performClick fails
+            var bounds = clickedBtn.bounds();
+            if (bounds && bounds.centerX() > 0 && bounds.centerY() > 0) {
+                click(bounds.centerX(), bounds.centerY());
+            } else {
+                var p = clickedBtn;
+                while (p && !p.isClickable()) p = p.parent();
+                if (p) p.click();
+            }
+        }
+        taskResult = foundState === "update" ? "成功唤起应用商店并点击了更新。" : "成功唤起应用商店并点击了安装。";
+    }
 } else {
-    throw new Error("Update button not found in app store page within 15 seconds.");
+    throw new Error("Timeout (20s): 无法在应用商店页面中找到相关的[更新/打开/安装]按钮。如果是特殊应用商店，请考虑使用静默下载安装(mode=download)。");
 }
