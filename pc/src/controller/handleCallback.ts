@@ -9,6 +9,7 @@ const taskService = TaskService.getInstance();
  * @swagger
  * /api/callback:
  *   post:
+ *     tags: [内部回调]
  *     summary: 接收移动端的回调
  *     description: 移动端脚本/命令执行结束后，向此接口汇报执行结果（SUCCESS 或 FAILURE），PC端用以更新状态。
  *     requestBody:

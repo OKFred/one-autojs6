@@ -9,6 +9,7 @@ const shellService = ShellService.getInstance();
  * @swagger
  * /api/apps/task:
  *   post:
+ *     tags: [应用管理]
  *     summary: 异步下发获取设备应用包名任务
  *     description: 异步下发 Shell 命令 `pm list packages` 获取应用包名，执行极其迅速，返回 taskId 供轮询。
  *     parameters:

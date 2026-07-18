@@ -10,6 +10,7 @@ const taskService = TaskService.getInstance();
  * @swagger
  * /api/devices/update-task:
  *   post:
+ *     tags: [设备管理]
  *     summary: 下发移动端自更新任务
  *     description: 下发 `cat = update` 的任务，移动端在 Termux 本地执行 `git reset --hard HEAD && git pull`，成功后回传结果并平滑自重启，返回 taskId 供轮询。
  *     parameters:

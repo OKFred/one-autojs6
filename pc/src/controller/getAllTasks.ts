@@ -9,6 +9,7 @@ const taskService = TaskService.getInstance();
  * @swagger
  * /api/tasks:
  *   get:
+ *     tags: [任务管理]
  *     summary: 获取所有任务列表
  *     description: 查询系统中所有在内存中被追踪的任务信息。
  *     responses:

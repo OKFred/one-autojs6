@@ -9,6 +9,7 @@ const taskService = TaskService.getInstance();
  * @swagger
  * /api/tasks/{taskId}:
  *   get:
+ *     tags: [任务管理]
  *     summary: 查询单个任务状态
  *     description: 获取指定任务当前的执行状态(EXECUTING/SUCCESS/FAILURE)，若是SUCCESS，则可在 message 中提取出返回负载。
  *     parameters:

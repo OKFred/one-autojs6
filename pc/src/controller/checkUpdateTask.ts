@@ -15,6 +15,7 @@ const autojsService = AutojsService.getInstance();
  * @swagger
  * /api/apps/check-update-task:
  *   post:
+ *     tags: [应用更新]
  *     summary: 异步下发检查应用更新任务
  *     description: 异步下发包含 PackageManager 的 AutoJS 脚本，获取移动端对应包名的本地安装版本，对比最新版本并回调结果，返回 taskId 供轮询。
  *     parameters:

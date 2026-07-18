@@ -11,6 +11,7 @@ const shellService = ShellService.getInstance();
  * @swagger
  * /api/tasks:
  *   post:
+ *     tags: [通用任务]
  *     summary: 下发通用任务
  *     description: 立即在内存中创建任务，并根据分类 (cat) 通过 MQTT 发送执行载荷。
  *     requestBody:

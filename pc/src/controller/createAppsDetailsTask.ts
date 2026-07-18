@@ -15,6 +15,7 @@ const autojsService = AutojsService.getInstance();
  * @swagger
  * /api/apps/details-task:
  *   post:
+ *     tags: [应用管理]
  *     summary: 异步下发获取设备应用详细信息任务
  *     description: 异步下发包含 PackageManager 反射的 AutoJS 脚本，获取全面包详情 JSON 字符串，返回 taskId 供轮询。
  *     parameters:
