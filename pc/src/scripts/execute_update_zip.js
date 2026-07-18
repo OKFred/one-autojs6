@@ -67,5 +67,6 @@ if (apkFiles.length === 0) {
 var apkPath = files.join(destDir, apkFiles[0]);
 console.log("Found APK: " + apkPath);
 
-app.installApp(new java.io.File(apkPath));
+// 发起覆盖安装意图
+app.viewFile(apkPath);
 taskResult = "ZIP downloaded, extracted successfully and installation dialog is launched.";

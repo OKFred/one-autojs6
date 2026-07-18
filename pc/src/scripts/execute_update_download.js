@@ -18,5 +18,5 @@ input.close();
 console.log("APK download complete. Saved to: " + targetPath);
 
 // 发起覆盖安装意图
-app.installApp(new java.io.File(targetPath));
+app.viewFile(targetPath);
 taskResult = "APK downloaded successfully and installation dialog is launched.";
