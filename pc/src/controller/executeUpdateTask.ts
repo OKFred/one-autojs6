@@ -1,5 +1,11 @@
 import { Context } from 'hono';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { AutojsService } from '../service/autojs.service.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const autojsService = AutojsService.getInstance();
 
@@ -9,6 +15,7 @@ const autojsService = AutojsService.getInstance();
  * @swagger
  * /api/apps/execute-update-task:
  *   post:
+ *     tags: [应用更新]
  *     summary: 异步下发执行应用更新任务
  *     description: 异步下发执行 App 更新的 Auto.js 自动化脚本。支持 mode=download（直接下载 APK 并唤起安装）以及 mode=store（拉起应用商店通过无障碍自动寻找并点击更新按钮）。返回 taskId 供轮询。
  *     parameters:
@@ -23,8 +30,8 @@ const autojsService = AutojsService.getInstance();
  *         required: true
  *         schema:
  *           type: string
- *           enum: [download, store]
- *         description: 更新模式：download(直接下载APK包安装)、store(跳转应用商店无障碍点击更新)
+ *           enum: [download, store, zip]
+ *         description: 更新模式：download(直接下载APK包安装)、store(跳转应用商店无障碍点击更新)、zip(下载ZIP包并自动双重策略解压安装)
  *       - in: query
  *         name: downloadUrl
  *         schema:
@@ -99,12 +106,12 @@ export async function executeUpdateTask(c: Context) {
     const timeoutStr = c.req.query('timeout') || '120';
     const timeout = parseInt(timeoutStr, 10);
 
-    if (mode !== 'download' && mode !== 'store') {
-      return c.json({ ok: false, message: 'mode must be "download" or "store"', data: {} }, 400);
+    if (mode !== 'download' && mode !== 'store' && mode !== 'zip') {
+      return c.json({ ok: false, message: 'mode must be "download", "store", or "zip"', data: {} }, 400);
     }
 
-    if (mode === 'download' && !downloadUrl) {
-      return c.json({ ok: false, message: 'downloadUrl is required when mode is "download"', data: {} }, 400);
+    if ((mode === 'download' || mode === 'zip') && !downloadUrl) {
+      return c.json({ ok: false, message: 'downloadUrl is required when mode is "download" or "zip"', data: {} }, 400);
     }
 
     const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -112,90 +119,17 @@ export async function executeUpdateTask(c: Context) {
 
     let script = '';
 
-    if (mode === 'download') {
-      // 下载安装包并拉起系统安装界面
-      script = `
-var downloadUrl = "${downloadUrl}";
-var targetPath = "/sdcard/Download/update_temp.apk";
-
-console.log("Start downloading APK from: " + downloadUrl);
-var urlObj = new java.net.URL(downloadUrl);
-var conn = urlObj.openConnection();
-conn.connect();
-var input = conn.getInputStream();
-var output = new java.io.FileOutputStream(targetPath);
-var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 4096);
-var len;
-while ((len = input.read(buffer)) !== -1) {
-    output.write(buffer, 0, len);
-}
-output.flush();
-output.close();
-input.close();
-console.log("APK download complete. Saved to: " + targetPath);
-
-// 发起覆盖安装意图
-app.installApp(new java.io.File(targetPath));
-taskResult = "APK downloaded successfully and installation dialog is launched.";
-`;
+    if (mode === 'zip') {
+      const templatePath = path.join(__dirname, '../scripts/execute_update_zip.js');
+      script = fs.readFileSync(templatePath, 'utf8').replace('{{downloadUrl}}', downloadUrl);
+    } else if (mode === 'download') {
+      const templatePath = path.join(__dirname, '../scripts/execute_update_download.js');
+      script = fs.readFileSync(templatePath, 'utf8').replace('{{downloadUrl}}', downloadUrl);
     } else {
-      // 应用商店跳转并无障碍点击更新
-      // 终极兼容性重构：使用模糊包含查找 (Contains) + 双重物理坐标/无障碍点击策略
-      script = `
-auto.waitFor();
-
-var packageName = "${packageName}";
-var storePackage = "${storePackage}";
-
-console.log("Launching app store for: " + packageName);
-var intent = new Intent(Intent.ACTION_VIEW);
-intent.setData(android.net.Uri.parse("market://details?id=" + packageName));
-if (storePackage) {
-    intent.setPackage(storePackage);
-}
-app.startActivity(intent);
-
-// 循环探测并点击更新按钮
-var clicked = false;
-var keywords = ["更新", "升级", "Update", "Upgrade"];
-for (var i = 0; i < 15; i++) {
-    for (var j = 0; j < keywords.length; j++) {
-        // 采用模糊包含方式查找，并同时比对 text 与 desc 属性
-        var btn = textContains(keywords[j]).findOne(500) || descContains(keywords[j]).findOne(500);
-        if (btn) {
-            console.log("Found target update widget by keyword: " + keywords[j]);
-            
-            // 优先采用物理屏幕坐标点击（最稳定，能突破任何自定义及嵌套布局限制）
-            var bounds = btn.bounds();
-            if (bounds && bounds.centerX() > 0 && bounds.centerY() > 0) {
-                console.log("Triggering physical coordinate click at: (" + bounds.centerX() + ", " + bounds.centerY() + ")");
-                click(bounds.centerX(), bounds.centerY());
-                clicked = true;
-            } else {
-                // 若无法获取坐标，则回退为无障碍节点向上溯源点击
-                var p = btn;
-                while (p && !p.isClickable()) {
-                    p = p.parent();
-                }
-                if (p) {
-                    console.log("Triggering accessibility click on widget node");
-                    p.click();
-                    clicked = true;
-                }
-            }
-            if (clicked) break;
-        }
-    }
-    if (clicked) break;
-    sleep(1000);
-}
-
-if (clicked) {
-    taskResult = "Successfully launched app store page and clicked the update button.";
-} else {
-    throw new Error("Update button not found in app store page within 15 seconds.");
-}
-`;
+      const templatePath = path.join(__dirname, '../scripts/execute_update_store.js');
+      script = fs.readFileSync(templatePath, 'utf8')
+        .replace('{{packageName}}', packageName)
+        .replace('{{storePackage}}', storePackage);
     }
 
     const task = await autojsService.dispatchTask(script, timeout, PC_IP, PORT);
