@@ -91,8 +91,11 @@ client.on('message', async (topic: string, payload: Buffer) => {
         // Auto.js 的 http.post 是同步阻塞的。
         const wrappedScript = `
 var taskResult = "Script execution succeeded";
+var callbackUrl = "${callbackUrl}";
+var taskId = "${taskId}";
+
 try {
-    console.log("Start executing remote script: ${taskId}");
+    console.log("Start executing remote script: " + taskId);
     
     // 自动点亮屏幕，避免黑屏预览
     device.wakeUp();

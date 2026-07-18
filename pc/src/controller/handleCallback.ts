@@ -1,5 +1,6 @@
 import { Context } from 'hono';
 import { TaskService } from '../service/task.service.js';
+import { MqttService } from '../service/mqtt.service.js';
 
 const taskService = TaskService.getInstance();
 
@@ -90,11 +91,18 @@ const taskService = TaskService.getInstance();
  */
 export async function handleCallback(c: Context) {
   try {
-    const body = await c.req.json<{ taskId?: string; status?: 'SUCCESS' | 'FAILURE'; message?: string }>();
+    const body = await c.req.json<{ taskId?: string; status?: 'SUCCESS' | 'FAILURE' | 'PROGRESS'; message?: string }>();
     const { taskId, status, message } = body;
 
     if (!taskId || !status) {
       return c.json({ ok: false, message: 'taskId and status are required', data: {} }, 400);
+    }
+
+    // 中间进度汇报，不更改任务的最终状态，直接透传到前端
+    if (status === 'PROGRESS') {
+      console.log(`[HTTP] Task ${taskId} progress: ${message}`);
+      MqttService.getInstance().publish('autojs6/status', { taskId, status: 'PROGRESS', message });
+      return c.json({ ok: true, message: 'Progress reported', data: {} });
     }
 
     const updated = taskService.updateTaskStatus(taskId, status, message);

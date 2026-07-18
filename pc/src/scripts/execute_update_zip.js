@@ -2,26 +2,50 @@ var downloadUrl = "{{downloadUrl}}";
 var zipPath = "/sdcard/Download/update_temp.zip";
 var destDir = "/sdcard/Download/update_temp_unzip/";
 
-console.log("Start downloading ZIP from: " + downloadUrl);
+// 辅助方法：向 PC 发送实时进度
+function reportProgress(msg) {
+    console.log(msg);
+    if (typeof callbackUrl !== 'undefined') {
+        try {
+            http.postJson(callbackUrl, {
+                taskId: typeof taskId !== 'undefined' ? taskId : 'unknown',
+                status: 'PROGRESS',
+                message: msg
+            });
+        } catch (e) {}
+    }
+}
+
+reportProgress("开始下载 ZIP: " + downloadUrl);
 var urlObj = new java.net.URL(downloadUrl);
 var conn = urlObj.openConnection();
 conn.connect();
+var totalBytes = conn.getContentLength();
 var input = conn.getInputStream();
 var output = new java.io.FileOutputStream(zipPath);
 var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 4096);
 var len;
+var downloadedBytes = 0;
+var lastReported = 0;
+
 while ((len = input.read(buffer)) !== -1) {
     output.write(buffer, 0, len);
+    downloadedBytes += len;
+    if (totalBytes > 0 && downloadedBytes - lastReported >= totalBytes * 0.05) {
+        lastReported = downloadedBytes;
+        var percent = Math.floor((downloadedBytes / totalBytes) * 100);
+        reportProgress("下载进度: " + percent + "% (" + Math.floor(downloadedBytes/1024/1024) + "MB / " + Math.floor(totalBytes/1024/1024) + "MB)");
+    }
 }
 output.flush();
 output.close();
 input.close();
-console.log("ZIP download complete. Saved to: " + zipPath);
+reportProgress("ZIP 下载完成. 保存路径: " + zipPath);
 
 files.removeDir(destDir);
 files.createWithDirs(destDir);
 
-console.log("Starting extraction...");
+reportProgress("开始解压ZIP文件...");
 var unzipSuccess = false;
 try {
     var res = shell("unzip -o '" + zipPath + "' -d '" + destDir + "'", false);
@@ -65,8 +89,15 @@ if (apkFiles.length === 0) {
     throw new Error("No APK found in the downloaded ZIP.");
 }
 var apkPath = files.join(destDir, apkFiles[0]);
-console.log("Found APK: " + apkPath);
+reportProgress("解压完成，找到 APK: " + apkPath);
 
-// 发起覆盖安装意图
-app.viewFile(apkPath);
-taskResult = "ZIP downloaded, extracted successfully and installation dialog is launched.";
+// 尝试静默安装 (Root)
+reportProgress("正在静默安装 APK...");
+var result = shell("pm install -r " + apkPath, true);
+if (result.code === 0) {
+    taskResult = "更新成功！静默安装完成。";
+} else {
+    reportProgress("静默安装失败 (" + result.error + ")，转为手动安装模式...");
+    app.viewFile(apkPath);
+    taskResult = "已唤起安装界面，请手动完成安装。";
+}
