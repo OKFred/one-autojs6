@@ -94,6 +94,9 @@ var taskResult = "Script execution succeeded";
 try {
     console.log("Start executing remote script: ${taskId}");
     
+    // 自动点亮屏幕，避免黑屏预览
+    device.wakeUp();
+    
     // 执行用户脚本逻辑
     ${script}
     
