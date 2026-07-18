@@ -26,16 +26,19 @@ var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 4096);
 var len;
 var downloadedBytes = 0;
 var lastReported = 0;
+var lastReportTime = Date.now();
 
 while ((len = input.read(buffer)) !== -1) {
     output.write(buffer, 0, len);
     downloadedBytes += len;
     
-    // 每下载 5% 汇报一次进度
-    if (totalBytes > 0 && downloadedBytes - lastReported >= totalBytes * 0.05) {
+    var now = Date.now();
+    // 每下载至少 5% 且距离上次汇报超过 2 秒，才上报进度
+    if (totalBytes > 0 && downloadedBytes - lastReported >= totalBytes * 0.05 && (now - lastReportTime > 2000)) {
         lastReported = downloadedBytes;
+        lastReportTime = now;
         var percent = Math.floor((downloadedBytes / totalBytes) * 100);
-        reportProgress("下载进度: " + percent + "% (" + Math.floor(downloadedBytes/1024/1024) + "MB / " + Math.floor(totalBytes/1024/1024) + "MB)");
+        reportProgress("下载进度: " + percent + "% (" + (downloadedBytes/1024/1024).toFixed(1) + "MB / " + (totalBytes/1024/1024).toFixed(1) + "MB)");
     }
 }
 output.flush();
@@ -44,8 +47,13 @@ input.close();
 reportProgress("APK 下载完成. 保存路径: " + targetPath);
 
 // 尝试静默安装 (Root)
-reportProgress("正在静默安装 APK...");
-var result = shell("pm install -r " + targetPath, true);
+reportProgress("正在静默安装 APK (绕过 SELinux 限制)...");
+var tmpPath = "/data/local/tmp/update_temp.apk";
+// 将文件复制到 /data/local/tmp 以防 pm install 无权读取 /sdcard (SELinux 拒绝)
+shell("cp '" + targetPath + "' '" + tmpPath + "' && chmod 777 '" + tmpPath + "'", true);
+var result = shell("pm install -r '" + tmpPath + "'", true);
+shell("rm -f '" + tmpPath + "'", true);
+
 if (result.code === 0) {
     taskResult = "更新成功！静默安装完成。";
 } else {

@@ -27,14 +27,18 @@ var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 4096);
 var len;
 var downloadedBytes = 0;
 var lastReported = 0;
+var lastReportTime = Date.now();
 
 while ((len = input.read(buffer)) !== -1) {
     output.write(buffer, 0, len);
     downloadedBytes += len;
-    if (totalBytes > 0 && downloadedBytes - lastReported >= totalBytes * 0.05) {
+    
+    var now = Date.now();
+    if (totalBytes > 0 && downloadedBytes - lastReported >= totalBytes * 0.05 && (now - lastReportTime > 2000)) {
         lastReported = downloadedBytes;
+        lastReportTime = now;
         var percent = Math.floor((downloadedBytes / totalBytes) * 100);
-        reportProgress("下载进度: " + percent + "% (" + Math.floor(downloadedBytes/1024/1024) + "MB / " + Math.floor(totalBytes/1024/1024) + "MB)");
+        reportProgress("下载进度: " + percent + "% (" + (downloadedBytes/1024/1024).toFixed(1) + "MB / " + (totalBytes/1024/1024).toFixed(1) + "MB)");
     }
 }
 output.flush();
@@ -92,8 +96,12 @@ var apkPath = files.join(destDir, apkFiles[0]);
 reportProgress("解压完成，找到 APK: " + apkPath);
 
 // 尝试静默安装 (Root)
-reportProgress("正在静默安装 APK...");
-var result = shell("pm install -r " + apkPath, true);
+reportProgress("正在静默安装 APK (绕过 SELinux 限制)...");
+var tmpPath = "/data/local/tmp/update_temp.apk";
+shell("cp '" + apkPath + "' '" + tmpPath + "' && chmod 777 '" + tmpPath + "'", true);
+var result = shell("pm install -r '" + tmpPath + "'", true);
+shell("rm -f '" + tmpPath + "'", true);
+
 if (result.code === 0) {
     taskResult = "更新成功！静默安装完成。";
 } else {
