@@ -23,28 +23,25 @@ export class AutojsService {
   }
 
   /**
-   * 向移动端设备下发 Auto.js 脚本任务。
+   * 向移动端设备下发 Auto.js 脚本任务 (全 MQTT 通信，无需 HTTP 局域网回调)。
    * 
    * @param script - 待执行的 Auto.js 脚本代码
    * @param timeout - 超时秒数
-   * @param pcIp - PC 端的 IP 地址
-   * @param port - PC 端 HTTP 服务的端口号
    * @returns 已创建并下发的 Task 实体
    */
-  public async dispatchTask(script: string, timeout: number, pcIp: string, port: number) {
+  public async dispatchTask(script: string, timeout: number) {
     const task = this.taskService.createTask('autojs6', script, timeout);
     
-    // 构造推送载荷，注入回调地址
+    // 构造推送载荷，不依赖 HTTP 局域网回调
     const payload = {
       taskId: task.taskId,
       cat: 'autojs6',
       script,
-      timeout,
-      callbackUrl: `http://${pcIp}:${port}/api/callback`
+      timeout
     };
 
     MqttService.getInstance().publish('autojs6/tasks', payload);
-    console.log(`[AutojsService] Dispatched Auto.js task ${task.taskId} to mobile`);
+    console.log(`[AutojsService] Dispatched Auto.js task ${task.taskId} via MQTT`);
     return task;
   }
 }

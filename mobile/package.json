@@ -2,9 +2,10 @@
   "name": "one-autojs6-mobile",
   "version": "1.0.0",
   "type": "module",
-  "main": "src/client.ts",
+  "main": "dist/client.js",
   "scripts": {
-    "start": "tsx src/client.ts"
+    "build": "tsc",
+    "start": "node dist/client.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

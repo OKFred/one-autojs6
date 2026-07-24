@@ -45,6 +45,9 @@ importers:
       hono:
         specifier: ^4.6.20
         version: 4.12.28
+      mqtt:
+        specifier: ^5.10.2
+        version: 5.15.2
       swagger-jsdoc:
         specifier: ^6.3.0
         version: 6.3.0(openapi-types@12.1.3)
