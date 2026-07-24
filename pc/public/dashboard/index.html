@@ -212,6 +212,8 @@
           <option value="/api/devices/update">设备自更新 (devices/update)</option>
           <option value="/api/apps/check-update">检查宿主更新 (apps/check-update)</option>
           <option value="/api/apps/execute-update">执行宿主更新 (apps/execute-update)</option>
+          <option value="/api/tiktok/post?title=nice blouse&details=looking good&imagePath=/storage/emulated/0/DCIM/Camera/clothes.jpg">TikTok 自动发帖 (tiktok/post)</option>
+          <option value="/api/files/download?protocol=smb&url=smb://192.168.1.4/share/test.jpg&fileName=test.jpg">文件统一下发 (files/download)</option>
         </select>
         <button @click="sendCommand" :disabled="isSending">
           {{ isSending ? '发送中...' : '发送指令' }}

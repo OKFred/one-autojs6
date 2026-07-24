@@ -15,7 +15,10 @@ import {
   createAppsDetails,
   createUpdate,
   checkUpdate,
-  executeUpdate
+  executeUpdate,
+  tiktokPost,
+  proxyFile,
+  downloadFile
 } from './controller/index.js';
 
 dotenv.config();
@@ -75,6 +78,15 @@ app.post('/api/apps/check-update', checkUpdate);
 
 // 执行宿主应用更新自动化
 app.post('/api/apps/execute-update', executeUpdate);
+
+// 执行 TikTok 自动发帖
+app.post('/api/tiktok/post', tiktokPost);
+
+// 手机通用下载与传文件
+app.post('/api/files/download', downloadFile);
+
+// PC 代理拉取 SMB 等资源
+app.get('/api/proxy', proxyFile);
 
 // 暴露给前端的配置接口
 app.get('/api/config', (c) => {
