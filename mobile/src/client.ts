@@ -97,7 +97,10 @@ client.on("message", async (topic: string, payload: Buffer) => {
           `[CLIENT] Received Auto.js task ${taskId}. Timeout: ${timeout}s`,
         );
 
-        const resultPath = path.join(TEMP_SCRIPT_DIR, `autojs_res_${taskId}.json`);
+        const resultPath = path.join(
+          TEMP_SCRIPT_DIR,
+          `autojs_res_${taskId}.json`,
+        );
 
         // 包装 Auto.js 脚本：执行结果自动写入本地 JSON 结果文件，全脱离局域网 HTTP
         const wrappedScript = `
@@ -211,7 +214,11 @@ try {
                 const res = JSON.parse(content);
                 sendMqttResult(taskId, res.status, res.message);
               } catch (e: any) {
-                sendMqttResult(taskId, "FAILURE", "Failed to parse result file: " + e.message);
+                sendMqttResult(
+                  taskId,
+                  "FAILURE",
+                  "Failed to parse result file: " + e.message,
+                );
               }
               cleanupTask(taskId);
             }
@@ -226,7 +233,7 @@ try {
           };
 
           // 7. 通过 Root 命令启动 Auto.js 载入脚本
-          const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.ui.shortcut.ShortcutHandleActivity -d file://${targetTempPath} -t text/javascript"`;
+          const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetTempPath} -t text/javascript"`;
           console.log(
             `[CLIENT] Executing shell command to start Auto.js: ${runCommand}`,
           );
@@ -267,16 +274,14 @@ try {
         };
 
         const execCmd = useRoot ? `su -c "${script}"` : script;
-        console.log(`[CLIENT] Running Shell command for task ${taskId}: ${execCmd}`);
+        console.log(
+          `[CLIENT] Running Shell command for task ${taskId}: ${execCmd}`,
+        );
 
         exec(execCmd, (err: any, stdout: string, stderr: string) => {
           if (err) {
             console.error(`[CLIENT] Shell execution failed:`, err.message);
-            sendMqttResult(
-              taskId,
-              "FAILURE",
-              stderr || err.message,
-            );
+            sendMqttResult(taskId, "FAILURE", stderr || err.message);
           } else {
             console.log(
               `[CLIENT] Shell execution succeeded for task ${taskId}`,
@@ -338,11 +343,7 @@ try {
  * 辅助方法：通过 MQTT 向 EMQX 云端 publish 任务回传结果。
  * 主题：autojs6/results
  */
-function sendMqttResult(
-  taskId: string,
-  status: string,
-  message: string,
-) {
+function sendMqttResult(taskId: string, status: string, message: string) {
   const payload = JSON.stringify({
     taskId,
     status,
