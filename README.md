@@ -16,9 +16,10 @@ This project implements a lightweight system for automatic script dispatching, e
   - Active timeout polling: Automatically marks tasks as `FAILURE` (`TIMEOUT_MISSING`) if they exceed `timeout + 10s` without callback.
 - **Mobile Client (mobile/)**:
   - Runs as a Node.js TypeScript daemon inside **Termux**.
-  - Subscribes to MQTT task queue, injects try-catch and HTTP callback logic into dispatched scripts, and writes to temporary files.
+  - Subscribes to MQTT task queue, injects try-catch and callback logic into dispatched scripts, and writes to temporary files.
+  - **Serial Task Execution**: Built-in `taskQueue` mechanism ensures that only one script runs at a time, preventing UI contention.
   - Uses Root privilege Android `am` command to launch **Auto.js v6** to run the script.
-  - Supports dual force-stop and cleanup mechanisms: Kills Auto.js and Chrome upon timeout; automatically cleans up temporary files and timers on success.
+  - Supports dual force-stop and cleanup mechanisms: Allows arbitrary task interruption and queue clearing via the `kill` command; automatically kills process upon timeout; automatically cleans up temporary files and timers on success.
 - **Demo Script (demo_chrome.js)**:
   - An example script that opens Chrome browser and navigates to `baidu.com`.
 
@@ -126,8 +127,8 @@ PC Server provides the following HTTP endpoints:
 - **URL**: `POST /api/tasks`
 - **Content-Type**: `application/json`
 - **Request Body**:
-  - `cat` (string, optional, default: `autojs6`): Task category. Can be set to `autojs6` (runs in Auto.JS6 UI) or `shell` (runs directly in Termux shell).
-  - `script` (string, required): The script content or Shell commands to execute.
+  - `cat` (string, optional, default: `autojs6`): Task category. Can be set to `autojs6` (runs in Auto.JS6 UI), `shell` (runs directly in Termux shell), or **`kill`** (interrupts the running task and clears the queue).
+  - `script` (string, required): The script content or Shell commands to execute. When sending `kill`, you can pass `// dummy` or an empty string.
   - `timeout` (number, optional, default: 30): Timeout duration in seconds, after which mobile client kills the task.
   - `useRoot` (boolean, optional, default: false): Only effective when `cat === 'shell'`. Whether to run the command with Root privilege (`su -c`).
 - **Testing Scripts**:
@@ -306,12 +307,16 @@ PC Server provides the following HTTP endpoints:
 
 ---
 
-## Timeout & Force-Kill Details
+## Queuing, Timeout & Force-Kill Details
 
-1. **Mobile Force-Kill**:
-   Upon receiving a task, the mobile client starts a `setTimeout` timer. If the execution exceeds `timeout` seconds, the client executes Root Shell commands to force-stop the apps:
+1. **Serial Task Queue**:
+   The mobile daemon inherently supports task queuing. Regardless of how many tasks are dispatched concurrently, they enter an in-memory queue. The next task only executes when the previous one finishes (success, failure, or timeout), completely eliminating UI automation contention.
+2. **Instant Force Kill**:
+   By dispatching a task with `cat = "kill"`, the mobile client will instantly **clear all pending tasks in the queue** and execute `am force-stop` to kill the currently running Auto.js process, providing a one-click "emergency brake".
+3. **Mobile Local Fallback**:
+   Upon receiving a task, the mobile client starts a timer. If the execution exceeds `timeout` seconds, the client executes Root Shell commands to force-stop the apps:
    - `su -c "am force-stop org.autojs.autojs6"` (Kill Auto.js)
    - `su -c "am force-stop com.android.chrome"` (Kill Chrome)
      It then posts a `FAILURE` callback to PC server.
-2. **PC Polling Fallback**:
-   If the mobile device goes offline or fails to callback within `timeout + 10s`, the PC server's background thread will scan the task and automatically mark it as `FAILURE` with reason: `Timeout Failure: No response received after timeout + 10s grace period`.
+4. **PC Polling Fallback (Watchdog)**:
+   If the mobile device completely goes offline, dies, or fails to callback within `timeout + 10s` (grace period), the PC server's background watchdog thread will automatically mark the task as `FAILURE` with reason: `Timeout Failure: No response received after timeout + 10s grace period`, preventing permanent deadlocks in the task tracking system.

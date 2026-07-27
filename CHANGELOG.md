@@ -1,3 +1,10 @@
+# v1.2.0 (2026-07-28)
+
+## What's Changed
+* **Serial Task Queue / 任务串行排队**: Built-in memory queue to process tasks sequentially, completely preventing UI contention when multiple tasks are dispatched / 内置串行任务队列，不管下发多少并发任务，确保同一时刻只有单个脚本运行以防互相抢占屏幕资源。
+* **Emergency Force Kill / 特权强打断**: Added support for `cat = "kill"` command to instantly clear pending queues and kill running applications / 支持下发特权 `kill` 指令，实现瞬间清空后续积压队列，并一键强杀终止当前正在执行的进程。
+* **Double-Layer Watchdog / 双层失联防卡死体系**: Fully documented and battle-tested the dual timeout systems: Local Termux timer for script stuck, and PC backend Watchdog for total device disconnection / 完善了防卡死体系：包含移动端倒计时杀进程（应对脚本卡死），以及 PC 端轮询看门狗（应对手机断电断网等全盘失联）。
+
 # v1.1.0 (2026-07-17)
 
 ## What's Changed

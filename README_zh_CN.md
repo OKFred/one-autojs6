@@ -16,9 +16,10 @@
   - 拥有主动轮询机制，若任务超时超过 `timeout + 10s`，自动判定为失败 (`TIMEOUT_MISSING`)。
 - **移动端 (mobile/)**:
   - 运行在 **Termux** 环境下的 Node.js TypeScript 守护进程。
-  - 订阅 MQTT 任务队列，动态为下发的脚本注入异常捕获与 HTTP 回传逻辑，生成临时脚本。
+  - 订阅 MQTT 任务队列，动态为下发的脚本注入异常捕获与回传逻辑，生成临时脚本。
+  - **任务串行执行**：内置 `taskQueue` 机制，同一时刻只允许一个脚本运行，后续任务自动排队等待。
   - 使用 Root 权限的 Android `am` 指令拉起 **Auto.js v6** 运行脚本。
-  - 支持双向强杀与清理机制：当执行超时自动强杀 Auto.js 和 Chrome；当任务成功时接收 PC 通知自动清理临时文件及定时器。
+  - 支持双向强杀与清理机制：可通过专门的 `kill` 任务随时打断执行并清空队列；若执行超时则自动强杀进程兜底。
 - **Demo 应用 (demo_chrome.js)**:
   - 提供的测试脚本，用于打开 Chrome 浏览器并访问百度网。
 
@@ -123,8 +124,8 @@ PC 服务端提供了以下 HTTP 接口：
 - **URL**: `POST /api/tasks`
 - **Content-Type**: `application/json`
 - **请求参数**:
-  - `cat` (string, 可选, 默认 `autojs6`): 任务分类。可设置为 `autojs6` (在 Auto.JS 中执行) 或 `shell` (在 Termux 中直接执行 Shell 脚本)。
-  - `script` (string, 必须): 需要执行的脚本内容（Auto.JS 脚本或 Shell 命令）。
+  - `cat` (string, 可选, 默认 `autojs6`): 任务分类。可设置为 `autojs6` (在 Auto.JS 中执行)、`shell` (在 Termux 中直接执行 Shell 脚本)，或 **`kill`** (中断正在执行的任务并清空积压队列)。
+  - `script` (string, 必须): 需要执行的脚本内容（Auto.JS 脚本或 Shell 命令）。当下发 `kill` 时可以传 `// dummy` 或空字符串。
   - `timeout` (number, 可选, 默认 30): 任务执行超时时间（秒）。超过该时间后移动端会强杀任务关联应用/进程。
   - `useRoot` (boolean, 可选, 默认 false): 仅在 `cat === 'shell'` 时生效。是否以 Root 权限 (`su -c`) 运行该命令。
 - **测试脚本示例**:
@@ -305,12 +306,16 @@ PC 服务端提供了以下 HTTP 接口：
 
 ---
 
-## 强杀与超时说明
+## 任务排队、强杀与兜底超时体系
 
-1. **移动端本地强杀**:
-   在收到任务时，移动端会在本地启动一个 `setTimeout`。如果代码执行时长超过 `timeout`，移动端会通过 Root Shell 执行以下强杀命令：
+1. **移动端串行任务队列 (Task Queue)**:
+   移动端守护进程天然支持任务排队，不论瞬间收到多少条下发任务，都会进入内存队列依次执行。只有当前一个任务完成（无论成功、失败还是超时），才会执行下一个，杜绝多个 UI 自动化脚本互相抢占屏幕资源。
+2. **主动一键强杀 (Force Kill)**:
+   可通过调用下发接口，设置 `cat = "kill"`。移动端接收到特权指令后，将立刻**清空后续排队的所有任务**，并执行 `am force-stop` 强行杀死当前执行的进程，中止其行为，随时一键“急刹车”。
+3. **移动端本地防死锁兜底**:
+   在收到任务时，移动端会在本地启动一个倒计时定时器。如果代码执行时长超过 `timeout` 设置，移动端会主动执行强杀命令：
    - `su -c "am force-stop org.autojs.autojs6"` (强杀 Auto.js 应用)
    - `su -c "am force-stop com.android.chrome"` (强杀 Chrome 浏览器)
-     并在完成后，主动向 PC 的 `/api/callback` 回报 `FAILURE`，状态附带原因为本地超时强杀。
-2. **PC 端兜底标记失败**:
-   若移动端在 `timeout + 10s` 时间内没有通过 HTTP 发送成功或失败的回调（可能由于设备断网、Termux 进程挂掉或脚本卡死导致本地超时器失效），PC 服务端内的轮询线程会自动扫描到并强制将任务状态标记为 `FAILURE`，并将错误信息置为 `Timeout Failure: No response received after timeout + 10s grace period`。
+     并在完成后，通过 MQTT 主动向 PC 回报 `FAILURE`，状态附带原因为本地超时强杀。
+4. **PC 端全局失联兜底**:
+   若移动端在 `timeout + 10s` (宽限期) 时间内没有发送成功或失败的 MQTT 回调（例如由于设备断电断网、Termux 进程物理挂掉或严重死机导致本地超时器失效），PC 服务端内存中的看门狗（Watchdog）轮询线程会自动扫描到该失联任务，强制将其状态标记为 `FAILURE`，彻底杜绝任务永久卡死。
