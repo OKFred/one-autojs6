@@ -11,12 +11,20 @@ const shellService = ShellService.getInstance();
 export async function createTask(c: Context) {
   try {
     const body = await c.req.json<{
-      cat?: 'autojs6' | 'shell' | 'kill';
+      cat?: 'autojs6' | 'shell' | 'kill' | 'config';
       script?: string;
       timeout?: number | string;
       useRoot?: boolean;
+      observe?: string[];
     }>();
-    const { cat = 'autojs6', script, timeout, useRoot = false } = body;
+    const { cat = 'autojs6', script, timeout, useRoot = false, observe = [] } = body;
+
+    if (cat === 'config') {
+      const taskId = crypto.randomUUID();
+      const { MqttService } = await import('../service/mqtt.service.js');
+      MqttService.getInstance().publish('autojs6/tasks', { taskId, cat: 'config', observe });
+      return c.json({ ok: true, message: 'Configuration dispatched successfully', data: { taskId, status: 'EXECUTING' } });
+    }
 
     if (cat === 'kill') {
       const taskId = crypto.randomUUID();

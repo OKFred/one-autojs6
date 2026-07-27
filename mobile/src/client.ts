@@ -26,6 +26,7 @@ interface TaskPayload {
   script: string;
   timeout: number;
   useRoot?: boolean;
+  observe?: string[];
 }
 
 interface StatusPayload {
@@ -43,6 +44,11 @@ interface ActiveTask {
 // 活跃任务缓存：记录定时器与临时文件路径
 const activeTasks: Record<string, ActiveTask> = {};
 const taskQueue: TaskPayload[] = [];
+let activeConfig: string[] = [];
+let shellPoller: NodeJS.Timeout | null = null;
+let autojsWatcher: NodeJS.Timeout | null = null;
+let lastBatteryLevel = -1;
+let lastEventsSize = 0;
 let isExecuting = false;
 
 console.log("[CLIENT] Starting Termux MQTT Daemon in TypeScript...");
@@ -92,7 +98,14 @@ client.on("message", async (topic: string, payload: Buffer) => {
     const data = JSON.parse(messageStr);
 
     if (topic === "autojs6/tasks") {
-      const { taskId, cat } = data as TaskPayload;
+      const { taskId, cat, observe } = data as TaskPayload;
+
+      if (cat === "config") {
+        console.log(`[CLIENT] Received Observer Config:`, observe);
+        activeConfig = observe || [];
+        applyConfig();
+        return;
+      }
 
       if (cat === "kill") {
         console.log(`[CLIENT] Received Kill command! Emptying queue and stopping current script...`);
@@ -115,6 +128,7 @@ client.on("message", async (topic: string, payload: Buffer) => {
 
         isExecuting = false;
         sendMqttResult(taskId, "SUCCESS", "Kill command executed successfully.");
+        if (activeConfig.includes("sms")) setTimeout(() => applyConfig(), 2000);
         return;
       }
 
@@ -140,6 +154,73 @@ function processNextTask() {
   isExecuting = true;
   const taskData = taskQueue.shift();
   if (taskData) executeTask(taskData);
+}
+
+
+function applyConfig() {
+  if (shellPoller) clearInterval(shellPoller);
+  if (autojsWatcher) clearInterval(autojsWatcher);
+  
+  if (activeConfig.includes("battery")) {
+    console.log("[CLIENT] Starting Shell Poller for Battery...");
+    shellPoller = setInterval(() => {
+      exec('su -c "dumpsys battery | grep level"', (err, stdout) => {
+        if (!err && stdout) {
+          const match = stdout.match(/level:\s*(\d+)/);
+          if (match) {
+            const level = parseInt(match[1]);
+            if (lastBatteryLevel !== -1 && level !== lastBatteryLevel) {
+              client.publish("autojs6/events", JSON.stringify({ type: "battery", data: { level } }), { qos: 1 });
+            }
+            lastBatteryLevel = level;
+          }
+        }
+      });
+    }, 60000);
+  }
+
+  if (activeConfig.includes("sms")) {
+    console.log("[CLIENT] Starting Auto.js Observer for SMS...");
+    const observerPath = path.join(TEMP_SCRIPT_DIR, "autojs_observer.js");
+    const observerScript = `
+var eventResPath = "${path.join(TEMP_SCRIPT_DIR, "autojs_events.txt")}";
+events.broadcast.on("android.provider.Telephony.SMS_RECEIVED", function(intent){
+    files.append(eventResPath, JSON.stringify({ type: "sms", timestamp: Date.now(), data: "Received SMS" }) + "\\n");
+});
+setInterval(()=>{}, 1000);
+`;
+    const localObserverPath = path.join(__dirname, "local_observer.js");
+    fs.writeFileSync(localObserverPath, observerScript, "utf8");
+    exec(`su -c "cp ${localObserverPath} ${observerPath} && chmod 777 ${observerPath} && rm -f ${localObserverPath} && am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${observerPath} -t text/javascript"`, (err) => {
+       if (err) console.error("[CLIENT] Failed to start autojs observer:", err);
+    });
+
+    autojsWatcher = setInterval(() => {
+      const eventsFile = path.join(TEMP_SCRIPT_DIR, "autojs_events.txt");
+      if (fs.existsSync(eventsFile)) {
+        try {
+          const stats = fs.statSync(eventsFile);
+          if (stats.size > lastEventsSize) {
+             const fd = fs.openSync(eventsFile, 'r');
+             const buffer = Buffer.alloc(stats.size - lastEventsSize);
+             fs.readSync(fd, buffer, 0, buffer.length, lastEventsSize);
+             fs.closeSync(fd);
+             lastEventsSize = stats.size;
+             
+             const lines = buffer.toString().split('\n').filter(Boolean);
+             lines.forEach(line => {
+                console.log("[CLIENT] Detected new Auto.js Event:", line);
+                client.publish("autojs6/events", line, { qos: 1 });
+             });
+          } else if (stats.size < lastEventsSize) {
+             lastEventsSize = 0;
+          }
+        } catch (e) {
+          console.error("[CLIENT] Error reading autojs_events.txt:", e);
+        }
+      }
+    }, 2000);
+  }
 }
 
 function executeTask(data: TaskPayload) {
