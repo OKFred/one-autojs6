@@ -42,6 +42,10 @@ else
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Network timeout (90s), but trying to start daemon anyway." >> "$LOG_FILE"
 fi
 
+# 2.5 Start Termux sshd
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Termux sshd..." >> "$LOG_FILE"
+su -G 3003 -G 9997 -G 1078 -G 3009 u0_a256 -c "export ANDROID_DATA='/data' ANDROID_ROOT='/system' HOME='/data/data/com.termux/files/home' PREFIX='/data/data/com.termux/files/usr' TMPDIR='/data/data/com.termux/files/usr/tmp' LD_PRELOAD='/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so' PATH='/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets:\$PATH' TERM='xterm-256color'; /data/data/com.termux/files/usr/bin/sshd" >> "$LOG_FILE" 2>&1 &
+
 # 3. Define the path for the daemon script
 DAEMON_SCRIPT="/data/data/com.termux/files/home/workspace/one-autojs6/mobile/node_daemon.sh"
 
