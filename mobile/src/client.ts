@@ -42,6 +42,8 @@ interface ActiveTask {
 
 // 活跃任务缓存：记录定时器与临时文件路径
 const activeTasks: Record<string, ActiveTask> = {};
+const taskQueue: TaskPayload[] = [];
+let isExecuting = false;
 
 console.log("[CLIENT] Starting Termux MQTT Daemon in TypeScript...");
 console.log(`[CLIENT] Configured MQTT Broker: ${MQTT_BROKER_URL}`);
@@ -90,10 +92,61 @@ client.on("message", async (topic: string, payload: Buffer) => {
     const data = JSON.parse(messageStr);
 
     if (topic === "autojs6/tasks") {
-      const { taskId, cat, script, timeout, useRoot } = data as TaskPayload;
+      const { taskId, cat } = data as TaskPayload;
 
-      if (cat === "autojs6") {
-        console.log(
+      if (cat === "kill") {
+        console.log(`[CLIENT] Received Kill command! Emptying queue and stopping current script...`);
+        taskQueue.length = 0; // Empty the queue
+        const killCmds = [
+          `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
+          `su -c "am force-stop com.android.chrome"`
+        ];
+        killCmds.forEach((cmd) => {
+          exec(cmd, (err: any) => {
+            if (err) console.error(`[CLIENT] Error running kill command "${cmd}":`, err.message);
+          });
+        });
+
+        const activeTaskIds = Object.keys(activeTasks);
+        for (const id of activeTaskIds) {
+          sendMqttResult(id, "FAILURE", "Task was forcefully terminated by user kill command.");
+          cleanupTask(id);
+        }
+
+        isExecuting = false;
+        sendMqttResult(taskId, "SUCCESS", "Kill command executed successfully.");
+        return;
+      }
+
+      taskQueue.push(data as TaskPayload);
+      console.log(`[CLIENT] Task ${taskId} (cat: ${cat}) added to queue. Queue length: ${taskQueue.length}`);
+      processNextTask();
+    } else if (topic === "autojs6/status") {
+      const { taskId } = data as StatusPayload;
+      if (taskId && activeTasks[taskId]) {
+        console.log(`[CLIENT] Clearing running task ${taskId} (notified by server status update)`);
+        cleanupTask(taskId);
+      }
+    }
+  } catch (err) {
+    console.error("[CLIENT] Error handling MQTT message:", err);
+  }
+});
+
+function processNextTask() {
+  if (isExecuting) return;
+  if (taskQueue.length === 0) return;
+
+  isExecuting = true;
+  const taskData = taskQueue.shift();
+  if (taskData) executeTask(taskData);
+}
+
+function executeTask(data: TaskPayload) {
+  const { taskId, cat, script, timeout, useRoot } = data;
+
+  if (cat === "autojs6") {
+console.log(
           `[CLIENT] Received Auto.js task ${taskId}. Timeout: ${timeout}s`,
         );
 
@@ -325,19 +378,7 @@ try {
           `[CLIENT] Ignored task ${taskId} because unknown cat=${cat}`,
         );
       }
-    } else if (topic === "autojs6/status") {
-      const { taskId } = data as StatusPayload;
-      if (taskId && activeTasks[taskId]) {
-        console.log(
-          `[CLIENT] Clearing running task ${taskId} (notified by server status update)`,
-        );
-        cleanupTask(taskId);
-      }
-    }
-  } catch (err) {
-    console.error("[CLIENT] Error handling MQTT message:", err);
-  }
-});
+}
 
 /**
  * 辅助方法：通过 MQTT 向 EMQX 云端 publish 任务回传结果。
@@ -403,4 +444,7 @@ function cleanupTask(taskId: string) {
   }
 
   delete activeTasks[taskId];
+
+  isExecuting = false;
+  setTimeout(processNextTask, 100);
 }
