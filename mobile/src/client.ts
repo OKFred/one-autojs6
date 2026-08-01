@@ -9,6 +9,71 @@ import { getEmqxBrokerUrl } from "./utils/mqtt.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ============================================================
+// 日志系统初始化：将所有 console 输出同时写入日期日志文件
+// ============================================================
+
+/** 获取项目根目录（mobile 的上一级） */
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const LOGS_DIR = path.join(PROJECT_ROOT, "logs");
+
+/** 确保 logs 目录存在 */
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+
+/** 获取本地时区的 YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss.SSS 格式字符串 */
+function formatLocalDate(date: Date, withTime = false): string {
+  const pad = (n: number, len = 2) => String(n).padStart(len, "0");
+  const y = date.getFullYear();
+  const mo = pad(date.getMonth() + 1);
+  const d = pad(date.getDate());
+  if (!withTime) return `${y}-${mo}-${d}`;
+  const h = pad(date.getHours());
+  const mi = pad(date.getMinutes());
+  const s = pad(date.getSeconds());
+  const ms = pad(date.getMilliseconds(), 3);
+  return `${y}-${mo}-${d} ${h}:${mi}:${s}.${ms}`;
+}
+
+/** 获取当前日志文件路径（按本地时区日期划分） */
+function getLogFilePath(): string {
+  return path.join(LOGS_DIR, `${formatLocalDate(new Date())}.log`);
+}
+
+/** 格式化日志前缀时间戳（本地时区） */
+function getTimestamp(): string {
+  return formatLocalDate(new Date(), true);
+}
+
+/** 追加写入日志文件 */
+function writeToLog(level: string, args: unknown[]): void {
+  const line = `[${getTimestamp()}] [${level}] ${args.map(String).join(" ")}\n`;
+  try {
+    fs.appendFileSync(getLogFilePath(), line, "utf8");
+  } catch {
+    // 静默处理，避免死循环
+  }
+}
+
+/** 重写 console 方法，同时写入文件和原始输出 */
+const _log = console.log.bind(console);
+const _error = console.error.bind(console);
+const _warn = console.warn.bind(console);
+
+console.log = (...args: unknown[]) => {
+  _log(...args);
+  writeToLog("INFO", args);
+};
+console.error = (...args: unknown[]) => {
+  _error(...args);
+  writeToLog("ERROR", args);
+};
+console.warn = (...args: unknown[]) => {
+  _warn(...args);
+  writeToLog("WARN", args);
+};
+
 dotenv.config();
 
 const MQTT_USERNAME = process.env.EMQX_USERNAME;
