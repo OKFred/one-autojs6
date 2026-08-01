@@ -4,19 +4,25 @@ import path from "path";
 import { exec } from "child_process";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
+import { getEmqxBrokerUrl } from "./utils/mqtt.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
-const MQTT_BROKER_URL = process.env.MQTT_BROKER_URL;
-if (!MQTT_BROKER_URL) {
+const MQTT_USERNAME = process.env.EMQX_USERNAME;
+const MQTT_HOST = process.env.EMQX_HOST;
+
+if (!MQTT_USERNAME || !MQTT_HOST) {
   console.error(
-    "[ERROR] Environment variable MQTT_BROKER_URL is required. Please check your config.",
+    "[ERROR] EMQX_USERNAME and EMQX_HOST are required in .env. Please check your config.",
   );
   process.exit(1);
 }
+
+const MQTT_BROKER_URL = getEmqxBrokerUrl();
+
 const AUTOJS_PACKAGE_NAME = "org.autojs.autojs6";
 const TEMP_SCRIPT_DIR = process.env.TEMP_SCRIPT_DIR || "/sdcard/Download";
 
@@ -27,6 +33,7 @@ interface TaskPayload {
   timeout: number;
   useRoot?: boolean;
   observe?: string[];
+  callbackUrl?: string;
 }
 
 interface StatusPayload {
@@ -39,6 +46,7 @@ interface ActiveTask {
   pollInterval?: NodeJS.Timeout;
   tempFilePath: string;
   resultFilePath?: string;
+  callbackUrl?: string;
 }
 
 // 活跃任务缓存：记录定时器与临时文件路径
@@ -56,24 +64,38 @@ console.log(`[CLIENT] Configured MQTT Broker: ${MQTT_BROKER_URL}`);
 console.log(`[CLIENT] Configured Auto.js Package: ${AUTOJS_PACKAGE_NAME}`);
 console.log(`[CLIENT] Temp Script Location: ${TEMP_SCRIPT_DIR}`);
 
+const clientId = MQTT_USERNAME;
+
 // 连接 MQTT Broker (开启 24H 离线消息暂存)
 const client = mqtt.connect(MQTT_BROKER_URL, {
   clean: false,
-  clientId: "one_autojs6_mobile_device",
+  clientId,
   properties: {
     sessionExpiryInterval: 86400, // 设置 EMQX 离线消息暂存 24 小时 (86400秒)
   },
 });
 
 client.on("connect", () => {
-  console.log("[CLIENT] Connected to MQTT Broker successfully.");
+  console.log(
+    `[CLIENT] Connected to MQTT Broker successfully with clientId: ${clientId}`,
+  );
 
-  // 订阅下发任务主题
+  // 订阅公共下发任务主题
   client.subscribe("autojs6/tasks", (err: any) => {
     if (!err) {
       console.log("[CLIENT] Subscribed to topic: autojs6/tasks");
     } else {
       console.error("[CLIENT] Failed to subscribe autojs6/tasks:", err);
+    }
+  });
+
+  // 订阅设备专属下发任务主题
+  const privateTopic = `autojs6/tasks/${clientId}`;
+  client.subscribe(privateTopic, (err) => {
+    if (!err) {
+      console.log(`[CLIENT] Subscribed to private topic: ${privateTopic}`);
+    } else {
+      console.error(`[CLIENT] Failed to subscribe ${privateTopic}:`, err);
     }
   });
 
@@ -97,7 +119,7 @@ client.on("message", async (topic: string, payload: Buffer) => {
   try {
     const data = JSON.parse(messageStr);
 
-    if (topic === "autojs6/tasks") {
+    if (topic === "autojs6/tasks" || topic === `autojs6/tasks/${clientId}`) {
       const { taskId, cat, observe } = data as TaskPayload;
 
       if (cat === "config") {
@@ -108,37 +130,55 @@ client.on("message", async (topic: string, payload: Buffer) => {
       }
 
       if (cat === "kill") {
-        console.log(`[CLIENT] Received Kill command! Emptying queue and stopping current script...`);
+        console.log(
+          `[CLIENT] Received Kill command! Emptying queue and stopping current script...`,
+        );
         taskQueue.length = 0; // Empty the queue
         const killCmds = [
           `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
-          `su -c "am force-stop com.android.chrome"`
+          `su -c "am force-stop com.android.chrome"`,
         ];
         killCmds.forEach((cmd) => {
           exec(cmd, (err: any) => {
-            if (err) console.error(`[CLIENT] Error running kill command "${cmd}":`, err.message);
+            if (err)
+              console.error(
+                `[CLIENT] Error running kill command "${cmd}":`,
+                err.message,
+              );
           });
         });
 
         const activeTaskIds = Object.keys(activeTasks);
         for (const id of activeTaskIds) {
-          sendMqttResult(id, "FAILURE", "Task was forcefully terminated by user kill command.");
+          sendMqttResult(
+            id,
+            "FAILURE",
+            "Task was forcefully terminated by user kill command.",
+          );
           cleanupTask(id);
         }
 
         isExecuting = false;
-        sendMqttResult(taskId, "SUCCESS", "Kill command executed successfully.");
+        sendMqttResult(
+          taskId,
+          "SUCCESS",
+          "Kill command executed successfully.",
+        );
         if (activeConfig.includes("sms")) setTimeout(() => applyConfig(), 2000);
         return;
       }
 
       taskQueue.push(data as TaskPayload);
-      console.log(`[CLIENT] Task ${taskId} (cat: ${cat}) added to queue. Queue length: ${taskQueue.length}`);
+      console.log(
+        `[CLIENT] Task ${taskId} (cat: ${cat}) added to queue. Queue length: ${taskQueue.length}`,
+      );
       processNextTask();
     } else if (topic === "autojs6/status") {
       const { taskId } = data as StatusPayload;
       if (taskId && activeTasks[taskId]) {
-        console.log(`[CLIENT] Clearing running task ${taskId} (notified by server status update)`);
+        console.log(
+          `[CLIENT] Clearing running task ${taskId} (notified by server status update)`,
+        );
         cleanupTask(taskId);
       }
     }
@@ -156,11 +196,10 @@ function processNextTask() {
   if (taskData) executeTask(taskData);
 }
 
-
 function applyConfig() {
   if (shellPoller) clearInterval(shellPoller);
   if (autojsWatcher) clearInterval(autojsWatcher);
-  
+
   if (activeConfig.includes("battery")) {
     console.log("[CLIENT] Starting Shell Poller for Battery...");
     shellPoller = setInterval(() => {
@@ -170,7 +209,11 @@ function applyConfig() {
           if (match) {
             const level = parseInt(match[1]);
             if (lastBatteryLevel !== -1 && level !== lastBatteryLevel) {
-              client.publish("autojs6/events", JSON.stringify({ type: "battery", data: { level } }), { qos: 1 });
+              client.publish(
+                "autojs6/events",
+                JSON.stringify({ type: "battery", data: { level } }),
+                { qos: 1 },
+              );
             }
             lastBatteryLevel = level;
           }
@@ -191,9 +234,13 @@ setInterval(()=>{}, 1000);
 `;
     const localObserverPath = path.join(__dirname, "local_observer.js");
     fs.writeFileSync(localObserverPath, observerScript, "utf8");
-    exec(`su -c "cp ${localObserverPath} ${observerPath} && chmod 777 ${observerPath} && rm -f ${localObserverPath} && am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${observerPath} -t text/javascript"`, (err) => {
-       if (err) console.error("[CLIENT] Failed to start autojs observer:", err);
-    });
+    exec(
+      `su -c "cp ${localObserverPath} ${observerPath} && chmod 777 ${observerPath} && rm -f ${localObserverPath} && am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${observerPath} -t text/javascript"`,
+      (err) => {
+        if (err)
+          console.error("[CLIENT] Failed to start autojs observer:", err);
+      },
+    );
 
     autojsWatcher = setInterval(() => {
       const eventsFile = path.join(TEMP_SCRIPT_DIR, "autojs_events.txt");
@@ -201,19 +248,19 @@ setInterval(()=>{}, 1000);
         try {
           const stats = fs.statSync(eventsFile);
           if (stats.size > lastEventsSize) {
-             const fd = fs.openSync(eventsFile, 'r');
-             const buffer = Buffer.alloc(stats.size - lastEventsSize);
-             fs.readSync(fd, buffer, 0, buffer.length, lastEventsSize);
-             fs.closeSync(fd);
-             lastEventsSize = stats.size;
-             
-             const lines = buffer.toString().split('\n').filter(Boolean);
-             lines.forEach(line => {
-                console.log("[CLIENT] Detected new Auto.js Event:", line);
-                client.publish("autojs6/events", line, { qos: 1 });
-             });
+            const fd = fs.openSync(eventsFile, "r");
+            const buffer = Buffer.alloc(stats.size - lastEventsSize);
+            fs.readSync(fd, buffer, 0, buffer.length, lastEventsSize);
+            fs.closeSync(fd);
+            lastEventsSize = stats.size;
+
+            const lines = buffer.toString().split("\n").filter(Boolean);
+            lines.forEach((line) => {
+              console.log("[CLIENT] Detected new Auto.js Event:", line);
+              client.publish("autojs6/events", line, { qos: 1 });
+            });
           } else if (stats.size < lastEventsSize) {
-             lastEventsSize = 0;
+            lastEventsSize = 0;
           }
         } catch (e) {
           console.error("[CLIENT] Error reading autojs_events.txt:", e);
@@ -224,20 +271,17 @@ setInterval(()=>{}, 1000);
 }
 
 function executeTask(data: TaskPayload) {
-  const { taskId, cat, script, timeout, useRoot } = data;
+  const { taskId, cat, script, timeout, useRoot, callbackUrl } = data;
 
   if (cat === "autojs6") {
-console.log(
-          `[CLIENT] Received Auto.js task ${taskId}. Timeout: ${timeout}s`,
-        );
+    console.log(
+      `[CLIENT] Received Auto.js task ${taskId}. Timeout: ${timeout}s`,
+    );
 
-        const resultPath = path.join(
-          TEMP_SCRIPT_DIR,
-          `autojs_res_${taskId}.json`,
-        );
+    const resultPath = path.join(TEMP_SCRIPT_DIR, `autojs_res_${taskId}.json`);
 
-        // 包装 Auto.js 脚本：执行结果自动写入本地 JSON 结果文件，全脱离局域网 HTTP
-        const wrappedScript = `
+    // 包装 Auto.js 脚本：执行结果自动写入本地 JSON 结果文件，全脱离局域网 HTTP
+    const wrappedScript = `
 var taskResult = "Script execution succeeded";
 var taskId = "${taskId}";
 var resPath = "${resultPath}";
@@ -260,205 +304,200 @@ try {
 }
 `;
 
-        const tempFileName = `autojs_temp_${taskId}.js`;
-        const localTempPath = path.join(__dirname, `local_${tempFileName}`);
-        const targetTempPath = path.join(TEMP_SCRIPT_DIR, tempFileName);
+    const tempFileName = `autojs_temp_${taskId}.js`;
+    const localTempPath = path.join(__dirname, `local_${tempFileName}`);
+    const targetTempPath = path.join(TEMP_SCRIPT_DIR, tempFileName);
 
+    try {
+      fs.writeFileSync(localTempPath, wrappedScript, "utf8");
+      console.log(
+        `[CLIENT] Local temporary script written to ${localTempPath}`,
+      );
+    } catch (err: any) {
+      console.error(
+        `[CLIENT] Failed to write local temporary script to ${localTempPath}:`,
+        err,
+      );
+      sendMqttResult(
+        taskId,
+        "FAILURE",
+        `Failed to write local script: ${err.message}`,
+      );
+      return;
+    }
+
+    // 使用 Root 搬运文件并赋权 777
+    const prepareCommand = `su -c "cp ${localTempPath} ${targetTempPath} && chmod 777 ${targetTempPath} && rm -f ${localTempPath}"`;
+    console.log(
+      `[CLIENT] Copying script to target path using root: ${prepareCommand}`,
+    );
+
+    exec(prepareCommand, (err: any) => {
+      if (err) {
+        console.error(`[CLIENT] Root copy failed:`, err.message);
+        sendMqttResult(taskId, "FAILURE", `Root copy failed: ${err.message}`);
         try {
-          fs.writeFileSync(localTempPath, wrappedScript, "utf8");
-          console.log(
-            `[CLIENT] Local temporary script written to ${localTempPath}`,
-          );
-        } catch (err: any) {
-          console.error(
-            `[CLIENT] Failed to write local temporary script to ${localTempPath}:`,
-            err,
-          );
-          sendMqttResult(
-            taskId,
-            "FAILURE",
-            `Failed to write local script: ${err.message}`,
-          );
-          return;
-        }
+          if (fs.existsSync(localTempPath)) fs.unlinkSync(localTempPath);
+        } catch {}
+        return;
+      }
 
-        // 使用 Root 搬运文件并赋权 777
-        const prepareCommand = `su -c "cp ${localTempPath} ${targetTempPath} && chmod 777 ${targetTempPath} && rm -f ${localTempPath}"`;
-        console.log(
-          `[CLIENT] Copying script to target path using root: ${prepareCommand}`,
+      console.log(
+        `[CLIENT] Script successfully moved to ${targetTempPath} with 777 permissions`,
+      );
+
+      // 5. 设置本地超时强杀定时器
+      const timeoutTimer = setTimeout(() => {
+        console.warn(
+          `[CLIENT] Task ${taskId} timeout (${timeout}s) reached! Initiating force-kill...`,
         );
 
-        exec(prepareCommand, (err: any) => {
-          if (err) {
-            console.error(`[CLIENT] Root copy failed:`, err.message);
-            sendMqttResult(
-              taskId,
-              "FAILURE",
-              `Root copy failed: ${err.message}`,
-            );
-            try {
-              if (fs.existsSync(localTempPath)) fs.unlinkSync(localTempPath);
-            } catch {}
-            return;
-          }
+        const killCmds = [
+          `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
+          `su -c "am force-stop com.android.chrome"`,
+        ];
 
-          console.log(
-            `[CLIENT] Script successfully moved to ${targetTempPath} with 777 permissions`,
-          );
-
-          // 5. 设置本地超时强杀定时器
-          const timeoutTimer = setTimeout(() => {
-            console.warn(
-              `[CLIENT] Task ${taskId} timeout (${timeout}s) reached! Initiating force-kill...`,
-            );
-
-            const killCmds = [
-              `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
-              `su -c "am force-stop com.android.chrome"`,
-            ];
-
-            killCmds.forEach((cmd) => {
-              exec(cmd, (err: any) => {
-                if (err) {
-                  console.error(
-                    `[CLIENT] Error running force-stop command "${cmd}":`,
-                    err.message,
-                  );
-                } else {
-                  console.log(`[CLIENT] Command executed successfully: ${cmd}`);
-                }
-              });
-            });
-
-            // 向 MQTT 回传超时状态
-            sendMqttResult(
-              taskId,
-              "FAILURE",
-              `Timeout: Script execution exceeded ${timeout}s. Termux client killed the application.`,
-            );
-
-            cleanupTask(taskId);
-          }, timeout * 1000);
-
-          // 6. 轮询侦听结果文件的生成，全 MQTT 回传
-          const pollInterval = setInterval(() => {
-            if (fs.existsSync(resultPath)) {
-              try {
-                const content = fs.readFileSync(resultPath, "utf8");
-                const res = JSON.parse(content);
-                sendMqttResult(taskId, res.status, res.message);
-              } catch (e: any) {
-                sendMqttResult(
-                  taskId,
-                  "FAILURE",
-                  "Failed to parse result file: " + e.message,
-                );
-              }
-              cleanupTask(taskId);
-            }
-          }, 500);
-
-          // 缓存任务信息
-          activeTasks[taskId] = {
-            timeoutTimer,
-            pollInterval,
-            tempFilePath: targetTempPath,
-            resultFilePath: resultPath,
-          };
-
-          // 7. 通过 Root 命令启动 Auto.js 载入脚本
-          const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetTempPath} -t text/javascript"`;
-          console.log(
-            `[CLIENT] Executing shell command to start Auto.js: ${runCommand}`,
-          );
-
-          exec(runCommand, (err: any) => {
+        killCmds.forEach((cmd) => {
+          exec(cmd, (err: any) => {
             if (err) {
-              sendMqttResult(
-                taskId,
-                "FAILURE",
-                `Failed to launch Auto.js intent: ${err.message}`,
+              console.error(
+                `[CLIENT] Error running force-stop command "${cmd}":`,
+                err.message,
               );
-              cleanupTask(taskId);
             } else {
-              console.log(`[CLIENT] Task ${taskId} is now running in Auto.js`);
+              console.log(`[CLIENT] Command executed successfully: ${cmd}`);
             }
           });
         });
-      } else if (cat === "shell") {
-        console.log(
-          `[CLIENT] Received Shell task ${taskId}. Timeout: ${timeout}s, useRoot: ${!!useRoot}`,
-        );
 
-        const timeoutTimer = setTimeout(() => {
-          console.warn(
-            `[CLIENT] Shell Task ${taskId} timeout reached! Killing process...`,
-          );
-          sendMqttResult(
-            taskId,
-            "FAILURE",
-            `Timeout: Shell execution exceeded ${timeout}s.`,
-          );
-          cleanupTask(taskId);
-        }, timeout * 1000);
-
-        activeTasks[taskId] = {
-          timeoutTimer,
-          tempFilePath: "",
-        };
-
-        const execCmd = useRoot ? `su -c "${script}"` : script;
-        console.log(
-          `[CLIENT] Running Shell command for task ${taskId}: ${execCmd}`,
-        );
-
-        exec(execCmd, (err: any, stdout: string, stderr: string) => {
-          if (err) {
-            console.error(`[CLIENT] Shell execution failed:`, err.message);
-            sendMqttResult(taskId, "FAILURE", stderr || err.message);
-          } else {
-            console.log(
-              `[CLIENT] Shell execution succeeded for task ${taskId}`,
-            );
-            sendMqttResult(taskId, "SUCCESS", stdout);
-          }
-          cleanupTask(taskId);
-        });
-      } else if (cat === "update") {
-        console.log(
-          `[CLIENT] Received Self-Update task ${taskId}. Timeout: ${timeout}s`,
-        );
-
-        const timeoutTimer = setTimeout(() => {
-          sendMqttResult(
-            taskId,
-            "FAILURE",
-            `Timeout: Self-Update execution exceeded ${timeout}s.`,
-          );
-          cleanupTask(taskId);
-        }, timeout * 1000);
-
-        activeTasks[taskId] = {
-          timeoutTimer,
-          tempFilePath: "",
-        };
-
+        // 向 MQTT 回传超时状态
         sendMqttResult(
           taskId,
-          "SUCCESS",
-          "Update signal triggered. Client is exiting with status code 99.",
+          "FAILURE",
+          `Timeout: Script execution exceeded ${timeout}s. Termux client killed the application.`,
         );
 
-        setTimeout(() => {
+        cleanupTask(taskId);
+      }, timeout * 1000);
+
+      // 6. 轮询侦听结果文件的生成，全 MQTT 回传
+      const pollInterval = setInterval(() => {
+        if (fs.existsSync(resultPath)) {
+          try {
+            const content = fs.readFileSync(resultPath, "utf8");
+            const res = JSON.parse(content);
+            sendMqttResult(taskId, res.status, res.message);
+          } catch (e) {
+            sendMqttResult(
+              taskId,
+              "FAILURE",
+              "Failed to parse result file: " + (e as Error).message,
+            );
+          }
           cleanupTask(taskId);
-          console.log("[CLIENT] Exiting with code 99 for self-update...");
-          process.exit(99);
-        }, 1500);
+        }
+      }, 500);
+
+      // 缓存任务信息
+      activeTasks[taskId] = {
+        timeoutTimer,
+        pollInterval,
+        tempFilePath: targetTempPath,
+        resultFilePath: resultPath,
+        callbackUrl,
+      };
+
+      // 7. 通过 Root 命令启动 Auto.js 载入脚本
+      const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetTempPath} -t text/javascript"`;
+      console.log(
+        `[CLIENT] Executing shell command to start Auto.js: ${runCommand}`,
+      );
+
+      exec(runCommand, (err) => {
+        if (err) {
+          sendMqttResult(
+            taskId,
+            "FAILURE",
+            `Failed to launch Auto.js intent: ${(err as Error).message}`,
+          );
+          cleanupTask(taskId);
+        } else {
+          console.log(`[CLIENT] Task ${taskId} is now running in Auto.js`);
+        }
+      });
+    });
+  } else if (cat === "shell") {
+    console.log(
+      `[CLIENT] Received Shell task ${taskId}. Timeout: ${timeout}s, useRoot: ${!!useRoot}`,
+    );
+
+    const timeoutTimer = setTimeout(() => {
+      console.warn(
+        `[CLIENT] Shell Task ${taskId} timeout reached! Killing process...`,
+      );
+      sendMqttResult(
+        taskId,
+        "FAILURE",
+        `Timeout: Shell execution exceeded ${timeout}s.`,
+      );
+      cleanupTask(taskId);
+    }, timeout * 1000);
+
+    activeTasks[taskId] = {
+      timeoutTimer,
+      tempFilePath: "",
+      callbackUrl,
+    };
+
+    const execCmd = useRoot ? `su -c "${script}"` : script;
+    console.log(
+      `[CLIENT] Running Shell command for task ${taskId}: ${execCmd}`,
+    );
+
+    exec(execCmd, (err: any, stdout: string, stderr: string) => {
+      if (err) {
+        console.error(`[CLIENT] Shell execution failed:`, err.message);
+        sendMqttResult(taskId, "FAILURE", stderr || err.message);
       } else {
-        console.log(
-          `[CLIENT] Ignored task ${taskId} because unknown cat=${cat}`,
-        );
+        console.log(`[CLIENT] Shell execution succeeded for task ${taskId}`);
+        sendMqttResult(taskId, "SUCCESS", stdout);
       }
+      cleanupTask(taskId);
+    });
+  } else if (cat === "update") {
+    console.log(
+      `[CLIENT] Received Self-Update task ${taskId}. Timeout: ${timeout}s`,
+    );
+
+    const timeoutTimer = setTimeout(() => {
+      sendMqttResult(
+        taskId,
+        "FAILURE",
+        `Timeout: Self-Update execution exceeded ${timeout}s.`,
+      );
+      cleanupTask(taskId);
+    }, timeout * 1000);
+
+    activeTasks[taskId] = {
+      timeoutTimer,
+      tempFilePath: "",
+      callbackUrl,
+    };
+
+    sendMqttResult(
+      taskId,
+      "SUCCESS",
+      "Update signal triggered. Client is exiting with status code 99.",
+    );
+
+    setTimeout(() => {
+      cleanupTask(taskId);
+      console.log("[CLIENT] Exiting with code 99 for self-update...");
+      process.exit(99);
+    }, 1500);
+  } else {
+    console.log(`[CLIENT] Ignored task ${taskId} because unknown cat=${cat}`);
+  }
 }
 
 /**
@@ -466,24 +505,57 @@ try {
  * 主题：autojs6/results
  */
 function sendMqttResult(taskId: string, status: string, message: string) {
-  const payload = JSON.stringify({
+  const payloadStr = JSON.stringify({
     taskId,
     status,
     message,
     timestamp: Date.now(),
   });
-  client.publish("autojs6/results", payload, { qos: 1 }, (err) => {
-    if (err) {
-      console.error(
-        `[CLIENT] Failed to send MQTT result for task ${taskId}:`,
-        err.message,
-      );
-    } else {
-      console.log(
-        `[CLIENT] Feedback successfully published to MQTT autojs6/results for task ${taskId}: ${status}`,
-      );
-    }
-  });
+
+  const task = activeTasks[taskId];
+  if (task && task.callbackUrl) {
+    console.log(
+      `[CLIENT] Sending HTTP Callback to ${task.callbackUrl} for task ${taskId}`,
+    );
+    fetch(task.callbackUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payloadStr,
+    })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        console.log(
+          `[CLIENT] HTTP Callback succeeded for task ${taskId}: ${status}`,
+        );
+      })
+      .catch((err) => {
+        console.error(
+          `[CLIENT] HTTP Callback failed for task ${taskId}:`,
+          err.message,
+          "- Falling back to MQTT",
+        );
+        publishToMqtt();
+      });
+  } else {
+    publishToMqtt();
+  }
+
+  function publishToMqtt() {
+    client.publish("autojs6/results", payloadStr, { qos: 1 }, (err) => {
+      if (err) {
+        console.error(
+          `[CLIENT] Failed to send MQTT result for task ${taskId}:`,
+          err.message,
+        );
+      } else {
+        console.log(
+          `[CLIENT] Feedback successfully published to MQTT autojs6/results for task ${taskId}: ${status}`,
+        );
+      }
+    });
+  }
 }
 
 /**
