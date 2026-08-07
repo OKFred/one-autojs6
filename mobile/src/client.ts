@@ -5,6 +5,7 @@ import { exec } from "child_process";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import { getEmqxBrokerUrl } from "./utils/mqtt.js";
+import { buildObserverScript } from "./scripts/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -265,38 +266,20 @@ function applyConfig() {
   if (shellPoller) clearInterval(shellPoller);
   if (autojsWatcher) clearInterval(autojsWatcher);
 
-  if (activeConfig.includes("battery")) {
-    console.log("[CLIENT] Starting Shell Poller for Battery...");
-    shellPoller = setInterval(() => {
-      exec('su -c "dumpsys battery | grep level"', (err, stdout) => {
-        if (!err && stdout) {
-          const match = stdout.match(/level:\s*(\d+)/);
-          if (match) {
-            const level = parseInt(match[1]);
-            if (lastBatteryLevel !== -1 && level !== lastBatteryLevel) {
-              client.publish(
-                "autojs6/events",
-                JSON.stringify({ type: "battery", data: { level } }),
-                { qos: 1 },
-              );
-            }
-            lastBatteryLevel = level;
-          }
-        }
-      });
-    }, 60000);
-  }
+  const hasObserverTask =
+    activeConfig.includes("battery") ||
+    activeConfig.includes("network") ||
+    activeConfig.includes("sms");
 
-  if (activeConfig.includes("sms")) {
-    console.log("[CLIENT] Starting Auto.js Observer for SMS...");
+  if (hasObserverTask) {
+    console.log(
+      `[CLIENT] Starting Auto.js Observer for configs: ${activeConfig.join(", ")}...`
+    );
     const observerPath = path.join(TEMP_SCRIPT_DIR, "autojs_observer.js");
-    const observerScript = `
-var eventResPath = "${path.join(TEMP_SCRIPT_DIR, "autojs_events.txt")}";
-events.broadcast.on("android.provider.Telephony.SMS_RECEIVED", function(intent){
-    files.append(eventResPath, JSON.stringify({ type: "sms", timestamp: Date.now(), data: "Received SMS" }) + "\\n");
-});
-setInterval(()=>{}, 1000);
-`;
+    const eventResPath = path.join(TEMP_SCRIPT_DIR, "autojs_events.txt");
+
+    const observerScript = buildObserverScript(eventResPath, activeConfig);
+
     const localObserverPath = path.join(__dirname, "local_observer.js");
     fs.writeFileSync(localObserverPath, observerScript, "utf8");
     exec(
@@ -304,7 +287,7 @@ setInterval(()=>{}, 1000);
       (err) => {
         if (err)
           console.error("[CLIENT] Failed to start autojs observer:", err);
-      },
+      }
     );
 
     autojsWatcher = setInterval(() => {
@@ -322,7 +305,19 @@ setInterval(()=>{}, 1000);
             const lines = buffer.toString().split("\n").filter(Boolean);
             lines.forEach((line) => {
               console.log("[CLIENT] Detected new Auto.js Event:", line);
-              client.publish("autojs6/events", line, { qos: 1 });
+              try {
+                const parsed = JSON.parse(line);
+                const fullPayload = JSON.stringify({
+                  clientId,
+                  ...parsed,
+                });
+                client.publish(`autojs6/events/${clientId}`, fullPayload, {
+                  qos: 1,
+                });
+                client.publish("autojs6/events", fullPayload, { qos: 1 });
+              } catch {
+                client.publish("autojs6/events", line, { qos: 1 });
+              }
             });
           } else if (stats.size < lastEventsSize) {
             lastEventsSize = 0;
