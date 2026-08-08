@@ -5,8 +5,8 @@ LOG_FILE="/sdcard/Download/emqx_boot.log"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] autojs6_emqx.sh triggered by Magisk" > "$LOG_FILE"
 
 # 0. Initial delay
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sleeping for 15 seconds before proceeding..." >> "$LOG_FILE"
-sleep 15
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sleeping for 2 seconds before proceeding..." >> "$LOG_FILE"
+sleep 2
 
 # 1. Wait for boot to complete (with a 3-minute timeout limit)
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for system boot..." >> "$LOG_FILE"
