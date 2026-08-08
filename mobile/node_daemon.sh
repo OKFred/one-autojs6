@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 
 # 补全 Termux 环境变量
 export PATH="/data/data/com.termux/files/usr/bin:$PATH"
+export TMPDIR="/data/data/com.termux/files/usr/tmp"
 
 # 清理旧的编译残留目录，防止旧的 dist 产物混淆
 rm -rf dist 2>/dev/null
