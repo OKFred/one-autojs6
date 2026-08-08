@@ -317,9 +317,8 @@ function applyConfig() {
                 client.publish(`autojs6/events/${clientId}`, fullPayload, {
                   qos: 1,
                 });
-                client.publish("autojs6/events", fullPayload, { qos: 1 });
               } catch {
-                client.publish("autojs6/events", line, { qos: 1 });
+                client.publish(`autojs6/events/${clientId}`, line, { qos: 1 });
               }
             });
           } else if (stats.size < lastEventsSize) {

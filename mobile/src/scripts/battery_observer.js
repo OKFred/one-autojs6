@@ -1,5 +1,16 @@
 (function() {
     try {
+        var lastState = { level: -1, isCharging: null };
+
+        function checkAndAppend(level, isCharging) {
+            if (lastState.level === level && lastState.isCharging === isCharging) {
+                return;
+            }
+            lastState.level = level;
+            lastState.isCharging = isCharging;
+            appendEvent("battery", { level: level, isCharging: isCharging });
+        }
+
         var batteryFilter = new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED);
         var initialIntent = context.registerReceiver(null, batteryFilter);
         if (initialIntent != null) {
@@ -8,7 +19,7 @@
             var status = initialIntent.getIntExtra("status", -1);
             var batteryPct = (scale > 0) ? Math.floor((level / scale) * 100) : level;
             var isCharging = (status == 2 || status == 5);
-            appendEvent("battery", { level: batteryPct, isCharging: isCharging });
+            checkAndAppend(batteryPct, isCharging);
         }
 
         var receiver = new android.content.BroadcastReceiver({
@@ -19,7 +30,7 @@
                     var status = intent.getIntExtra("status", -1);
                     var batteryPct = (scale > 0) ? Math.floor((level / scale) * 100) : level;
                     var isCharging = (status == 2 || status == 5);
-                    appendEvent("battery", { level: batteryPct, isCharging: isCharging });
+                    checkAndAppend(batteryPct, isCharging);
                 } catch (err) {
                     console.error("Battery receiver error: " + err);
                 }
