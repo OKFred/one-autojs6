@@ -2,10 +2,10 @@
   "name": "one-autojs6-mobile",
   "version": "1.0.0",
   "type": "module",
-  "main": "dist/client.js",
+  "main": "src/client.ts",
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('fs'),path=require('path'); fs.mkdirSync('dist/scripts',{recursive:true}); fs.readdirSync('src/scripts').filter(f=>f.endsWith('.js')).forEach(f=>fs.copyFileSync(path.join('src/scripts',f),path.join('dist/scripts',f)));\"",
-    "start": "node dist/client.js"
+    "dev": "tsx src/client.ts",
+    "start": "tsx src/client.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

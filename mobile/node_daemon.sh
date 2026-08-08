@@ -1,5 +1,5 @@
 #!/bin/bash
-# 移动端客户端守护与更新脚本
+# 移动端客户端守护与更新脚本 (TSX 实时编译模式)
 
 # 确保在脚本所在目录执行
 cd "$(dirname "$0")"
@@ -19,25 +19,12 @@ log() {
     echo "$MSG" >> "$LOGS_DIR/$(date '+%Y-%m-%d').log"
 }
 
-log "Starting mobile client daemon..."
-
-# 移动端本地无感构建：检查若无 dist/client.js 则在本地自动构建
-if [ ! -f "dist/client.js" ]; then
-    log "dist/client.js not found. Building TypeScript locally on mobile device..."
-    npx tsc || npm run build || pnpm build
-fi
-
-log "Starting client using native Node.js..."
+log "Starting mobile client daemon in TSX mode..."
+log "Starting client using tsx (src/client.ts)..."
 
 while true; do
-    # 再次兜底判定，确保本地构建编译成功
-    if [ ! -f "dist/client.js" ]; then
-        log "Re-trying build on mobile..."
-        npx tsc || npm run build || pnpm build
-    fi
-
-    # 运行移动端本地构建好的代码（stdout/stderr 由 client.ts 自行写入日志）
-    node dist/client.js
+    # 直接由 tsx 实时加载执行源码，无编译缓存与产物遗留问题
+    npx tsx src/client.ts
 
     EXIT_CODE=$?
     
@@ -51,11 +38,9 @@ while true; do
         git reset --hard HEAD
         git pull
         
-        # 回到 mobile 目录，并在移动端本地重新编译构建
+        # 回到 mobile 目录
         cd mobile
-        log "Rebuilding client TypeScript on mobile..."
-        npx tsc || npm run build || pnpm build
-        log "Update & build complete. Restarting client in 2 seconds..."
+        log "Update complete. Restarting client via tsx in 2 seconds..."
         sleep 2
     elif [ $EXIT_CODE -eq 0 ]; then
         log "Client exited normally with code 0. Stopping daemon."
