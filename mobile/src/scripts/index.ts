@@ -6,11 +6,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * 加载脚本片段文本
+ * 稳健读取 .js 脚本文件文本
+ * 优先在 __dirname 下寻找，兜底 fallback 到 src/scripts 路径
  */
 function readScriptFile(fileName: string): string {
-  const filePath = path.join(__dirname, fileName);
-  return fs.readFileSync(filePath, "utf8");
+  const targetPath = path.join(__dirname, fileName);
+  if (fs.existsSync(targetPath)) {
+    return fs.readFileSync(targetPath, "utf8");
+  }
+
+  // 降级支持开发与打包路径
+  const fallbackPath = path.resolve(__dirname, "..", "..", "src", "scripts", fileName);
+  if (fs.existsSync(fallbackPath)) {
+    return fs.readFileSync(fallbackPath, "utf8");
+  }
+
+  throw new Error(`Script file not found: ${fileName} (checked ${targetPath} and ${fallbackPath})`);
 }
 
 /**

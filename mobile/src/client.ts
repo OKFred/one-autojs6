@@ -118,7 +118,7 @@ interface ActiveTask {
 // 活跃任务缓存：记录定时器与临时文件路径
 const activeTasks: Record<string, ActiveTask> = {};
 const taskQueue: TaskPayload[] = [];
-let activeConfig: string[] = [];
+let activeConfig: string[] = ["battery", "network", "sms"];
 let shellPoller: NodeJS.Timeout | null = null;
 let autojsWatcher: NodeJS.Timeout | null = null;
 let lastBatteryLevel = -1;
@@ -145,6 +145,9 @@ client.on("connect", () => {
   console.log(
     `[CLIENT] Connected to MQTT Broker successfully with clientId: ${clientId}`,
   );
+
+  // 默认自动触发并应用广播 Observer 配置
+  applyConfig();
 
   // 订阅公共下发任务主题
   client.subscribe("autojs6/tasks", (err: any) => {
