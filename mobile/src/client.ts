@@ -293,6 +293,33 @@ function applyConfig() {
       }
     );
 
+// 记录上一次向 MQTT 发布各类型事件的摘要与时间戳，实现 1000ms 内相同内容节流防抖
+const lastPublishedEvents: Record<string, { payloadKey: string; timestamp: number }> = {};
+const DUP_THRESHOLD_MS = 1000;
+
+function publishEventWithDeduplication(parsed: any, rawLine: string) {
+  const eventType = parsed?.type || "unknown";
+  const payloadKey = JSON.stringify({ type: eventType, data: parsed?.data });
+  const now = Date.now();
+  const last = lastPublishedEvents[eventType];
+
+  if (last && last.payloadKey === payloadKey && now - last.timestamp < DUP_THRESHOLD_MS) {
+    console.log(
+      `[CLIENT] Suppressed duplicate event (${eventType}) within ${DUP_THRESHOLD_MS}ms`
+    );
+    return;
+  }
+
+  lastPublishedEvents[eventType] = { payloadKey, timestamp: now };
+
+  const fullPayload = JSON.stringify({
+    clientId,
+    ...parsed,
+  });
+
+  client.publish(`autojs6/events/${clientId}`, fullPayload, { qos: 1 });
+}
+
     autojsWatcher = setInterval(() => {
       const eventsFile = path.join(TEMP_SCRIPT_DIR, "autojs_events.txt");
       if (fs.existsSync(eventsFile)) {
@@ -310,13 +337,7 @@ function applyConfig() {
               console.log("[CLIENT] Detected new Auto.js Event:", line);
               try {
                 const parsed = JSON.parse(line);
-                const fullPayload = JSON.stringify({
-                  clientId,
-                  ...parsed,
-                });
-                client.publish(`autojs6/events/${clientId}`, fullPayload, {
-                  qos: 1,
-                });
+                publishEventWithDeduplication(parsed, line);
               } catch {
                 client.publish(`autojs6/events/${clientId}`, line, { qos: 1 });
               }
