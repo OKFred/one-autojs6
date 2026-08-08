@@ -19,12 +19,14 @@ log() {
     echo "$MSG" >> "$LOGS_DIR/$(date '+%Y-%m-%d').log"
 }
 
-log "Starting mobile client daemon in TSX mode..."
-log "Starting client using tsx (src/client.ts)..."
+log "Starting mobile client daemon in TSX zero-cache mode..."
 
 while true; do
-    # 直接由 tsx 实时加载执行源码，无编译缓存与产物遗留问题
-    npx tsx src/client.ts
+    # 清理可能存在的 ESBuild/TSX 磁盘临时转译缓存，确保 100% 读取最新源码
+    rm -rf "${TMPDIR:-/tmp}/tsx-"* "$HOME/.cache/tsx"* 2>/dev/null
+
+    # 显式使用 --no-cache 参数强制禁用所有转译缓存
+    npx tsx --no-cache src/client.ts
 
     EXIT_CODE=$?
     

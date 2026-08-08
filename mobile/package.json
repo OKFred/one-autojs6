@@ -4,8 +4,8 @@
   "type": "module",
   "main": "src/client.ts",
   "scripts": {
-    "dev": "tsx src/client.ts",
-    "start": "tsx src/client.ts"
+    "dev": "tsx --no-cache src/client.ts",
+    "start": "tsx --no-cache src/client.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
