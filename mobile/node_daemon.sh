@@ -7,6 +7,12 @@ cd "$(dirname "$0")"
 # 补全 Termux 环境变量
 export PATH="/data/data/com.termux/files/usr/bin:$PATH"
 
+# 清理旧的编译残留目录，防止旧的 dist 产物混淆
+rm -rf dist 2>/dev/null
+
+# 启动时自动强制拉取 Git 最新代码
+(cd .. && git fetch --all && git reset --hard origin/master) >/dev/null 2>&1
+
 # ============================================================
 # 日志系统初始化：所有 [SHERIFF] 输出同时写入 logs/YYYY-MM-DD.log
 # ============================================================
@@ -25,7 +31,7 @@ while true; do
     # 清理可能存在的 ESBuild/TSX 磁盘临时转译缓存，确保 100% 读取最新源码
     rm -rf "${TMPDIR:-/tmp}/tsx-"* "$HOME/.cache/tsx"* 2>/dev/null
 
-    # 显式使用 --no-cache 参数强制禁用所有转译缓存
+    # 显式使用 --no-cache 参数强制禁用所有转译缓存，直接运行 TS 源码
     npx tsx --no-cache src/client.ts
 
     EXIT_CODE=$?
