@@ -366,6 +366,7 @@ function executeTask(data: TaskPayload) {
     // 包装 Auto.js 脚本：执行结果自动写入本地 JSON 结果文件，全脱离局域网 HTTP
     const wrappedScript = `
 var taskResult = "Script execution succeeded";
+var taskStatus = "SUCCESS";
 var taskId = "${taskId}";
 var resPath = "${resultPath}";
 
@@ -375,7 +376,7 @@ try {
     ${script}
     console.log("Script executed successfully.");
     files.write(resPath, JSON.stringify({
-        status: "SUCCESS",
+        status: String(taskStatus),
         message: String(taskResult)
     }));
 } catch (err) {
@@ -464,13 +465,18 @@ try {
       }, timeout * 1000);
 
       // 6. 轮询侦听结果文件的生成，全 MQTT 回传
+      let resultFileFirstSeenAt = 0;
       const pollInterval = setInterval(() => {
         if (fs.existsSync(resultPath)) {
+          if (!resultFileFirstSeenAt) resultFileFirstSeenAt = Date.now();
           try {
             const content = fs.readFileSync(resultPath, "utf8");
             const res = JSON.parse(content);
             sendMqttResult(taskId, res.status, res.message);
           } catch (e) {
+            // Auto.js writes the result file in-place, so the watcher can briefly
+            // observe an empty or partial JSON document. Retry transient parses.
+            if (Date.now() - resultFileFirstSeenAt < 3000) return;
             sendMqttResult(
               taskId,
               "FAILURE",

@@ -36,6 +36,8 @@ const taskService = TaskService.getInstance();
  *                   properties:
  *                     task:
  *                       type: object
+ *                     result:
+ *                       type: object
  * 
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
@@ -59,7 +61,8 @@ export function getTaskStatus(c: Context) {
     ok: true,
     message: 'Retrieve task status successfully',
     data: {
-      task
+      task,
+      result: task.result || {}
     }
   });
 }

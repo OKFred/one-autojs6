@@ -12,6 +12,7 @@ export interface Task {
   timeout: number;
   createdAt: number;
   message: string;
+  result?: Record<string, any>;
 }
 
 /**
@@ -95,6 +96,7 @@ export class TaskService {
     if (task.status === 'EXECUTING') {
       task.status = status;
       task.message = message || 'Completed via callback';
+      task.result = this.parseResult(task.message);
       console.log(`[HTTP] Task ${taskId} updated to ${status}. Msg: ${task.message}`);
 
       // 发布 MQTT 状态更新，通知移动端清理临时文件和定时器，并向前端推送完整结果
@@ -102,6 +104,22 @@ export class TaskService {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 将脚本返回的 JSON 字符串转换为结构化任务结果。
+   *
+   * @param message - 移动端脚本回传的原始消息
+   * @returns 可解析时返回对象，否则返回包含原始消息的对象
+   */
+  private parseResult(message: string): Record<string, any> {
+    try {
+      const parsed = JSON.parse(message);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, any>;
+      }
+    } catch {}
+    return { message };
   }
 
   /**
