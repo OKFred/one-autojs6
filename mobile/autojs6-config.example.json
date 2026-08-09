@@ -1,0 +1,37 @@
+{
+  "deviceId": "phone-001",
+  "mqtt": {
+    "qos": 1,
+    "sessionExpirySeconds": 86400
+  },
+  "security": {
+    "allowedScriptIds": [
+      "device.apps.list",
+      "app.install",
+      "app.version.check",
+      "app.update.store",
+      "app.update.zip",
+      "file.download",
+      "tiktok.post",
+      "client.self-update"
+    ],
+    "maxParamsBytes": 65536
+  },
+  "tasks": {
+    "defaultTimeoutMs": 120000,
+    "maxTimeoutMs": 900000,
+    "queueLimit": 20,
+    "resultPollIntervalMs": 500
+  },
+  "events": {
+    "battery": { "enabled": true, "debounceMs": 1000 },
+    "network": { "enabled": true, "debounceMs": 1000 },
+    "sms": { "enabled": false, "debounceMs": 1000 },
+    "notification": {
+      "enabled": false,
+      "debounceMs": 1000,
+      "packageAllowList": [],
+      "packageDenyList": []
+    }
+  }
+}

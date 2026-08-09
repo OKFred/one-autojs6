@@ -1,11 +1,5 @@
-import { Context } from 'hono';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { AutojsService } from '../service/autojs.service.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { Context } from "hono";
+import { AutojsService } from "../service/autojs.service.js";
 
 const autojsService = AutojsService.getInstance();
 
@@ -47,7 +41,10 @@ async function readBody(c: Context): Promise<TikTokPostBody> {
  */
 function parseList(value?: string): string[] {
   if (!value) return [];
-  return value.split(',').map((item) => item.trim()).filter(Boolean);
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -59,7 +56,12 @@ function parseList(value?: string): string[] {
  * @param max - 允许的最大值
  * @returns 限制在指定区间内的整数
  */
-function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+function clampNumber(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(parsed)));
@@ -67,7 +69,7 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
 
 /**
  * 异步下发“TikTok 自动发帖”任务。
- * 
+ *
  * @swagger
  * /api/tiktok/post:
  *   post:
@@ -163,31 +165,85 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
  *                   type: string
  *                 data:
  *                   type: object
- * 
+ *
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
 export async function tiktokPost(c: Context) {
   try {
     const body = await readBody(c);
-    const title = body.title ?? c.req.query('title') ?? '';
-    const details = body.details ?? c.req.query('details') ?? '';
-    const titles = Array.isArray(body.titles) ? body.titles.filter((item) => typeof item === 'string' && item.trim()) : parseList(c.req.query('titles'));
-    const detailsPool = Array.isArray(body.detailsPool) ? body.detailsPool.filter((item) => typeof item === 'string' && item.trim()) : parseList(c.req.query('detailsPool'));
-    const imagePath = body.imagePath ?? c.req.query('imagePath') ?? '';
-    const imagePaths = Array.isArray(body.imagePaths) ? body.imagePaths.filter((item) => typeof item === 'string' && item.trim()) : parseList(c.req.query('imagePaths'));
-    const videoPath = body.videoPath ?? c.req.query('videoPath') ?? '';
-    const videoPaths = Array.isArray(body.videoPaths) ? body.videoPaths.filter((item) => typeof item === 'string' && item.trim()) : parseList(c.req.query('videoPaths'));
-    const materialDir = body.materialDir ?? c.req.query('materialDir') ?? '/sdcard/DCIM/Camera';
-    const timeout = clampNumber(body.timeout ?? c.req.query('timeout'), 240, 120, 600);
-    const minIntervalSeconds = clampNumber(body.minIntervalSeconds ?? c.req.query('minIntervalSeconds'), 900, 0, 86400);
-    const maxPostsPerDay = clampNumber(body.maxPostsPerDay ?? c.req.query('maxPostsPerDay'), 10, 0, 100);
-    const linkOnly = body.linkOnly === true || c.req.query('linkOnly') === 'true';
-    const linkMaxAttempts = clampNumber(body.linkMaxAttempts ?? c.req.query('linkMaxAttempts'), 8, 1, 30);
-    const linkRetrySeconds = clampNumber(body.linkRetrySeconds ?? c.req.query('linkRetrySeconds'), 15, 2, 60);
+    const title = body.title ?? c.req.query("title") ?? "";
+    const details = body.details ?? c.req.query("details") ?? "";
+    const titles = Array.isArray(body.titles)
+      ? body.titles.filter((item) => typeof item === "string" && item.trim())
+      : parseList(c.req.query("titles"));
+    const detailsPool = Array.isArray(body.detailsPool)
+      ? body.detailsPool.filter(
+          (item) => typeof item === "string" && item.trim(),
+        )
+      : parseList(c.req.query("detailsPool"));
+    const imagePath = body.imagePath ?? c.req.query("imagePath") ?? "";
+    const imagePaths = Array.isArray(body.imagePaths)
+      ? body.imagePaths.filter(
+          (item) => typeof item === "string" && item.trim(),
+        )
+      : parseList(c.req.query("imagePaths"));
+    const videoPath = body.videoPath ?? c.req.query("videoPath") ?? "";
+    const videoPaths = Array.isArray(body.videoPaths)
+      ? body.videoPaths.filter(
+          (item) => typeof item === "string" && item.trim(),
+        )
+      : parseList(c.req.query("videoPaths"));
+    const materialDir =
+      body.materialDir ?? c.req.query("materialDir") ?? "/sdcard/DCIM/Camera";
+    const timeout = clampNumber(
+      body.timeout ?? c.req.query("timeout"),
+      240,
+      120,
+      600,
+    );
+    const minIntervalSeconds = clampNumber(
+      body.minIntervalSeconds ?? c.req.query("minIntervalSeconds"),
+      900,
+      0,
+      86400,
+    );
+    const maxPostsPerDay = clampNumber(
+      body.maxPostsPerDay ?? c.req.query("maxPostsPerDay"),
+      10,
+      0,
+      100,
+    );
+    const linkOnly =
+      body.linkOnly === true || c.req.query("linkOnly") === "true";
+    const linkMaxAttempts = clampNumber(
+      body.linkMaxAttempts ?? c.req.query("linkMaxAttempts"),
+      8,
+      1,
+      30,
+    );
+    const linkRetrySeconds = clampNumber(
+      body.linkRetrySeconds ?? c.req.query("linkRetrySeconds"),
+      15,
+      2,
+      60,
+    );
 
-    if (!linkOnly && !title.trim() && !details.trim() && titles.length === 0 && detailsPool.length === 0) {
-      return c.json({ ok: false, message: 'At least one title or details value is required', data: {} }, 400);
+    if (
+      !linkOnly &&
+      !title.trim() &&
+      !details.trim() &&
+      titles.length === 0 &&
+      detailsPool.length === 0
+    ) {
+      return c.json(
+        {
+          ok: false,
+          message: "At least one title or details value is required",
+          data: {},
+        },
+        400,
+      );
     }
 
     const request = {
@@ -204,27 +260,27 @@ export async function tiktokPost(c: Context) {
       maxPostsPerDay,
       linkOnly,
       linkMaxAttempts,
-      linkRetrySeconds
+      linkRetrySeconds,
     };
 
-    const templatePath = path.join(__dirname, '../scripts/tiktok_post_v2.js');
-    let script = fs.readFileSync(templatePath, 'utf8');
-
-    script = script.replace('{{requestJson}}', JSON.stringify(request));
-
-    const task = await autojsService.dispatchTask(script, timeout);
+    const task = await autojsService.dispatchTask(
+      "tiktok.post",
+      request,
+      timeout,
+    );
 
     return c.json({
       ok: true,
-      message: 'TikTok auto-post task dispatched successfully',
+      message: "TikTok auto-post task dispatched successfully",
       data: {
         taskId: task.taskId,
         status: task.status,
-        resultUrl: `/api/tasks/${task.taskId}`
-      }
+        resultUrl: `/api/tasks/${task.taskId}`,
+      },
     });
-  } catch (err: any) {
-    console.error('[HTTP] Error creating TikTok post task:', err);
-    return c.json({ ok: false, message: err.message, data: {} }, 500);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[HTTP] Error creating TikTok post task:", error);
+    return c.json({ ok: false, message, data: {} }, 500);
   }
 }

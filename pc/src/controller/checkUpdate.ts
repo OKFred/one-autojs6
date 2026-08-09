@@ -1,17 +1,11 @@
-import { Context } from 'hono';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { AutojsService } from '../service/autojs.service.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { Context } from "hono";
+import { AutojsService } from "../service/autojs.service.js";
 
 const autojsService = AutojsService.getInstance();
 
 /**
  * 异步下发“检查宿主应用更新”任务。
- * 
+ *
  * @swagger
  * /api/apps/check-update:
  *   post:
@@ -73,41 +67,35 @@ const autojsService = AutojsService.getInstance();
  *                   type: string
  *                 data:
  *                   type: object
- * 
+ *
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
 export async function checkUpdate(c: Context) {
   try {
-    const packageName = c.req.query('packageName') || 'org.autojs.autojs6';
-    const latestVersion = c.req.query('latestVersion') || '';
-    const latestVersionCode = c.req.query('latestVersionCode') || '';
-    const timeoutStr = c.req.query('timeout') || '15';
+    const packageName = c.req.query("packageName") || "org.autojs.autojs6";
+    const latestVersion = c.req.query("latestVersion") || "";
+    const latestVersionCode = c.req.query("latestVersionCode") || "";
+    const timeoutStr = c.req.query("timeout") || "15";
     const timeout = parseInt(timeoutStr, 10);
 
-    const PORT = parseInt(process.env.PORT || '3000', 10);
-    const PC_IP = process.env.PC_IP || '';
-
-    // 读取并渲染外部脚本模板
-    const templatePath = path.join(__dirname, '../scripts/check_app_update.js');
-    let script = fs.readFileSync(templatePath, 'utf8');
-    script = script
-      .replace('{{packageName}}', packageName)
-      .replace('{{latestVersion}}', latestVersion)
-      .replace('{{latestVersionCode}}', latestVersionCode);
-
-    const task = await autojsService.dispatchTask(script, timeout, PC_IP, PORT);
+    const task = await autojsService.dispatchTask(
+      "app.version.check",
+      { packageName, latestVersion, latestVersionCode },
+      timeout,
+    );
 
     return c.json({
       ok: true,
-      message: 'App check update task dispatched successfully',
+      message: "App check update task dispatched successfully",
       data: {
         taskId: task.taskId,
-        status: task.status
-      }
+        status: task.status,
+      },
     });
-  } catch (err: any) {
-    console.error('[HTTP] Error creating check update task:', err);
-    return c.json({ ok: false, message: err.message, data: {} }, 500);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[HTTP] Error creating check update task:", error);
+    return c.json({ ok: false, message, data: {} }, 500);
   }
 }

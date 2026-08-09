@@ -1,17 +1,17 @@
-import { Context } from 'hono';
-import { ShellService } from '../service/shell.service.js';
+import { Context } from "hono";
+import { AutojsService } from "../service/autojs.service.js";
 
-const shellService = ShellService.getInstance();
+const autojsService = AutojsService.getInstance();
 
 /**
  * 异步下发获取设备应用包名列表的任务。
- * 
+ *
  * @swagger
  * /api/apps:
  *   post:
  *     tags: [应用管理]
  *     summary: 异步下发获取设备应用包名任务
- *     description: 异步下发 Shell 命令 `pm list packages` 获取应用包名，执行极其迅速，返回 taskId 供轮询。
+ *     description: 通过 Node Server 下发手机端已注册的 device.apps.list 脚本，返回 taskId 供轮询。
  *     parameters:
  *       - in: query
  *         name: type
@@ -58,38 +58,33 @@ const shellService = ShellService.getInstance();
  *                   type: string
  *                 data:
  *                   type: object
- * 
+ *
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
 export async function createApps(c: Context) {
   try {
-    const type = c.req.query('type') || 'all';
-    const timeoutStr = c.req.query('timeout') || '15';
+    const type = c.req.query("type") || "all";
+    const timeoutStr = c.req.query("timeout") || "15";
     const timeout = parseInt(timeoutStr, 10);
 
-    let pmCmd = 'pm list packages';
-    if (type === 'third') {
-      pmCmd = 'pm list packages -3';
-    } else if (type === 'system') {
-      pmCmd = 'pm list packages -s';
-    }
-
-    const PORT = parseInt(process.env.PORT || '3000', 10);
-    const PC_IP = process.env.PC_IP || '';
-
-    const task = await shellService.dispatchTask(pmCmd, timeout, PC_IP, PORT, false);
+    const task = await autojsService.dispatchTask(
+      "device.apps.list",
+      { type },
+      timeout,
+    );
 
     return c.json({
       ok: true,
-      message: 'Apps package task dispatched successfully',
+      message: "Apps package task dispatched successfully",
       data: {
         taskId: task.taskId,
-        status: task.status
-      }
+        status: task.status,
+      },
     });
-  } catch (err: any) {
-    console.error('[HTTP] Error creating apps list task:', err);
-    return c.json({ ok: false, message: err.message, data: {} }, 500);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[HTTP] Error creating apps list task:", error);
+    return c.json({ ok: false, message, data: {} }, 500);
   }
 }

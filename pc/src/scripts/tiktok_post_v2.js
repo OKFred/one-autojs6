@@ -2,6 +2,7 @@ auto.waitFor();
 
 var request = {{requestJson}};
 var packageName = "com.zhiliaoapp.musically";
+var autojsPackageName = "org.autojs.autojs6";
 var statePath = "/sdcard/Download/tiktok_post_state.json";
 var phase = "initializing";
 var selectedMediaPath = "";
@@ -520,6 +521,24 @@ function extractTikTokUrl(clipboard) {
 }
 
 /**
+ * 读取系统剪贴板。Android 10+ 会拒绝后台应用读取剪贴板，因此首次读取
+ * 为空时短暂把 AutoJS6 切到前台，读取完成后再恢复 TikTok。
+ *
+ * @returns {string} 剪贴板文本
+ */
+function readClipboardText() {
+    var clipboard = String(getClip() || "");
+    if (clipboard) return clipboard;
+    reportProgress("Retrying clipboard read with AutoJS6 in the foreground.");
+    app.launchPackage(autojsPackageName);
+    pause(1200, 1800);
+    clipboard = String(getClip() || "");
+    app.launchPackage(packageName);
+    pause(1800, 2600);
+    return clipboard;
+}
+
+/**
  * 通过作品分享面板复制并验证链接，失败时重试。
  *
  * @returns {string} 已验证的 TikTok URL
@@ -540,7 +559,7 @@ function copyPostUrl() {
         }
         if (clickedCopy) {
             pause(1200, 2200);
-            var url = extractTikTokUrl(getClip());
+            var url = extractTikTokUrl(readClipboardText());
             if (url) return url;
             reportProgress("TikTok is still processing the post; retrying link copy (" + (attempt + 1) + "/" + maxAttempts + ").");
         } else {
@@ -564,6 +583,8 @@ function retrieveLatestPostUrl() {
     selectedTitle = String(request.title || "");
     selectedDetails = String(request.details || "");
     phase = "opening_profile";
+    app.launchPackage(packageName);
+    pause(2200, 3200);
     navigateToProfile();
     openLatestPost();
     phase = "copying_link";

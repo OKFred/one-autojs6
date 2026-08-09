@@ -1,692 +1,697 @@
-import mqtt from "mqtt";
+import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
-import { exec } from "child_process";
-import dotenv from "dotenv";
 import { fileURLToPath } from "url";
-import { getEmqxBrokerUrl } from "./utils/mqtt.js";
+import dotenv from "dotenv";
+import mqtt from "mqtt";
+
+import { loadConfig } from "./config.js";
+import {
+  PROTOCOL_VERSION,
+  isRecord,
+  parseDeviceTaskRequest,
+  type DeviceEventPayload,
+  type DevicePresencePayload,
+  type DeviceTaskRequest,
+  type DeviceTaskResult,
+  type TaskStatus,
+} from "./protocol.js";
 import { buildObserverScript } from "./scripts/index.js";
+import {
+  getRegisteredScript,
+  listRegisteredScripts,
+  readRegisteredScript,
+} from "./task-registry.js";
+import { getEmqxBrokerUrl } from "./utils/mqtt.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentFile = fileURLToPath(import.meta.url);
+const sourceDirectory = path.dirname(currentFile);
+const mobileRoot = path.resolve(sourceDirectory, "..");
+const logsDirectory = path.join(mobileRoot, "logs");
+const clientVersion = "2.0.0";
 
-// ============================================================
-// 日志系统初始化：将所有 console 输出同时写入日期日志文件
-// ============================================================
-
-/** 获取项目根目录（mobile 的上一级） */
-const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
-const LOGS_DIR = path.join(PROJECT_ROOT, "logs");
-
-/** 确保 logs 目录存在 */
-if (!fs.existsSync(LOGS_DIR)) {
-  fs.mkdirSync(LOGS_DIR, { recursive: true });
-}
-
-/** 获取本地时区的 YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss.SSS 格式字符串 */
+/** 格式化本地日期。 */
 function formatLocalDate(date: Date, withTime = false): string {
-  const pad = (n: number, len = 2) => String(n).padStart(len, "0");
-  const y = date.getFullYear();
-  const mo = pad(date.getMonth() + 1);
-  const d = pad(date.getDate());
-  if (!withTime) return `${y}-${mo}-${d}`;
-  const h = pad(date.getHours());
-  const mi = pad(date.getMinutes());
-  const s = pad(date.getSeconds());
-  const ms = pad(date.getMilliseconds(), 3);
-  return `${y}-${mo}-${d} ${h}:${mi}:${s}.${ms}`;
+  const pad = (value: number, length = 2) =>
+    String(value).padStart(length, "0");
+  const datePart = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  if (!withTime) return datePart;
+  return `${datePart} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
 }
 
-/** 获取当前日志文件路径（按本地时区日期划分） */
-function getLogFilePath(): string {
-  return path.join(LOGS_DIR, `${formatLocalDate(new Date())}.log`);
-}
-
-/** 格式化日志前缀时间戳（本地时区） */
-function getTimestamp(): string {
-  return formatLocalDate(new Date(), true);
-}
-
-/** 追加写入日志文件 */
-function writeToLog(level: string, args: unknown[]): void {
-  const line = `[${getTimestamp()}] [${level}] ${args.map(String).join(" ")}\n`;
-  try {
-    fs.appendFileSync(getLogFilePath(), line, "utf8");
-  } catch {
-    // 静默处理，避免死循环
+/** 将控制台日志同步写入按天文件。 */
+function initializeLogging(): void {
+  fs.mkdirSync(logsDirectory, { recursive: true });
+  const methods = {
+    log: console.log.bind(console),
+    error: console.error.bind(console),
+    warn: console.warn.bind(console),
+  };
+  for (const level of Object.keys(methods) as Array<keyof typeof methods>) {
+    console[level] = (...args: unknown[]) => {
+      methods[level](...args);
+      try {
+        const filePath = path.join(
+          logsDirectory,
+          `${formatLocalDate(new Date())}.log`,
+        );
+        fs.appendFileSync(
+          filePath,
+          `[${formatLocalDate(new Date(), true)}] [${level.toUpperCase()}] ${args.map(String).join(" ")}\n`,
+          "utf8",
+        );
+      } catch {
+        // 日志失败不能影响守护进程。
+      }
+    };
   }
 }
 
-/** 重写 console 方法，同时写入文件和原始输出 */
-const _log = console.log.bind(console);
-const _error = console.error.bind(console);
-const _warn = console.warn.bind(console);
-
-console.log = (...args: unknown[]) => {
-  _log(...args);
-  writeToLog("INFO", args);
-};
-console.error = (...args: unknown[]) => {
-  _error(...args);
-  writeToLog("ERROR", args);
-};
-console.warn = (...args: unknown[]) => {
-  _warn(...args);
-  writeToLog("WARN", args);
-};
-
+initializeLogging();
 dotenv.config();
 
-const MQTT_USERNAME = process.env.EMQX_USERNAME;
-const MQTT_HOST = process.env.EMQX_HOST;
+const mqttUsername = process.env.EMQX_USERNAME;
+const mqttHost = process.env.EMQX_HOST;
+if (!mqttUsername || !mqttHost) {
+  throw new Error("EMQX_USERNAME and EMQX_HOST are required in .env");
+}
 
-if (!MQTT_USERNAME || !MQTT_HOST) {
-  console.error(
-    "[ERROR] EMQX_USERNAME and EMQX_HOST are required in .env. Please check your config.",
+const { config, configPath } = loadConfig();
+const deviceId = config.deviceId || mqttUsername;
+if (!/^[A-Za-z0-9._:-]{1,100}$/.test(deviceId)) {
+  throw new Error(
+    "deviceId may only contain letters, numbers, dot, underscore, colon and hyphen",
   );
-  process.exit(1);
 }
+const brokerUrl = getEmqxBrokerUrl();
+const autojsPackageName = "org.autojs.autojs6";
+const tempScriptDirectory = process.env.TEMP_SCRIPT_DIR || "/sdcard/Download";
+const tasksTopic = `autojs6/v2/devices/${deviceId}/tasks`;
+const resultsTopic = `autojs6/v2/devices/${deviceId}/results`;
+const eventsTopic = `autojs6/v2/devices/${deviceId}/events`;
+const presenceTopic = `autojs6/v2/devices/${deviceId}/presence`;
 
-const MQTT_BROKER_URL = getEmqxBrokerUrl();
-
-const AUTOJS_PACKAGE_NAME = "org.autojs.autojs6";
-const TEMP_SCRIPT_DIR = process.env.TEMP_SCRIPT_DIR || "/sdcard/Download";
-
-interface TaskPayload {
-  taskId: string;
-  cat: string;
-  script: string;
-  timeout: number;
-  useRoot?: boolean;
-  observe?: string[];
-  callbackUrl?: string;
-}
-
-interface StatusPayload {
-  taskId: string;
-  status: string;
+/** 隐去 MQTT URL 中的认证信息，避免凭据进入控制台和本地日志。 */
+function redactBrokerUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username) parsed.username = "***";
+    if (parsed.password) parsed.password = "***";
+    return parsed.toString();
+  } catch {
+    return value.replace(/\/\/[^@/]+@/, "//***:***@");
+  }
 }
 
 interface ActiveTask {
-  timeoutTimer?: NodeJS.Timeout;
-  pollInterval?: NodeJS.Timeout;
+  request: DeviceTaskRequest;
+  startedAt: number;
+  timeoutTimer: NodeJS.Timeout;
+  pollInterval: NodeJS.Timeout;
   tempFilePath: string;
-  resultFilePath?: string;
-  callbackUrl?: string;
+  resultFilePath: string;
 }
 
-// 活跃任务缓存：记录定时器与临时文件路径
-const activeTasks: Record<string, ActiveTask> = {};
-const taskQueue: TaskPayload[] = [];
-let activeConfig: string[] = ["battery", "network", "sms"];
-let shellPoller: NodeJS.Timeout | null = null;
-let autojsWatcher: NodeJS.Timeout | null = null;
-let lastBatteryLevel = -1;
+interface ScriptResultFile {
+  status: TaskStatus;
+  code: string;
+  message: string;
+  data: unknown;
+}
+
+const taskQueue: DeviceTaskRequest[] = [];
+const queuedTaskIds = new Set<string>();
+let activeTask: ActiveTask | null = null;
+let isStartingTask = false;
+let observerWatcher: NodeJS.Timeout | null = null;
 let lastEventsSize = 0;
-let isExecuting = false;
+const lastPublishedEvents = new Map<
+  string,
+  { key: string; timestamp: number }
+>();
 
-console.log("[CLIENT] Starting Termux MQTT Daemon in TypeScript...");
-console.log(`[CLIENT] Configured MQTT Broker: ${MQTT_BROKER_URL}`);
-console.log(`[CLIENT] Configured Auto.js Package: ${AUTOJS_PACKAGE_NAME}`);
-console.log(`[CLIENT] Temp Script Location: ${TEMP_SCRIPT_DIR}`);
+/** 构造设备能力与在线状态消息。 */
+function presence(status: "ONLINE" | "OFFLINE"): DevicePresencePayload {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    deviceId,
+    status,
+    clientVersion,
+    timestamp: Date.now(),
+    scripts: listRegisteredScripts().map(({ scriptId, version }) => ({
+      scriptId,
+      version,
+    })),
+  };
+}
 
-const clientId = MQTT_USERNAME;
-
-// 连接 MQTT Broker (开启 24H 离线消息暂存)
-const client = mqtt.connect(MQTT_BROKER_URL, {
+const mqttClient = mqtt.connect(brokerUrl, {
   clean: false,
-  clientId,
-  properties: {
-    sessionExpiryInterval: 86400, // 设置 EMQX 离线消息暂存 24 小时 (86400秒)
+  clientId: deviceId,
+  properties: { sessionExpiryInterval: config.mqtt.sessionExpirySeconds },
+  will: {
+    topic: presenceTopic,
+    payload: JSON.stringify(presence("OFFLINE")),
+    qos: config.mqtt.qos,
+    retain: true,
   },
 });
 
-client.on("connect", () => {
-  console.log(
-    `[CLIENT] Connected to MQTT Broker successfully with clientId: ${clientId}`,
-  );
-
-  // 默认自动触发并应用广播 Observer 配置
-  applyConfig();
-
-  // 订阅公共下发任务主题
-  client.subscribe("autojs6/tasks", (err: any) => {
-    if (!err) {
-      console.log("[CLIENT] Subscribed to topic: autojs6/tasks");
-    } else {
-      console.error("[CLIENT] Failed to subscribe autojs6/tasks:", err);
-    }
+/** 使用 `su -c` 执行仅由本地代码构造的 Android 命令。 */
+function runRootCommand(command: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile("su", ["-c", command], (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
   });
-
-  // 订阅设备专属下发任务主题
-  const privateTopic = `autojs6/tasks/${clientId}`;
-  client.subscribe(privateTopic, (err) => {
-    if (!err) {
-      console.log(`[CLIENT] Subscribed to private topic: ${privateTopic}`);
-    } else {
-      console.error(`[CLIENT] Failed to subscribe ${privateTopic}:`, err);
-    }
-  });
-
-  // 订阅任务完成/清理主题
-  client.subscribe("autojs6/status", (err: any) => {
-    if (!err) {
-      console.log("[CLIENT] Subscribed to topic: autojs6/status");
-    } else {
-      console.error("[CLIENT] Failed to subscribe autojs6/status:", err);
-    }
-  });
-});
-
-client.on("error", (err) => {
-  console.error("[CLIENT] MQTT connection error:", err);
-});
-
-client.on("message", async (topic: string, payload: Buffer) => {
-  const messageStr = payload.toString();
-
-  try {
-    const data = JSON.parse(messageStr);
-
-    if (topic === "autojs6/tasks" || topic === `autojs6/tasks/${clientId}`) {
-      const { taskId, cat, observe } = data as TaskPayload;
-
-      if (cat === "config") {
-        console.log(`[CLIENT] Received Observer Config:`, observe);
-        activeConfig = observe || [];
-        applyConfig();
-        return;
-      }
-
-      if (cat === "kill") {
-        console.log(
-          `[CLIENT] Received Kill command! Emptying queue and stopping current script...`,
-        );
-        taskQueue.length = 0; // Empty the queue
-        const killCmds = [
-          `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
-          `su -c "am force-stop com.android.chrome"`,
-        ];
-        killCmds.forEach((cmd) => {
-          exec(cmd, (err: any) => {
-            if (err)
-              console.error(
-                `[CLIENT] Error running kill command "${cmd}":`,
-                err.message,
-              );
-          });
-        });
-
-        const activeTaskIds = Object.keys(activeTasks);
-        for (const id of activeTaskIds) {
-          sendMqttResult(
-            id,
-            "FAILURE",
-            "Task was forcefully terminated by user kill command.",
-          );
-          cleanupTask(id);
-        }
-
-        isExecuting = false;
-        sendMqttResult(
-          taskId,
-          "SUCCESS",
-          "Kill command executed successfully.",
-        );
-        if (activeConfig.includes("sms")) setTimeout(() => applyConfig(), 2000);
-        return;
-      }
-
-      taskQueue.push(data as TaskPayload);
-      console.log(
-        `[CLIENT] Task ${taskId} (cat: ${cat}) added to queue. Queue length: ${taskQueue.length}`,
-      );
-      processNextTask();
-    } else if (topic === "autojs6/status") {
-      const { taskId } = data as StatusPayload;
-      if (taskId && activeTasks[taskId]) {
-        console.log(
-          `[CLIENT] Clearing running task ${taskId} (notified by server status update)`,
-        );
-        cleanupTask(taskId);
-      }
-    }
-  } catch (err) {
-    console.error("[CLIENT] Error handling MQTT message:", err);
-  }
-});
-
-function processNextTask() {
-  if (isExecuting) return;
-  if (taskQueue.length === 0) return;
-
-  isExecuting = true;
-  const taskData = taskQueue.shift();
-  if (taskData) executeTask(taskData);
 }
 
-function applyConfig() {
-  if (shellPoller) clearInterval(shellPoller);
-  if (autojsWatcher) clearInterval(autojsWatcher);
+/** 为本地生成的路径添加 POSIX shell 单引号。 */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
 
-  const hasObserverTask =
-    activeConfig.includes("battery") ||
-    activeConfig.includes("network") ||
-    activeConfig.includes("sms");
+/** 将设备事件按配置防抖后发布。 */
+function publishEvent(value: unknown): void {
+  if (!isRecord(value) || typeof value.type !== "string") return;
+  const timestamp =
+    typeof value.timestamp === "number" ? value.timestamp : Date.now();
+  const data = isRecord(value.data) ? value.data : {};
+  const eventConfig = config.events[value.type as keyof typeof config.events];
+  const debounceMs = eventConfig?.debounceMs ?? 1000;
+  const key = JSON.stringify(data);
+  const previous = lastPublishedEvents.get(value.type);
+  if (
+    previous &&
+    previous.key === key &&
+    Date.now() - previous.timestamp < debounceMs
+  ) {
+    return;
+  }
+  lastPublishedEvents.set(value.type, { key, timestamp: Date.now() });
+  const payload: DeviceEventPayload = {
+    protocolVersion: PROTOCOL_VERSION,
+    deviceId,
+    type: value.type,
+    timestamp,
+    data,
+  };
+  mqttClient.publish(eventsTopic, JSON.stringify(payload), {
+    qos: config.mqtt.qos,
+  });
+}
 
-  if (hasObserverTask) {
-    console.log(
-      `[CLIENT] Starting Auto.js Observer for configs: ${activeConfig.join(", ")}...`
-    );
-    const observerPath = path.join(TEMP_SCRIPT_DIR, "autojs_observer.js");
-    const eventResPath = path.join(TEMP_SCRIPT_DIR, "autojs_events.txt");
-
-    const observerScript = buildObserverScript(eventResPath, activeConfig);
-
-    const localObserverPath = path.join(__dirname, "local_observer.js");
-    fs.writeFileSync(localObserverPath, observerScript, "utf8");
-    exec(
-      `su -c "cp ${localObserverPath} ${observerPath} && chmod 777 ${observerPath} && rm -f ${localObserverPath} && am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${observerPath} -t text/javascript"`,
-      (err) => {
-        if (err)
-          console.error("[CLIENT] Failed to start autojs observer:", err);
-      }
-    );
-
-// 记录上一次向 MQTT 发布各类型事件的摘要与时间戳，实现 1000ms 内相同内容节流防抖
-const lastPublishedEvents: Record<string, { payloadKey: string; timestamp: number }> = {};
-const DUP_THRESHOLD_MS = 1000;
-
-function publishEventWithDeduplication(parsed: any, rawLine: string) {
-  const eventType = parsed?.type || "unknown";
-  const payloadKey = JSON.stringify({ type: eventType, data: parsed?.data });
-  const now = Date.now();
-  const last = lastPublishedEvents[eventType];
-
-  if (last && last.payloadKey === payloadKey && now - last.timestamp < DUP_THRESHOLD_MS) {
-    console.log(
-      `[CLIENT] Suppressed duplicate event (${eventType}) within ${DUP_THRESHOLD_MS}ms`
+/** 启动配置文件指定的本地事件监听脚本。 */
+async function applyObserverConfig(): Promise<void> {
+  if (observerWatcher) clearInterval(observerWatcher);
+  observerWatcher = null;
+  const observerControlPath = path.join(
+    tempScriptDirectory,
+    "autojs_observer.instance",
+  );
+  const observerInstanceId = crypto.randomUUID();
+  const localControlPath = path.join(
+    sourceDirectory,
+    "local_autojs_observer.instance",
+  );
+  fs.writeFileSync(localControlPath, observerInstanceId, "utf8");
+  const enabled = Object.values(config.events).some((item) => item.enabled);
+  if (!enabled) {
+    await runRootCommand(
+      `cp ${shellQuote(localControlPath)} ${shellQuote(observerControlPath)} && chmod 600 ${shellQuote(observerControlPath)} && rm -f ${shellQuote(localControlPath)}`,
     );
     return;
   }
 
-  lastPublishedEvents[eventType] = { payloadKey, timestamp: now };
+  const observerPath = path.join(tempScriptDirectory, "autojs_observer.js");
+  const eventPath = path.join(tempScriptDirectory, "autojs_events.txt");
+  const localPath = path.join(sourceDirectory, "local_autojs_observer.js");
+  fs.writeFileSync(
+    localPath,
+    buildObserverScript(
+      eventPath,
+      config.events,
+      observerControlPath,
+      observerInstanceId,
+    ),
+    "utf8",
+  );
+  await runRootCommand(
+    `cp ${shellQuote(localControlPath)} ${shellQuote(observerControlPath)} && cp ${shellQuote(localPath)} ${shellQuote(observerPath)} && chmod 600 ${shellQuote(observerControlPath)} ${shellQuote(observerPath)} && rm -f ${shellQuote(localControlPath)} ${shellQuote(localPath)} && am start -n ${autojsPackageName}/org.autojs.autojs.external.open.RunIntentActivity -d file://${observerPath} -t text/javascript`,
+  );
 
-  const fullPayload = JSON.stringify({
-    clientId,
-    ...parsed,
-  });
-
-  client.publish(`autojs6/events/${clientId}`, fullPayload, { qos: 1 });
-}
-
-    autojsWatcher = setInterval(() => {
-      const eventsFile = path.join(TEMP_SCRIPT_DIR, "autojs_events.txt");
-      if (fs.existsSync(eventsFile)) {
+  lastEventsSize = fs.existsSync(eventPath) ? fs.statSync(eventPath).size : 0;
+  observerWatcher = setInterval(() => {
+    if (!fs.existsSync(eventPath)) return;
+    try {
+      const size = fs.statSync(eventPath).size;
+      if (size < lastEventsSize) lastEventsSize = 0;
+      if (size === lastEventsSize) return;
+      const descriptor = fs.openSync(eventPath, "r");
+      const buffer = Buffer.alloc(size - lastEventsSize);
+      fs.readSync(descriptor, buffer, 0, buffer.length, lastEventsSize);
+      fs.closeSync(descriptor);
+      lastEventsSize = size;
+      for (const line of buffer.toString().split("\n").filter(Boolean)) {
         try {
-          const stats = fs.statSync(eventsFile);
-          if (stats.size > lastEventsSize) {
-            const fd = fs.openSync(eventsFile, "r");
-            const buffer = Buffer.alloc(stats.size - lastEventsSize);
-            fs.readSync(fd, buffer, 0, buffer.length, lastEventsSize);
-            fs.closeSync(fd);
-            lastEventsSize = stats.size;
-
-            const lines = buffer.toString().split("\n").filter(Boolean);
-            lines.forEach((line) => {
-              console.log("[CLIENT] Detected new Auto.js Event:", line);
-              try {
-                const parsed = JSON.parse(line);
-                publishEventWithDeduplication(parsed, line);
-              } catch {
-                client.publish(`autojs6/events/${clientId}`, line, { qos: 1 });
-              }
-            });
-          } else if (stats.size < lastEventsSize) {
-            lastEventsSize = 0;
-          }
-        } catch (e) {
-          console.error("[CLIENT] Error reading autojs_events.txt:", e);
+          publishEvent(JSON.parse(line) as unknown);
+        } catch (error) {
+          console.warn("[EVENT] Ignored malformed observer line", error);
         }
       }
-    }, 2000);
+    } catch (error) {
+      console.error("[EVENT] Failed to read observer result", error);
+    }
+  }, 1000);
+}
+
+/** 发布统一任务结果。 */
+function publishTaskResult(
+  request: DeviceTaskRequest,
+  startedAt: number,
+  status: TaskStatus,
+  code: string,
+  message: string,
+  data: unknown = null,
+): void {
+  const finishedAt = Date.now();
+  const result: DeviceTaskResult = {
+    protocolVersion: PROTOCOL_VERSION,
+    taskId: request.taskId,
+    deviceId,
+    scriptId: request.scriptId,
+    status,
+    code,
+    message,
+    data,
+    startedAt,
+    finishedAt,
+    durationMs: Math.max(0, finishedAt - startedAt),
+    traceId: request.traceId,
+  };
+  const resultJson = JSON.stringify(result);
+  mqttClient.publish(resultsTopic, resultJson, {
+    qos: config.mqtt.qos,
+  });
+  if (request.callbackUrl) {
+    try {
+      const callbackUrl = new URL(request.callbackUrl);
+      if (
+        callbackUrl.protocol === "https:" ||
+        callbackUrl.protocol === "http:"
+      ) {
+        void fetch(callbackUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: resultJson,
+        })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+          })
+          .catch((error) =>
+            console.warn(
+              `[TASK] HTTP result callback failed for ${request.taskId}`,
+              error,
+            ),
+          );
+      }
+    } catch (error) {
+      console.warn(
+        `[TASK] Ignored invalid callback URL for ${request.taskId}`,
+        error,
+      );
+    }
   }
 }
 
-function executeTask(data: TaskPayload) {
-  const { taskId, cat, script, timeout, useRoot, callbackUrl } = data;
+/** 从脚本结果文件中解析统一字段。 */
+function parseResultFile(content: string): ScriptResultFile {
+  const parsed: unknown = JSON.parse(content);
+  if (!isRecord(parsed)) throw new Error("Result file must contain an object");
+  const allowedStatuses: TaskStatus[] = [
+    "SUCCESS",
+    "FAILURE",
+    "TIMEOUT",
+    "REJECTED",
+    "CANCELLED",
+  ];
+  const status = allowedStatuses.includes(parsed.status as TaskStatus)
+    ? (parsed.status as TaskStatus)
+    : "FAILURE";
+  return {
+    status,
+    code:
+      typeof parsed.code === "string"
+        ? parsed.code
+        : status === "SUCCESS"
+          ? "OK"
+          : "SCRIPT_FAILED",
+    message:
+      typeof parsed.message === "string" ? parsed.message : "Task finished",
+    data: parsed.data ?? null,
+  };
+}
 
-  if (cat === "autojs6") {
-    console.log(
-      `[CLIENT] Received Auto.js task ${taskId}. Timeout: ${timeout}s`,
+/** 清理当前任务并调度队列中的下一项。 */
+function cleanupActiveTask(): void {
+  const current = activeTask;
+  if (!current) return;
+  clearTimeout(current.timeoutTimer);
+  clearInterval(current.pollInterval);
+  for (const filePath of [current.tempFilePath, current.resultFilePath]) {
+    void runRootCommand(`rm -f ${shellQuote(filePath)}`).catch((error) =>
+      console.warn(`[TASK] Failed to remove ${filePath}`, error),
     );
+  }
+  queuedTaskIds.delete(current.request.taskId);
+  activeTask = null;
+  setTimeout(processNextTask, 100);
+}
 
-    const resultPath = path.join(TEMP_SCRIPT_DIR, `autojs_res_${taskId}.json`);
+/** 完成尚未进入执行状态的任务并继续队列。 */
+function rejectQueuedTask(
+  request: DeviceTaskRequest,
+  code: string,
+  message: string,
+): void {
+  publishTaskResult(request, Date.now(), "REJECTED", code, message);
+  queuedTaskIds.delete(request.taskId);
+  isStartingTask = false;
+  setTimeout(processNextTask, 100);
+}
 
-    // 包装 Auto.js 脚本：执行结果自动写入本地 JSON 结果文件，全脱离局域网 HTTP
-    const wrappedScript = `
+/** 为可信脚本添加固定结果协议包装。 */
+function buildWrappedScript(
+  request: DeviceTaskRequest,
+  scriptBody: string,
+  resultPath: string,
+): string {
+  const paramsLiteral = JSON.stringify(request.params);
+  const trustedBody = scriptBody.replace(
+    "__AUTOJS_TASK_PARAMS__",
+    paramsLiteral,
+  );
+  return `
 var taskResult = "Script execution succeeded";
 var taskStatus = "SUCCESS";
-var taskId = "${taskId}";
-var resPath = "${resultPath}";
-
+var taskCode = "OK";
+var taskId = ${JSON.stringify(request.taskId)};
+var resPath = ${JSON.stringify(resultPath)};
 try {
-    console.log("Start executing remote script: " + taskId);
-    device.wakeUp();
-    ${script}
-    console.log("Script executed successfully.");
-    files.write(resPath, JSON.stringify({
-        status: String(taskStatus),
-        message: String(taskResult)
-    }));
-} catch (err) {
-    console.error("Script execution failed: " + err);
-    files.write(resPath, JSON.stringify({
-        status: "FAILURE",
-        message: String(err)
-    }));
+  device.wakeUp();
+  ${trustedBody}
+  var parsedTaskData = null;
+  try { parsedTaskData = JSON.parse(String(taskResult)); } catch (_) { parsedTaskData = taskResult; }
+  files.write(resPath, JSON.stringify({
+    status: String(taskStatus),
+    code: String(taskCode),
+    message: String(taskStatus) === "SUCCESS" ? "Script execution succeeded" : String(taskResult),
+    data: parsedTaskData
+  }));
+} catch (error) {
+  files.write(resPath, JSON.stringify({
+    status: "FAILURE",
+    code: "SCRIPT_EXCEPTION",
+    message: String(error && error.message ? error.message : error),
+    data: null
+  }));
 }
 `;
+}
 
-    const tempFileName = `autojs_temp_${taskId}.js`;
-    const localTempPath = path.join(__dirname, `local_${tempFileName}`);
-    const targetTempPath = path.join(TEMP_SCRIPT_DIR, tempFileName);
+/** 执行一项已经完成协议校验的可信脚本任务。 */
+async function executeTask(request: DeviceTaskRequest): Promise<void> {
+  const definition = getRegisteredScript(request.scriptId);
+  if (
+    !definition ||
+    !config.security.allowedScriptIds.includes(request.scriptId)
+  ) {
+    rejectQueuedTask(
+      request,
+      "SCRIPT_NOT_ALLOWED",
+      `Script is not allowed: ${request.scriptId}`,
+    );
+    return;
+  }
+  if (request.scriptVersion && request.scriptVersion !== definition.version) {
+    rejectQueuedTask(
+      request,
+      "SCRIPT_VERSION_MISMATCH",
+      "Requested script version is not installed",
+    );
+    return;
+  }
+  if (request.expiresAt <= Date.now()) {
+    publishTaskResult(
+      request,
+      Date.now(),
+      "TIMEOUT",
+      "TASK_EXPIRED",
+      "Task expired before execution",
+    );
+    queuedTaskIds.delete(request.taskId);
+    isStartingTask = false;
+    setTimeout(processNextTask, 100);
+    return;
+  }
 
-    try {
-      fs.writeFileSync(localTempPath, wrappedScript, "utf8");
-      console.log(
-        `[CLIENT] Local temporary script written to ${localTempPath}`,
-      );
-    } catch (err: any) {
-      console.error(
-        `[CLIENT] Failed to write local temporary script to ${localTempPath}:`,
-        err,
-      );
-      sendMqttResult(
-        taskId,
-        "FAILURE",
-        `Failed to write local script: ${err.message}`,
+  const paramsBytes = Buffer.byteLength(JSON.stringify(request.params), "utf8");
+  if (paramsBytes > config.security.maxParamsBytes) {
+    rejectQueuedTask(
+      request,
+      "PARAMS_TOO_LARGE",
+      `Task params exceed ${config.security.maxParamsBytes} bytes`,
+    );
+    return;
+  }
+
+  if (definition.kind === "client") {
+    const startedAt = Date.now();
+    if (definition.scriptId !== "client.self-update") {
+      rejectQueuedTask(
+        request,
+        "CLIENT_ACTION_NOT_SUPPORTED",
+        `Unsupported client action: ${definition.scriptId}`,
       );
       return;
     }
-
-    // 使用 Root 搬运文件并赋权 777
-    const prepareCommand = `su -c "cp ${localTempPath} ${targetTempPath} && chmod 777 ${targetTempPath} && rm -f ${localTempPath}"`;
-    console.log(
-      `[CLIENT] Copying script to target path using root: ${prepareCommand}`,
-    );
-
-    exec(prepareCommand, (err: any) => {
-      if (err) {
-        console.error(`[CLIENT] Root copy failed:`, err.message);
-        sendMqttResult(taskId, "FAILURE", `Root copy failed: ${err.message}`);
-        try {
-          if (fs.existsSync(localTempPath)) fs.unlinkSync(localTempPath);
-        } catch {}
-        return;
-      }
-
-      console.log(
-        `[CLIENT] Script successfully moved to ${targetTempPath} with 777 permissions`,
-      );
-
-      // 5. 设置本地超时强杀定时器
-      const timeoutTimer = setTimeout(() => {
-        console.warn(
-          `[CLIENT] Task ${taskId} timeout (${timeout}s) reached! Initiating force-kill...`,
-        );
-
-        const killCmds = [
-          `su -c "am force-stop ${AUTOJS_PACKAGE_NAME}"`,
-          `su -c "am force-stop com.android.chrome"`,
-        ];
-
-        killCmds.forEach((cmd) => {
-          exec(cmd, (err: any) => {
-            if (err) {
-              console.error(
-                `[CLIENT] Error running force-stop command "${cmd}":`,
-                err.message,
-              );
-            } else {
-              console.log(`[CLIENT] Command executed successfully: ${cmd}`);
-            }
-          });
-        });
-
-        // 向 MQTT 回传超时状态
-        sendMqttResult(
-          taskId,
-          "FAILURE",
-          `Timeout: Script execution exceeded ${timeout}s. Termux client killed the application.`,
-        );
-
-        cleanupTask(taskId);
-      }, timeout * 1000);
-
-      // 6. 轮询侦听结果文件的生成，全 MQTT 回传
-      let resultFileFirstSeenAt = 0;
-      const pollInterval = setInterval(() => {
-        if (fs.existsSync(resultPath)) {
-          if (!resultFileFirstSeenAt) resultFileFirstSeenAt = Date.now();
-          try {
-            const content = fs.readFileSync(resultPath, "utf8");
-            const res = JSON.parse(content);
-            sendMqttResult(taskId, res.status, res.message);
-          } catch (e) {
-            // Auto.js writes the result file in-place, so the watcher can briefly
-            // observe an empty or partial JSON document. Retry transient parses.
-            if (Date.now() - resultFileFirstSeenAt < 3000) return;
-            sendMqttResult(
-              taskId,
-              "FAILURE",
-              "Failed to parse result file: " + (e as Error).message,
-            );
-          }
-          cleanupTask(taskId);
-        }
-      }, 500);
-
-      // 缓存任务信息
-      activeTasks[taskId] = {
-        timeoutTimer,
-        pollInterval,
-        tempFilePath: targetTempPath,
-        resultFilePath: resultPath,
-        callbackUrl,
-      };
-
-      // 7. 通过 Root 命令启动 Auto.js 载入脚本
-      const runCommand = `su -c "am start -n ${AUTOJS_PACKAGE_NAME}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetTempPath} -t text/javascript"`;
-      console.log(
-        `[CLIENT] Executing shell command to start Auto.js: ${runCommand}`,
-      );
-
-      exec(runCommand, (err) => {
-        if (err) {
-          sendMqttResult(
-            taskId,
-            "FAILURE",
-            `Failed to launch Auto.js intent: ${(err as Error).message}`,
-          );
-          cleanupTask(taskId);
-        } else {
-          console.log(`[CLIENT] Task ${taskId} is now running in Auto.js`);
-        }
-      });
-    });
-  } else if (cat === "shell") {
-    console.log(
-      `[CLIENT] Received Shell task ${taskId}. Timeout: ${timeout}s, useRoot: ${!!useRoot}`,
-    );
-
-    const timeoutTimer = setTimeout(() => {
-      console.warn(
-        `[CLIENT] Shell Task ${taskId} timeout reached! Killing process...`,
-      );
-      sendMqttResult(
-        taskId,
-        "FAILURE",
-        `Timeout: Shell execution exceeded ${timeout}s.`,
-      );
-      cleanupTask(taskId);
-    }, timeout * 1000);
-
-    activeTasks[taskId] = {
-      timeoutTimer,
-      tempFilePath: "",
-      callbackUrl,
-    };
-
-    const execCmd = useRoot ? `su -c "${script}"` : script;
-    console.log(
-      `[CLIENT] Running Shell command for task ${taskId}: ${execCmd}`,
-    );
-
-    exec(execCmd, (err: any, stdout: string, stderr: string) => {
-      if (err) {
-        console.error(`[CLIENT] Shell execution failed:`, err.message);
-        sendMqttResult(taskId, "FAILURE", stderr || err.message);
-      } else {
-        console.log(`[CLIENT] Shell execution succeeded for task ${taskId}`);
-        sendMqttResult(taskId, "SUCCESS", stdout);
-      }
-      cleanupTask(taskId);
-    });
-  } else if (cat === "update") {
-    console.log(
-      `[CLIENT] Received Self-Update task ${taskId}. Timeout: ${timeout}s`,
-    );
-
-    const timeoutTimer = setTimeout(() => {
-      sendMqttResult(
-        taskId,
-        "FAILURE",
-        `Timeout: Self-Update execution exceeded ${timeout}s.`,
-      );
-      cleanupTask(taskId);
-    }, timeout * 1000);
-
-    activeTasks[taskId] = {
-      timeoutTimer,
-      tempFilePath: "",
-      callbackUrl,
-    };
-
-    sendMqttResult(
-      taskId,
+    publishTaskResult(
+      request,
+      startedAt,
       "SUCCESS",
-      "Update signal triggered. Client is exiting with status code 99.",
+      "CLIENT_UPDATE_TRIGGERED",
+      "Client update signal accepted; daemon will restart",
     );
+    queuedTaskIds.delete(request.taskId);
+    isStartingTask = false;
+    setTimeout(() => process.exit(99), 1500);
+    return;
+  }
 
-    setTimeout(() => {
-      cleanupTask(taskId);
-      console.log("[CLIENT] Exiting with code 99 for self-update...");
-      process.exit(99);
-    }, 1500);
-  } else {
-    console.log(`[CLIENT] Ignored task ${taskId} because unknown cat=${cat}`);
+  const startedAt = Date.now();
+  const timeoutMs = Math.max(
+    1000,
+    Math.min(
+      request.timeoutMs || definition.defaultTimeoutMs,
+      definition.maxTimeoutMs,
+      config.tasks.maxTimeoutMs,
+    ),
+  );
+  const resultPath = path.join(
+    tempScriptDirectory,
+    `autojs_res_${request.taskId}.json`,
+  );
+  const targetPath = path.join(
+    tempScriptDirectory,
+    `autojs_task_${request.taskId}.js`,
+  );
+  const localPath = path.join(
+    sourceDirectory,
+    `local_autojs_task_${request.taskId}.js`,
+  );
+
+  try {
+    const scriptBody = readRegisteredScript(definition);
+    fs.writeFileSync(
+      localPath,
+      buildWrappedScript(request, scriptBody, resultPath),
+      "utf8",
+    );
+    await runRootCommand(
+      `rm -f ${shellQuote(resultPath)} && cp ${shellQuote(localPath)} ${shellQuote(targetPath)} && chmod 600 ${shellQuote(targetPath)} && rm -f ${shellQuote(localPath)}`,
+    );
+  } catch (error) {
+    rejectQueuedTask(
+      request,
+      "SCRIPT_PREPARE_FAILED",
+      error instanceof Error ? error.message : String(error),
+    );
+    return;
+  }
+
+  let firstResultSeenAt = 0;
+  const timeoutTimer = setTimeout(() => {
+    if (!activeTask || activeTask.request.taskId !== request.taskId) return;
+    void runRootCommand(`am force-stop ${autojsPackageName}`).finally(() => {
+      publishTaskResult(
+        request,
+        startedAt,
+        "TIMEOUT",
+        "TASK_TIMEOUT",
+        `Script exceeded ${timeoutMs}ms and was terminated`,
+      );
+      cleanupActiveTask();
+      setTimeout(() => void applyObserverConfig(), 2000);
+    });
+  }, timeoutMs);
+
+  const pollInterval = setInterval(() => {
+    if (!fs.existsSync(resultPath)) return;
+    if (!firstResultSeenAt) firstResultSeenAt = Date.now();
+    try {
+      const result = parseResultFile(fs.readFileSync(resultPath, "utf8"));
+      publishTaskResult(
+        request,
+        startedAt,
+        result.status,
+        result.code,
+        result.message,
+        result.data,
+      );
+      cleanupActiveTask();
+    } catch (error) {
+      if (Date.now() - firstResultSeenAt < 3000) return;
+      publishTaskResult(
+        request,
+        startedAt,
+        "FAILURE",
+        "RESULT_PARSE_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+      cleanupActiveTask();
+    }
+  }, config.tasks.resultPollIntervalMs);
+
+  activeTask = {
+    request,
+    startedAt,
+    timeoutTimer,
+    pollInterval,
+    tempFilePath: targetPath,
+    resultFilePath: resultPath,
+  };
+  isStartingTask = false;
+
+  try {
+    await runRootCommand(
+      `am start -n ${autojsPackageName}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetPath} -t text/javascript`,
+    );
+    console.log(
+      `[TASK] Started ${request.taskId} ${request.scriptId} timeout=${timeoutMs}ms`,
+    );
+  } catch (error) {
+    publishTaskResult(
+      request,
+      startedAt,
+      "FAILURE",
+      "AUTOJS_LAUNCH_FAILED",
+      error instanceof Error ? error.message : String(error),
+    );
+    cleanupActiveTask();
   }
 }
 
-/**
- * 辅助方法：通过 MQTT 向 EMQX 云端 publish 任务回传结果。
- * 主题：autojs6/results
- */
-function sendMqttResult(taskId: string, status: string, message: string) {
-  const payloadStr = JSON.stringify({
-    taskId,
-    status,
-    message,
-    timestamp: Date.now(),
-  });
-
-  const task = activeTasks[taskId];
-  if (task && task.callbackUrl) {
-    console.log(
-      `[CLIENT] Sending HTTP Callback to ${task.callbackUrl} for task ${taskId}`,
-    );
-    fetch(task.callbackUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: payloadStr,
-    })
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        console.log(
-          `[CLIENT] HTTP Callback succeeded for task ${taskId}: ${status}`,
-        );
-      })
-      .catch((err) => {
-        console.error(
-          `[CLIENT] HTTP Callback failed for task ${taskId}:`,
-          err.message,
-          "- Falling back to MQTT",
-        );
-        publishToMqtt();
-      });
-  } else {
-    publishToMqtt();
-  }
-
-  function publishToMqtt() {
-    client.publish("autojs6/results", payloadStr, { qos: 1 }, (err) => {
-      if (err) {
-        console.error(
-          `[CLIENT] Failed to send MQTT result for task ${taskId}:`,
-          err.message,
-        );
-      } else {
-        console.log(
-          `[CLIENT] Feedback successfully published to MQTT autojs6/results for task ${taskId}: ${status}`,
-        );
-      }
+/** 串行执行队列中的下一项任务。 */
+function processNextTask(): void {
+  if (activeTask || isStartingTask) return;
+  const request = taskQueue.shift();
+  if (request) {
+    isStartingTask = true;
+    void executeTask(request).catch((error) => {
+      publishTaskResult(
+        request,
+        Date.now(),
+        "FAILURE",
+        "CLIENT_EXECUTOR_ERROR",
+        error instanceof Error ? error.message : String(error),
+      );
+      queuedTaskIds.delete(request.taskId);
+      isStartingTask = false;
+      setTimeout(processNextTask, 100);
     });
   }
 }
 
-/**
- * 辅助方法：清理指定任务的定时器和临时文件。
- *
- * @param taskId - 需要清理的任务 ID
- */
-function cleanupTask(taskId: string) {
-  const task = activeTasks[taskId];
-  if (!task) return;
-
-  if (task.timeoutTimer) {
-    clearTimeout(task.timeoutTimer);
+/** 校验、去重并将收到的任务加入本机队列。 */
+function enqueueTask(value: unknown): void {
+  let request: DeviceTaskRequest;
+  try {
+    request = parseDeviceTaskRequest(value);
+  } catch (error) {
+    console.warn("[TASK] Rejected malformed v2 payload", error);
+    return;
   }
-
-  if (task.pollInterval) {
-    clearInterval(task.pollInterval);
+  if (request.deviceId !== deviceId) {
+    publishTaskResult(
+      request,
+      Date.now(),
+      "REJECTED",
+      "DEVICE_MISMATCH",
+      "Task targets another device",
+    );
+    return;
   }
-
-  if (task.tempFilePath) {
-    try {
-      if (fs.existsSync(task.tempFilePath)) {
-        fs.unlinkSync(task.tempFilePath);
-        console.log(`[CLIENT] Temp script deleted: ${task.tempFilePath}`);
-      }
-    } catch (err: any) {
-      exec(`su -c "rm -f ${task.tempFilePath}"`);
-    }
+  if (queuedTaskIds.has(request.taskId)) {
+    console.warn(`[TASK] Ignored duplicate task ${request.taskId}`);
+    return;
   }
-
-  if (task.resultFilePath) {
-    try {
-      if (fs.existsSync(task.resultFilePath)) {
-        fs.unlinkSync(task.resultFilePath);
-      }
-    } catch (err: any) {
-      exec(`su -c "rm -f ${task.resultFilePath}"`);
-    }
+  if (taskQueue.length >= config.tasks.queueLimit) {
+    publishTaskResult(
+      request,
+      Date.now(),
+      "REJECTED",
+      "QUEUE_FULL",
+      "Device task queue is full",
+    );
+    return;
   }
-
-  delete activeTasks[taskId];
-
-  isExecuting = false;
-  setTimeout(processNextTask, 100);
+  queuedTaskIds.add(request.taskId);
+  taskQueue.push(request);
+  processNextTask();
 }
+
+mqttClient.on("connect", () => {
+  mqttClient.subscribe(tasksTopic, { qos: config.mqtt.qos }, (error) => {
+    if (error) console.error(`[MQTT] Failed to subscribe ${tasksTopic}`, error);
+    else console.log(`[MQTT] Subscribed ${tasksTopic}`);
+  });
+  mqttClient.publish(presenceTopic, JSON.stringify(presence("ONLINE")), {
+    qos: config.mqtt.qos,
+    retain: true,
+  });
+  void applyObserverConfig().catch((error) =>
+    console.error("[EVENT] Failed to start configured observers", error),
+  );
+});
+
+mqttClient.on("message", (topic, payload) => {
+  if (topic !== tasksTopic) return;
+  try {
+    enqueueTask(JSON.parse(payload.toString()) as unknown);
+  } catch (error) {
+    console.warn("[TASK] Ignored non-JSON task payload", error);
+  }
+});
+
+mqttClient.on("error", (error) =>
+  console.error("[MQTT] Connection error", error),
+);
+
+console.log(`[CLIENT] AutoJS6 device client ${clientVersion} started`);
+console.log(
+  `[CLIENT] deviceId=${deviceId} broker=${redactBrokerUrl(brokerUrl)}`,
+);
+console.log(`[CLIENT] config=${configPath} taskTopic=${tasksTopic}`);

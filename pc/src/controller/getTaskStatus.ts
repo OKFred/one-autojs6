@@ -1,11 +1,11 @@
-import { Context } from 'hono';
-import { TaskService } from '../service/task.service.js';
+import { Context } from "hono";
+import { NodeServerService } from "../service/node-server.service.js";
 
-const taskService = TaskService.getInstance();
+const nodeServer = NodeServerService.getInstance();
 
 /**
  * 根据任务 ID 查询单个任务的状态和执行返回值。
- * 
+ *
  * @swagger
  * /api/tasks/{taskId}:
  *   get:
@@ -38,31 +38,29 @@ const taskService = TaskService.getInstance();
  *                       type: object
  *                     result:
  *                       type: object
- * 
+ *
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
-export function getTaskStatus(c: Context) {
-  const taskId = c.req.param('taskId') || '';
-  const task = taskService.getTask(taskId);
-
-  if (!task) {
+export async function getTaskStatus(c: Context) {
+  const taskId = c.req.param("taskId") || "";
+  try {
+    const task = await nodeServer.getTask(taskId);
+    let result: unknown = null;
+    if (task.resultDataJson) {
+      try {
+        result = JSON.parse(task.resultDataJson) as unknown;
+      } catch {
+        result = task.resultDataJson;
+      }
+    }
     return c.json({
       ok: true,
-      message: 'Task not found in system',
-      data: {
-        taskId,
-        status: 'MISSING'
-      }
+      message: "Retrieve task status successfully",
+      data: { task, result },
     });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ ok: false, message, data: { taskId } }, 502);
   }
-
-  return c.json({
-    ok: true,
-    message: 'Retrieve task status successfully',
-    data: {
-      task,
-      result: task.result || {}
-    }
-  });
 }

@@ -1,12 +1,11 @@
-import { Context } from 'hono';
-import { TaskService } from '../service/task.service.js';
-import { MqttService } from '../service/mqtt.service.js';
+import { Context } from "hono";
+import { AutojsService } from "../service/autojs.service.js";
 
-const taskService = TaskService.getInstance();
+const autojsService = AutojsService.getInstance();
 
 /**
  * 下发移动端自更新与重启任务。
- * 
+ *
  * @swagger
  * /api/devices/update:
  *   post:
@@ -52,43 +51,32 @@ const taskService = TaskService.getInstance();
  *                   type: string
  *                 data:
  *                   type: object
- * 
+ *
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
 export async function createUpdate(c: Context) {
   try {
-    const timeoutStr = c.req.query('timeout') || '30';
+    const timeoutStr = c.req.query("timeout") || "30";
     const timeout = parseInt(timeoutStr, 10);
 
-    const PORT = parseInt(process.env.PORT || '3000', 10);
-    const PC_IP = process.env.PC_IP || '';
-
-    // 创建 update 任务
-    const updateCmd = 'git reset --hard HEAD && git pull';
-    const task = taskService.createTask('update', updateCmd, timeout);
-
-    const payload = {
-      taskId: task.taskId,
-      cat: 'update',
-      script: updateCmd,
+    const task = await autojsService.dispatchTask(
+      "client.self-update",
+      {},
       timeout,
-      callbackUrl: `http://${PC_IP}:${PORT}/api/callback`
-    };
-
-    MqttService.getInstance().publish('autojs6/tasks', payload);
-    console.log(`[TaskController] Dispatched Self-Update task ${task.taskId} to mobile`);
+    );
 
     return c.json({
       ok: true,
-      message: 'Mobile self-update task dispatched successfully',
+      message: "Mobile self-update task dispatched successfully",
       data: {
         taskId: task.taskId,
-        status: task.status
-      }
+        status: task.status,
+      },
     });
-  } catch (err: any) {
-    console.error('[HTTP] Error creating update task:', err);
-    return c.json({ ok: false, message: err.message, data: {} }, 500);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[HTTP] Error creating update task:", error);
+    return c.json({ ok: false, message, data: {} }, 500);
   }
 }

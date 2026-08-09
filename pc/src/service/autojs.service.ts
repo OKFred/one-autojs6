@@ -1,47 +1,35 @@
-import { TaskService } from './task.service.js';
-import { MqttService } from './mqtt.service.js';
+import {
+  NodeServerService,
+  type TrustedScriptId,
+} from "./node-server.service.js";
 
-/**
- * AutoJS 脚本下发与分发服务类。
- */
+/** PC 可信设备任务分发服务。 */
 export class AutojsService {
   private static instance: AutojsService;
-  private taskService = TaskService.getInstance();
+  private readonly nodeServer = NodeServerService.getInstance();
 
   private constructor() {}
 
-  /**
-   * 获取 AutojsService 单例实例。
-   * 
-   * @returns AutojsService 实例
-   */
+  /** 获取 AutojsService 单例。 */
   public static getInstance(): AutojsService {
-    if (!AutojsService.instance) {
-      AutojsService.instance = new AutojsService();
-    }
+    if (!AutojsService.instance) AutojsService.instance = new AutojsService();
     return AutojsService.instance;
   }
 
   /**
-   * 向移动端设备下发 Auto.js 脚本任务 (全 MQTT 通信，无需 HTTP 局域网回调)。
-   * 
-   * @param script - 待执行的 Auto.js 脚本代码
-   * @param timeout - 超时秒数
-   * @returns 已创建并下发的 Task 实体
+   * 通过 Node Server 下发手机本地可信脚本。
+   *
+   * @param scriptId 手机端注册的可信脚本标识。
+   * @param params 结构化脚本参数。
+   * @param timeoutSeconds 超时秒数。
+   * @param clientId 可选目标设备；默认读取 AUTOJS6_CLIENT_ID。
    */
-  public async dispatchTask(script: string, timeout: number) {
-    const task = this.taskService.createTask('autojs6', script, timeout);
-    
-    // 构造推送载荷，不依赖 HTTP 局域网回调
-    const payload = {
-      taskId: task.taskId,
-      cat: 'autojs6',
-      script,
-      timeout
-    };
-
-    MqttService.getInstance().publish('autojs6/tasks', payload);
-    console.log(`[AutojsService] Dispatched Auto.js task ${task.taskId} via MQTT`);
-    return task;
+  public async dispatchTask(
+    scriptId: TrustedScriptId,
+    params: Record<string, unknown>,
+    timeoutSeconds: number,
+    clientId?: string,
+  ) {
+    return this.nodeServer.dispatch(scriptId, params, timeoutSeconds, clientId);
   }
 }

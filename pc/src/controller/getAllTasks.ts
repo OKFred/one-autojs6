@@ -1,11 +1,11 @@
-import { Context } from 'hono';
-import { TaskService } from '../service/task.service.js';
+import { Context } from "hono";
+import { NodeServerService } from "../service/node-server.service.js";
 
-const taskService = TaskService.getInstance();
+const nodeServer = NodeServerService.getInstance();
 
 /**
  * 获取系统内存中的所有任务列表。
- * 
+ *
  * @swagger
  * /api/tasks:
  *   get:
@@ -31,16 +31,20 @@ const taskService = TaskService.getInstance();
  *                       type: array
  *                       items:
  *                         type: object
- * 
+ *
  * @param c - Hono 路由上下文对象
  * @returns Hono JSON 响应
  */
-export function getAllTasks(c: Context) {
-  return c.json({
-    ok: true,
-    message: 'Retrieve all tasks successfully',
-    data: {
-      tasks: taskService.getAllTasks()
-    }
-  });
+export async function getAllTasks(c: Context) {
+  try {
+    const result = await nodeServer.listTasks(c.req.query("clientId"));
+    return c.json({
+      ok: true,
+      message: "Retrieve all tasks successfully",
+      data: { tasks: result.list, total: result.total },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ ok: false, message, data: { tasks: [] } }, 502);
+  }
 }

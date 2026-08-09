@@ -1,61 +1,63 @@
-import { Context } from 'hono';
-import { AutojsService } from '../service/autojs.service.js';
-import { ShellService } from '../service/shell.service.js';
+import type { Context } from "hono";
+import { AutojsService } from "../service/autojs.service.js";
+import type { TrustedScriptId } from "../service/node-server.service.js";
 
 const autojsService = AutojsService.getInstance();
-const shellService = ShellService.getInstance();
+
+const trustedScriptIds: TrustedScriptId[] = [
+  "device.apps.list",
+  "app.install",
+  "app.version.check",
+  "app.update.store",
+  "app.update.zip",
+  "file.download",
+  "tiktok.post",
+  "client.self-update",
+];
+
+/** 判断字符串是否为 PC 允许代理的可信脚本标识。 */
+function isTrustedScriptId(value: string): value is TrustedScriptId {
+  return trustedScriptIds.includes(value as TrustedScriptId);
+}
 
 /**
- * 下发通用任务 (支持 AutoJS6 脚本与本地 Shell 命令)。
+ * 下发手机端可信脚本任务。
+ * 原始 JavaScript、Shell、kill 与动态监听配置不再受支持。
  */
 export async function createTask(c: Context) {
   try {
     const body = await c.req.json<{
-      cat?: 'autojs6' | 'shell' | 'kill' | 'config';
-      script?: string;
+      scriptId?: string;
+      params?: Record<string, unknown>;
       timeout?: number | string;
-      useRoot?: boolean;
-      observe?: string[];
+      clientId?: string;
     }>();
-    const { cat = 'autojs6', script, timeout, useRoot = false, observe = [] } = body;
-
-    if (cat === 'config') {
-      const taskId = crypto.randomUUID();
-      const { MqttService } = await import('../service/mqtt.service.js');
-      MqttService.getInstance().publish('autojs6/tasks', { taskId, cat: 'config', observe });
-      return c.json({ ok: true, message: 'Configuration dispatched successfully', data: { taskId, status: 'EXECUTING' } });
+    if (!body.scriptId || !isTrustedScriptId(body.scriptId)) {
+      return c.json(
+        {
+          ok: false,
+          message:
+            "A registered scriptId is required; remote source and shell tasks are disabled",
+          data: {},
+        },
+        400,
+      );
     }
-
-    if (cat === 'kill') {
-      const taskId = crypto.randomUUID();
-      const { MqttService } = await import('../service/mqtt.service.js');
-      MqttService.getInstance().publish('autojs6/tasks', { taskId, cat: 'kill', script: '', timeout: 5 });
-      return c.json({ ok: true, message: 'Task dispatched successfully', data: { taskId, status: 'EXECUTING' } });
-    }
-
-    if (!script) {
-      return c.json({ ok: false, message: 'script is required', data: {} }, 400);
-    }
-
-    const taskTimeout = parseInt(String(timeout || '30'), 10);
-
-    let task;
-    if (cat === 'shell') {
-      task = await shellService.dispatchTask(script, taskTimeout, useRoot);
-    } else {
-      task = await autojsService.dispatchTask(script, taskTimeout);
-    }
-
+    const timeout = Number.parseInt(String(body.timeout || "120"), 10);
+    const task = await autojsService.dispatchTask(
+      body.scriptId,
+      body.params || {},
+      timeout,
+      body.clientId,
+    );
     return c.json({
       ok: true,
-      message: 'Task dispatched successfully',
-      data: {
-        taskId: task.taskId,
-        status: task.status
-      }
+      message: "Trusted task dispatched through Node Server",
+      data: task,
     });
-  } catch (err: any) {
-    console.error('[HTTP] Error creating task:', err);
-    return c.json({ ok: false, message: err.message, data: {} }, 500);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[HTTP] Error creating trusted task:", error);
+    return c.json({ ok: false, message, data: {} }, 500);
   }
 }

@@ -4,8 +4,19 @@ import http from "http";
 // @ts-ignore
 import websocket from "websocket-stream";
 import mqtt, { MqttClient } from "mqtt";
-import { TaskService } from "./task.service.js";
 import { getEmqxBrokerUrl } from "../utils/mqtt.js";
+
+/** 隐去 MQTT URL 中的认证信息，避免 PC 日志泄露凭据。 */
+function redactBrokerUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username) parsed.username = "***";
+    if (parsed.password) parsed.password = "***";
+    return parsed.toString();
+  } catch {
+    return value.replace(/\/\/[^@/]+@/, "//***:***@");
+  }
+}
 
 /**
  * MQTT 代理服务类，用于初始化和管理 MQTT Broker 实例或云端 MQTT 连接。
@@ -44,11 +55,11 @@ export class MqttService {
     if (MQTT_USERNAME && MQTT_HOST) {
       const brokerUrl = getEmqxBrokerUrl();
       console.log(
-        `[MQTT] Connecting to External Cloud EMQX Broker: ${brokerUrl}`,
+        `[MQTT] Connecting to External Cloud EMQX Broker: ${redactBrokerUrl(brokerUrl)}`,
       );
       this.externalClient = mqtt.connect(brokerUrl, {
         clean: false,
-        clientId: MQTT_USERNAME,
+        clientId: `${MQTT_USERNAME}_pc_compat_${process.pid}`,
         properties: {
           sessionExpiryInterval: 86400, // 设置 EMQX 离线消息暂存 24 小时 (86400秒)
         },
@@ -56,19 +67,6 @@ export class MqttService {
 
       this.externalClient.on("connect", () => {
         console.log("[MQTT] Connected to External EMQX Broker successfully.");
-
-        // 订阅移动端回传任务结果的主题
-        this.externalClient?.subscribe("autojs6/results", (err) => {
-          if (!err) {
-            console.log("[MQTT] Subscribed to cloud topic: autojs6/results");
-          }
-        });
-      });
-
-      this.externalClient.on("message", (topic, payload) => {
-        if (topic === "autojs6/results") {
-          void this.handleTaskResult(payload.toString());
-        }
       });
 
       this.externalClient.on("error", (err) => {
@@ -91,13 +89,6 @@ export class MqttService {
         );
       });
 
-      // Aedes 内部订阅/监听 publish 事件以捕捉 autojs6/results
-      this.aedes.on("publish", (packet: any, client: any) => {
-        if (packet && packet.topic === "autojs6/results") {
-          void this.handleTaskResult(packet.payload.toString());
-        }
-      });
-
       this.aedes.on("client", (client: any) => {
         console.log(
           `[MQTT] Client Connected: ${client ? client.id : "unknown"}`,
@@ -109,82 +100,6 @@ export class MqttService {
           `[MQTT] Client Disconnected: ${client ? client.id : "unknown"}`,
         );
       });
-    }
-  }
-
-  /**
-   * 处理移动端回传的任务结果 JSON
-   */
-  private async handleTaskResult(payloadStr: string) {
-    try {
-      const data = JSON.parse(payloadStr);
-      const { taskId, status, message } = data;
-      if (taskId && status) {
-        const validated = await this.validateTikTokResult(status, message);
-        console.log(
-          `[MQTT-RESULT] Received task feedback via MQTT for task ${taskId}: ${validated.status}`,
-        );
-        TaskService.getInstance().updateTaskStatus(taskId, validated.status, validated.message);
-      }
-    } catch (err: any) {
-      console.error(
-        "[MQTT-RESULT] Failed to parse task result payload:",
-        err.message,
-      );
-    }
-  }
-
-  /**
-   * 校验 TikTok 短链最终跳转账号与移动端个人主页账号一致。
-   *
-   * @param status - 移动端原始任务状态
-   * @param message - 移动端结构化结果字符串
-   * @returns 校验后的任务状态与结果字符串
-   */
-  private async validateTikTokResult(
-    status: string,
-    message: string,
-  ): Promise<{ status: 'SUCCESS' | 'FAILURE'; message: string }> {
-    const normalizedStatus: 'SUCCESS' | 'FAILURE' = status === 'SUCCESS' ? 'SUCCESS' : 'FAILURE';
-    if (normalizedStatus !== 'SUCCESS') return { status: normalizedStatus, message };
-
-    let result: Record<string, any>;
-    try {
-      result = JSON.parse(message);
-    } catch {
-      return { status: normalizedStatus, message };
-    }
-
-    if (result?.success === false) {
-      return { status: 'FAILURE', message: JSON.stringify(result) };
-    }
-
-    if (!result?.postUrl || !result?.profileHandle) return { status: normalizedStatus, message };
-
-    try {
-      const response = await fetch(String(result.postUrl), {
-        method: 'HEAD',
-        redirect: 'manual',
-        signal: AbortSignal.timeout(10000),
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-      const canonicalUrl = response.headers.get('location') || response.url;
-      const expectedHandle = String(result.profileHandle).replace(/^@/, '').toLowerCase();
-      const isExpectedAccount = canonicalUrl.toLowerCase().includes(`/@${expectedHandle}/`);
-      result.canonicalUrl = canonicalUrl;
-      result.linkVerified = isExpectedAccount;
-
-      if (!isExpectedAccount) {
-        result.success = false;
-        result.error = `TikTok URL belongs to another account; expected @${expectedHandle}`;
-        return { status: 'FAILURE', message: JSON.stringify(result) };
-      }
-      return { status: 'SUCCESS', message: JSON.stringify(result) };
-    } catch (error: any) {
-      result.success = false;
-      result.linkVerified = false;
-      result.error = `TikTok URL validation failed: ${error.message}`;
-      return { status: 'FAILURE', message: JSON.stringify(result) };
     }
   }
 

@@ -12,8 +12,8 @@ unset LD_PRELOAD
 # 清理旧的编译残留目录，防止旧的 dist 产物混淆
 rm -rf dist 2>/dev/null
 
-# 启动时自动强制拉取 Git 最新代码
-(cd .. && git fetch --all && git reset --hard origin/master) >/dev/null 2>&1
+# 普通启动只运行手机当前已部署版本，避免覆盖 ADB 同步或本地配置。
+# 仓库更新仅在收到受信任的 client.self-update 任务（退出码 99）后执行。
 
 # ============================================================
 # 日志系统初始化：所有 [SHERIFF] 输出同时写入 logs/YYYY-MM-DD.log
