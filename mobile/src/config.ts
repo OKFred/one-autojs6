@@ -18,6 +18,12 @@ export interface Autojs6Config {
     qos: 0 | 1 | 2;
     sessionExpirySeconds: number;
   };
+  report: {
+    transport: "mqtt" | "http" | "both";
+    httpBaseUrl?: string;
+    requestTimeoutMs: number;
+    heartbeatSeconds: number;
+  };
   security: {
     allowedScriptIds: string[];
     maxParamsBytes: number;
@@ -47,6 +53,11 @@ export const DEFAULT_CONFIG: Autojs6Config = {
     qos: 1,
     sessionExpirySeconds: 86400,
   },
+  report: {
+    transport: "mqtt",
+    requestTimeoutMs: 15000,
+    heartbeatSeconds: 60,
+  },
   security: {
     allowedScriptIds: [
       "device.apps.list",
@@ -69,8 +80,8 @@ export const DEFAULT_CONFIG: Autojs6Config = {
   events: {
     battery: { ...DEFAULT_EVENT, enabled: true },
     network: { ...DEFAULT_EVENT, enabled: true },
-    sms: { ...DEFAULT_EVENT },
-    notification: { ...DEFAULT_EVENT },
+    sms: { ...DEFAULT_EVENT, enabled: true },
+    notification: { ...DEFAULT_EVENT, enabled: true },
   },
 };
 
@@ -128,6 +139,7 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
   if (!isRecord(parsed))
     throw new Error("autojs6-config.json must be an object");
   const mqtt = isRecord(parsed.mqtt) ? parsed.mqtt : {};
+  const report = isRecord(parsed.report) ? parsed.report : {};
   const security = isRecord(parsed.security) ? parsed.security : {};
   const tasks = isRecord(parsed.tasks) ? parsed.tasks : {};
   const events = isRecord(parsed.events) ? parsed.events : {};
@@ -144,6 +156,24 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
           typeof mqtt.sessionExpirySeconds === "number"
             ? mqtt.sessionExpirySeconds
             : DEFAULT_CONFIG.mqtt.sessionExpirySeconds,
+      },
+      report: {
+        transport:
+          report.transport === "http" || report.transport === "both"
+            ? report.transport
+            : DEFAULT_CONFIG.report.transport,
+        httpBaseUrl:
+          typeof report.httpBaseUrl === "string"
+            ? report.httpBaseUrl.replace(/\/+$/, "")
+            : process.env.AUTOJS6_REPORT_URL?.replace(/\/+$/, ""),
+        requestTimeoutMs:
+          typeof report.requestTimeoutMs === "number"
+            ? Math.max(1000, Math.min(report.requestTimeoutMs, 60000))
+            : DEFAULT_CONFIG.report.requestTimeoutMs,
+        heartbeatSeconds:
+          typeof report.heartbeatSeconds === "number"
+            ? Math.max(30, Math.min(report.heartbeatSeconds, 300))
+            : DEFAULT_CONFIG.report.heartbeatSeconds,
       },
       security: {
         allowedScriptIds: stringArray(

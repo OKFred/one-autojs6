@@ -6,11 +6,13 @@ import dotenv from "dotenv";
 import mqtt from "mqtt";
 
 import { loadConfig } from "./config.js";
+import { collectDeviceInfo } from "./device-info.js";
 import {
   PROTOCOL_VERSION,
   isRecord,
   parseDeviceTaskRequest,
   type DeviceEventPayload,
+  type DeviceInfoPayload,
   type DevicePresencePayload,
   type DeviceTaskRequest,
   type DeviceTaskResult,
@@ -90,6 +92,18 @@ const tasksTopic = `autojs6/v2/devices/${deviceId}/tasks`;
 const resultsTopic = `autojs6/v2/devices/${deviceId}/results`;
 const eventsTopic = `autojs6/v2/devices/${deviceId}/events`;
 const presenceTopic = `autojs6/v2/devices/${deviceId}/presence`;
+const infoTopic = `autojs6/v2/devices/${deviceId}/info`;
+const reportToken = process.env.AUTOJS6_REPORT_TOKEN;
+const usesMqttReporting =
+  config.report.transport === "mqtt" || config.report.transport === "both";
+const usesHttpReporting =
+  config.report.transport === "http" || config.report.transport === "both";
+
+if (usesHttpReporting && (!config.report.httpBaseUrl || !reportToken)) {
+  throw new Error(
+    "HTTP reporting requires report.httpBaseUrl and AUTOJS6_REPORT_TOKEN",
+  );
+}
 
 /** 隐去 MQTT URL 中的认证信息，避免凭据进入控制台和本地日志。 */
 function redactBrokerUrl(value: string): string {
@@ -124,38 +138,89 @@ const queuedTaskIds = new Set<string>();
 let activeTask: ActiveTask | null = null;
 let isStartingTask = false;
 let observerWatcher: NodeJS.Timeout | null = null;
-let lastEventsSize = 0;
+let observersStarted = false;
+let heartbeatTimer: NodeJS.Timeout | null = null;
 const lastPublishedEvents = new Map<
   string,
   { key: string; timestamp: number }
 >();
 
-/** 构造设备能力与在线状态消息。 */
+/** 构造最小在线状态消息。 */
 function presence(status: "ONLINE" | "OFFLINE"): DevicePresencePayload {
   return {
     protocolVersion: PROTOCOL_VERSION,
     deviceId,
     status,
-    clientVersion,
     timestamp: Date.now(),
-    scripts: listRegisteredScripts().map(({ scriptId, version }) => ({
-      scriptId,
-      version,
-    })),
   };
 }
+
+// 静态信息 Promise 在进程生命周期内只创建一次；MQTT 重连只复用结果。
+const deviceInfoPromise: Promise<DeviceInfoPayload> = collectDeviceInfo(
+  deviceId,
+  clientVersion,
+  listRegisteredScripts().map(({ scriptId, version }) => ({
+    scriptId,
+    version,
+  })),
+);
 
 const mqttClient = mqtt.connect(brokerUrl, {
   clean: false,
   clientId: deviceId,
   properties: { sessionExpiryInterval: config.mqtt.sessionExpirySeconds },
-  will: {
-    topic: presenceTopic,
-    payload: JSON.stringify(presence("OFFLINE")),
-    qos: config.mqtt.qos,
-    retain: true,
-  },
+  ...(usesMqttReporting
+    ? {
+        will: {
+          topic: presenceTopic,
+          payload: JSON.stringify(presence("OFFLINE")),
+          qos: config.mqtt.qos,
+          retain: true,
+        },
+      }
+    : {}),
 });
+
+/** 将设备上报发送到配置的 HTTPS 接口。 */
+async function postReport(
+  kind: "presence" | "info" | "event",
+  payload: DevicePresencePayload | DeviceInfoPayload | DeviceEventPayload,
+): Promise<void> {
+  if (!usesHttpReporting || !config.report.httpBaseUrl || !reportToken) return;
+  const response = await fetch(`${config.report.httpBaseUrl}/report/${kind}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Device-Token": reportToken,
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(config.report.requestTimeoutMs),
+  });
+  const responseBody: unknown = await response.json().catch(() => null);
+  if (!response.ok || !isRecord(responseBody) || responseBody.ok !== true) {
+    throw new Error(`HTTP report rejected (${response.status})`);
+  }
+}
+
+/** 发送设备上报；双通道模式复用完全相同的 eventId 和载荷。 */
+function publishReport(
+  kind: "presence" | "info" | "event",
+  topic: string,
+  payload: DevicePresencePayload | DeviceInfoPayload | DeviceEventPayload,
+  retain = false,
+): void {
+  if (usesMqttReporting && mqttClient.connected) {
+    mqttClient.publish(topic, JSON.stringify(payload), {
+      qos: config.mqtt.qos,
+      retain,
+    });
+  }
+  if (usesHttpReporting) {
+    void postReport(kind, payload).catch((error) =>
+      console.warn(`[REPORT] ${kind} HTTP upload failed`, error),
+    );
+  }
+}
 
 /** 使用 `su -c` 执行仅由本地代码构造的 Android 命令。 */
 function runRootCommand(command: string): Promise<void> {
@@ -175,6 +240,8 @@ function shellQuote(value: string): string {
 /** 将设备事件按配置防抖后发布。 */
 function publishEvent(value: unknown): void {
   if (!isRecord(value) || typeof value.type !== "string") return;
+  const allowedTypes = ["battery", "network", "sms", "notification"] as const;
+  if (!allowedTypes.some((type) => type === value.type)) return;
   const timestamp =
     typeof value.timestamp === "number" ? value.timestamp : Date.now();
   const data = isRecord(value.data) ? value.data : {};
@@ -192,14 +259,13 @@ function publishEvent(value: unknown): void {
   lastPublishedEvents.set(value.type, { key, timestamp: Date.now() });
   const payload: DeviceEventPayload = {
     protocolVersion: PROTOCOL_VERSION,
+    eventId: crypto.randomUUID(),
     deviceId,
-    type: value.type,
+    type: value.type as DeviceEventPayload["type"],
     timestamp,
     data,
   };
-  mqttClient.publish(eventsTopic, JSON.stringify(payload), {
-    qos: config.mqtt.qos,
-  });
+  publishReport("event", eventsTopic, payload);
 }
 
 /** 启动配置文件指定的本地事件监听脚本。 */
@@ -226,6 +292,10 @@ async function applyObserverConfig(): Promise<void> {
 
   const observerPath = path.join(tempScriptDirectory, "autojs_observer.js");
   const eventPath = path.join(tempScriptDirectory, "autojs_events.txt");
+  const processingEventPath = path.join(
+    tempScriptDirectory,
+    "autojs_events.processing",
+  );
   const localPath = path.join(sourceDirectory, "local_autojs_observer.js");
   fs.writeFileSync(
     localPath,
@@ -238,22 +308,20 @@ async function applyObserverConfig(): Promise<void> {
     "utf8",
   );
   await runRootCommand(
-    `cp ${shellQuote(localControlPath)} ${shellQuote(observerControlPath)} && cp ${shellQuote(localPath)} ${shellQuote(observerPath)} && chmod 600 ${shellQuote(observerControlPath)} ${shellQuote(observerPath)} && rm -f ${shellQuote(localControlPath)} ${shellQuote(localPath)} && am start -n ${autojsPackageName}/org.autojs.autojs.external.open.RunIntentActivity -d file://${observerPath} -t text/javascript`,
+    `cp ${shellQuote(localControlPath)} ${shellQuote(observerControlPath)} && cp ${shellQuote(localPath)} ${shellQuote(observerPath)} && chmod 600 ${shellQuote(observerControlPath)} ${shellQuote(observerPath)} && rm -f ${shellQuote(localControlPath)} ${shellQuote(localPath)} ${shellQuote(eventPath)} ${shellQuote(processingEventPath)} && am start -n ${autojsPackageName}/org.autojs.autojs.external.open.RunIntentActivity -d file://${observerPath} -t text/javascript`,
   );
 
-  lastEventsSize = fs.existsSync(eventPath) ? fs.statSync(eventPath).size : 0;
   observerWatcher = setInterval(() => {
     if (!fs.existsSync(eventPath)) return;
     try {
-      const size = fs.statSync(eventPath).size;
-      if (size < lastEventsSize) lastEventsSize = 0;
-      if (size === lastEventsSize) return;
-      const descriptor = fs.openSync(eventPath, "r");
-      const buffer = Buffer.alloc(size - lastEventsSize);
-      fs.readSync(descriptor, buffer, 0, buffer.length, lastEventsSize);
-      fs.closeSync(descriptor);
-      lastEventsSize = size;
-      for (const line of buffer.toString().split("\n").filter(Boolean)) {
+      fs.renameSync(eventPath, processingEventPath);
+      let content = "";
+      try {
+        content = fs.readFileSync(processingEventPath, "utf8");
+      } finally {
+        fs.rmSync(processingEventPath, { force: true });
+      }
+      for (const line of content.split("\n").filter(Boolean)) {
         try {
           publishEvent(JSON.parse(line) as unknown);
         } catch (error) {
@@ -668,13 +736,12 @@ mqttClient.on("connect", () => {
     if (error) console.error(`[MQTT] Failed to subscribe ${tasksTopic}`, error);
     else console.log(`[MQTT] Subscribed ${tasksTopic}`);
   });
-  mqttClient.publish(presenceTopic, JSON.stringify(presence("ONLINE")), {
-    qos: config.mqtt.qos,
-    retain: true,
-  });
-  void applyObserverConfig().catch((error) =>
-    console.error("[EVENT] Failed to start configured observers", error),
-  );
+  publishReport("presence", presenceTopic, presence("ONLINE"), true);
+  void deviceInfoPromise
+    .then((info) => publishReport("info", infoTopic, info, true))
+    .catch((error) =>
+      console.error("[DEVICE_INFO] Static collection failed safely", error),
+    );
 });
 
 mqttClient.on("message", (topic, payload) => {
@@ -690,8 +757,30 @@ mqttClient.on("error", (error) =>
   console.error("[MQTT] Connection error", error),
 );
 
+/** 启动与 MQTT 连接解耦的本地监听和 HTTP 心跳。 */
+function startDeviceReporting(): void {
+  if (!observersStarted) {
+    observersStarted = true;
+    void applyObserverConfig().catch((error) =>
+      console.error("[EVENT] Failed to start configured observers", error),
+    );
+  }
+  publishReport("presence", presenceTopic, presence("ONLINE"), true);
+  void deviceInfoPromise
+    .then((info) => publishReport("info", infoTopic, info, true))
+    .catch((error) =>
+      console.error("[DEVICE_INFO] Static collection failed safely", error),
+    );
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    publishReport("presence", presenceTopic, presence("ONLINE"), true);
+  }, config.report.heartbeatSeconds * 1000);
+}
+
+startDeviceReporting();
+
 console.log(`[CLIENT] AutoJS6 device client ${clientVersion} started`);
 console.log(
-  `[CLIENT] deviceId=${deviceId} broker=${redactBrokerUrl(brokerUrl)}`,
+  `[CLIENT] deviceId=configured broker=${redactBrokerUrl(brokerUrl)}`,
 );
-console.log(`[CLIENT] config=${configPath} taskTopic=${tasksTopic}`);
+console.log(`[CLIENT] config=${configPath} MQTT task subscription configured`);

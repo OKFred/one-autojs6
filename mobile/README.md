@@ -66,7 +66,22 @@ v2 客户端没有远程 JavaScript/Shell 执行实现，也不订阅旧公共�
 - `sms`
 - `notification`
 
-通知监听支持 `packageAllowList` 和 `packageDenyList`。事件统一发布到 `autojs6/v2/devices/{deviceId}/events`。
+通知监听支持 `packageAllowList` 和 `packageDenyList`。电量、网络只在状态变化时产生事件；短信和通知每次产生事件。事件包含唯一 `eventId`，统一发布到 `autojs6/v2/devices/{deviceId}/events`。Observer 日志不会记录号码或正文；共享存储中的事件交换文件采用原子轮转，读取后立即删除，避免敏感正文长期残留。
+
+## 设备主动上报
+
+- Presence 每 60 秒上报一次，只包含状态和时间；MQTT retained + Will 支持 Node 立即判定异常离线。
+- Device Info 在每个进程中只采集一次。重连会重发内存缓存，不会重复读取 IMEI、序列号等敏感标识。
+- IMEI 会尝试读取最多四个卡槽并去重；读取失败标记为 `unavailable`，不会阻止客户端运行。
+- Node 模式使用 MQTT。Worker 模式在配置中将 `report.transport` 设为 `http`，并通过环境变量提供 `AUTOJS6_REPORT_TOKEN`；`both` 可用于迁移期双上报，事件依靠相同 `eventId` 幂等。
+
+HTTPS 地址应指向设备业务根路径，例如：
+
+```text
+AUTOJS6_REPORT_URL=https://example.com/api/v1/admin/mobile/device
+```
+
+令牌由管理端“设备状态”抽屉生成或重置，明文只显示一次，不应写入 `autojs6-config.json` 或日志。
 
 ## Node 与 Worker 结果回传
 

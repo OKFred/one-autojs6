@@ -4,6 +4,12 @@
     "qos": 1,
     "sessionExpirySeconds": 86400
   },
+  "report": {
+    "transport": "mqtt",
+    "httpBaseUrl": "https://example.com/api/v1/admin/mobile/device",
+    "requestTimeoutMs": 15000,
+    "heartbeatSeconds": 60
+  },
   "security": {
     "allowedScriptIds": [
       "device.apps.list",
@@ -26,9 +32,9 @@
   "events": {
     "battery": { "enabled": true, "debounceMs": 1000 },
     "network": { "enabled": true, "debounceMs": 1000 },
-    "sms": { "enabled": false, "debounceMs": 1000 },
+    "sms": { "enabled": true, "debounceMs": 1000 },
     "notification": {
-      "enabled": false,
+      "enabled": true,
       "debounceMs": 1000,
       "packageAllowList": [],
       "packageDenyList": []

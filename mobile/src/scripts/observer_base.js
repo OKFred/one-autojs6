@@ -11,9 +11,8 @@ function appendEvent(type, data) {
     });
     files.createWithDirs(eventResPath);
     files.append(eventResPath, record + "\n");
-    console.log(
-      "[AutoJS_Observer] Event recorded: " + type + " " + JSON.stringify(data),
-    );
+    // 正文、号码和通知内容不得写入 AutoJS6 控制台日志。
+    console.log("[AutoJS_Observer] Event recorded: " + type);
   } catch (e) {
     console.error("[AutoJS_Observer] Failed to append event: " + e);
   }

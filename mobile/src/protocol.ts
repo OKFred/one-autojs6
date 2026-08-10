@@ -39,20 +39,47 @@ export interface DeviceTaskResult {
 /** 手机端事件监听结果。 */
 export interface DeviceEventPayload {
   protocolVersion: 2;
+  eventId: string;
   deviceId: string;
-  type: string;
+  type: "battery" | "network" | "sms" | "notification";
   timestamp: number;
   data: Record<string, unknown>;
 }
 
-/** 手机端能力与在线状态。 */
+/** 手机端最小在线状态。 */
 export interface DevicePresencePayload {
   protocolVersion: 2;
   deviceId: string;
   status: "ONLINE" | "OFFLINE";
-  clientVersion: string;
   timestamp: number;
-  scripts: Array<{ scriptId: string; version: number }>;
+}
+
+/** 标识采集状态。 */
+export type IdentifierAvailability = "available" | "unavailable";
+
+/** 进程启动时只采集一次的静态设备信息。 */
+export interface DeviceInfoPayload {
+  protocolVersion: 2;
+  deviceId: string;
+  timestamp: number;
+  manufacturer: string;
+  brand: string;
+  model: string;
+  androidVersion: string;
+  androidSdk: number | null;
+  autojs6Version: string;
+  clientVersion: string;
+  identifiers: {
+    imeis: string[];
+    imeiStatus: IdentifierAvailability;
+    serialNumber: string | null;
+    serialStatus: IdentifierAvailability;
+  };
+  capabilities: {
+    trustedScripts: Array<{ scriptId: string; version: number }>;
+    root: boolean;
+  };
+  reportedExtra: Record<string, unknown>;
 }
 
 /** 判断值是否为普通 JSON 对象。 */
