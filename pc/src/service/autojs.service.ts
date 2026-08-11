@@ -1,5 +1,6 @@
 import {
   NodeServerService,
+  type TaskPriority,
   type TrustedScriptId,
 } from "./node-server.service.js";
 
@@ -23,13 +24,24 @@ export class AutojsService {
    * @param params 结构化脚本参数。
    * @param timeoutSeconds 超时秒数。
    * @param clientId 可选目标设备；默认读取 AUTOJS6_CLIENT_ID。
+   * @param priority 可选调度优先级。
+   * @param preemptRunning 是否显式抢占不高于当前优先级的运行任务。
    */
   public async dispatchTask(
     scriptId: TrustedScriptId,
     params: Record<string, unknown>,
     timeoutSeconds: number,
     clientId?: string,
+    priority?: TaskPriority,
+    preemptRunning = false,
   ) {
-    return this.nodeServer.dispatch(scriptId, params, timeoutSeconds, clientId);
+    return this.nodeServer.dispatch(
+      scriptId,
+      params,
+      timeoutSeconds,
+      clientId,
+      priority,
+      preemptRunning,
+    );
   }
 }

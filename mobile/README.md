@@ -21,18 +21,27 @@ v2 客户端没有远程 JavaScript/Shell 执行实现，也不订阅旧公共�
 
 ## 本地脚本
 
-| scriptId             | 文件                                | 用途                                             |
-| -------------------- | ----------------------------------- | ------------------------------------------------ |
-| `device.apps.list`   | `task-scripts/device_apps_list.js`  | 获取已安装应用列表                               |
-| `app.install`        | `task-scripts/app_install.js`       | 下载并安装已登记的 HTTPS APK                     |
-| `app.version.check`  | `task-scripts/app_version_check.js` | 检查本机应用版本                                 |
-| `app.update.store`   | `task-scripts/app_update_store.js`  | 通过应用商店更新                                 |
-| `app.update.zip`     | `task-scripts/app_update_zip.js`    | 安全解压并安装 HTTPS ZIP 更新包                  |
-| `file.download`      | `task-scripts/file_download.js`     | 下载文件到 `/sdcard/`                            |
-| `tiktok.post`        | `task-scripts/tiktok_post_v2.js`    | 图片/视频发布、素材轮换、标题/详情选择和链接回传 |
-| `client.self-update` | 手机客户端固定动作                  | 退出码 99，交给本地 daemon 更新并重启            |
+| scriptId                | 文件                                    | 用途                                             |
+| ----------------------- | --------------------------------------- | ------------------------------------------------ |
+| `device.apps.list`      | `task-scripts/device_apps_list.js`      | 获取已安装应用列表                               |
+| `app.install`           | `task-scripts/app_install.js`           | 下载并安装已登记的 HTTPS APK                     |
+| `app.version.check`     | `task-scripts/app_version_check.js`     | 检查本机应用版本                                 |
+| `app.update.store`      | `task-scripts/app_update_store.js`      | 通过应用商店更新                                 |
+| `app.update.zip`        | `task-scripts/app_update_zip.js`        | 安全解压并安装 HTTPS ZIP 更新包                  |
+| `file.download`         | `task-scripts/file_download.js`         | 下载文件到 `/sdcard/`                            |
+| `tiktok.post`           | `task-scripts/tiktok_post_v2.js`        | 图片/视频发布、素材轮换、标题/详情选择和链接回传 |
+| `client.self-update`    | 手机客户端固定动作                      | 退出码 99，交给本地 daemon 更新并重启            |
+| `device.network.switch` | `task-scripts/device_network_switch.js` | Wi-Fi、以太网和蜂窝网络切换与失败恢复            |
 
 新增脚本时需要同时修改 `src/task-registry.ts` 与 Node Server 的可信脚本目录，并随手机客户端部署对应文件。不要让服务端传文件路径。
+
+## 优先级与显式抢占
+
+- 队列按 `HIGH > NORMAL > LOW` 执行，同级保持接收顺序。
+- 网络切换默认 HIGH，其他脚本默认 NORMAL；旧请求可省略优先级和抢占字段。
+- `preemptRunning=true` 只在新任务优先级不低于运行中任务时生效。原任务返回 `CANCELLED/PREEMPTED_BY_TASK`，不会自动重跑。
+- 所有脚本均允许显式抢占，但 TikTok、安装、下载、更新和网络切换可能已经产生不可回滚副作用，调用方必须明确承担风险。
+- 网络检测最长 120 秒，任务最长 150 秒。PC/Node 默认多预留 20 秒，手机最终执行端要求至少保留 15 秒用于失败恢复和结果回传。
 
 ## TikTok 参数示例
 

@@ -5,7 +5,12 @@ import dotenv from "dotenv";
 import { MqttService } from "./service/mqtt.service.js";
 import { registerSwagger } from "./swagger.js";
 import { WebSocketServer } from "ws";
+import type { IncomingMessage } from "http";
 import { exec } from "child_process";
+import {
+  createApiAuthMiddleware,
+  isValidApiToken,
+} from "./middleware/api-auth.js";
 import {
   createTask,
   getAllTasks,
@@ -18,6 +23,7 @@ import {
   tiktokPost,
   proxyFile,
   downloadFile,
+  switchNetwork,
 } from "./controller/index.js";
 
 dotenv.config();
@@ -40,6 +46,12 @@ if (!process.env.PC_IP) {
   );
   process.exit(1);
 }
+if (!process.env.ONE_AUTOJS6_API_TOKEN) {
+  console.error(
+    "[ERROR] Environment variable ONE_AUTOJS6_API_TOKEN is required.",
+  );
+  process.exit(1);
+}
 
 const PORT = parseInt(process.env.PORT, 10);
 const MQTT_PORT = parseInt(process.env.MQTT_PORT, 10);
@@ -53,6 +65,9 @@ MqttService.getInstance().init(MQTT_PORT);
 // 2. 初始化 Hono HTTP 服务与绑定路由
 // ==========================================
 const app = new Hono();
+
+// 除只读连接配置外，所有 PC API 都要求 Bearer Token。
+app.use("/api/*", createApiAuthMiddleware());
 
 // 注册 Swagger 接口文档
 registerSwagger(app);
@@ -86,6 +101,9 @@ app.post("/api/tiktok/post", tiktokPost);
 
 // 手机通用下载与传文件
 app.post("/api/files/download", downloadFile);
+
+// 手机网络切换 (wifi, ethernet, carrier)
+app.post("/api/network/switch", switchNetwork);
 
 // PC 代理拉取 SMB 等资源
 app.get("/api/proxy", proxyFile);
@@ -121,7 +139,29 @@ const server = serve(
 );
 
 // 附加基于 WS 的原生简易截屏服务 (用于 Dashboard 的无依赖投屏)
-const wss = new WebSocketServer({ server: server as any, path: "/api/screen" });
+const wss = new WebSocketServer({
+  server: server as any,
+  path: "/api/screen",
+  verifyClient: ({ req }: { req: IncomingMessage }) => {
+    const protocols = String(req.headers["sec-websocket-protocol"] || "")
+      .split(",")
+      .map((value) => value.trim());
+    const bearerProtocol = protocols.find((value) =>
+      value.startsWith("bearer."),
+    );
+    if (!bearerProtocol) return false;
+    try {
+      const token = Buffer.from(bearerProtocol.slice(7), "base64url").toString(
+        "utf8",
+      );
+      return isValidApiToken(token);
+    } catch {
+      return false;
+    }
+  },
+  handleProtocols: (protocols) =>
+    protocols.has("one-autojs6") ? "one-autojs6" : false,
+});
 wss.on("connection", (ws) => {
   console.log("[SCREEN-WS] Client connected for screen mirroring.");
   // 使用定时器轮询拉取截屏

@@ -19,7 +19,8 @@
       "app.update.zip",
       "file.download",
       "tiktok.post",
-      "client.self-update"
+      "client.self-update",
+      "device.network.switch"
     ],
     "maxParamsBytes": 65536
   },

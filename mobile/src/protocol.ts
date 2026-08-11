@@ -1,9 +1,16 @@
 /** AutoJS6 设备任务协议版本。 */
 export const PROTOCOL_VERSION = 2 as const;
 
+/** 手机任务调度优先级。 */
+export type TaskPriority = "LOW" | "NORMAL" | "HIGH";
+
 /** 设备任务终态。 */
 export type TaskStatus =
-  "SUCCESS" | "FAILURE" | "TIMEOUT" | "REJECTED" | "CANCELLED";
+  | "SUCCESS"
+  | "FAILURE"
+  | "TIMEOUT"
+  | "REJECTED"
+  | "CANCELLED";
 
 /** 服务端下发给单台设备的可信脚本任务。 */
 export interface DeviceTaskRequest {
@@ -18,6 +25,8 @@ export interface DeviceTaskRequest {
   expiresAt: number;
   traceId: string;
   callbackUrl?: string;
+  priority: TaskPriority;
+  preemptRunning: boolean;
 }
 
 /** 手机端向服务端上报的统一任务结果。 */
@@ -123,6 +132,34 @@ export function parseDeviceTaskRequest(value: unknown): DeviceTaskRequest {
     }
   }
   if (!isRecord(value.params)) throw new Error("params must be an object");
+  if (
+    value.priority !== undefined &&
+    value.priority !== "LOW" &&
+    value.priority !== "NORMAL" &&
+    value.priority !== "HIGH"
+  ) {
+    throw new Error("priority must be LOW, NORMAL or HIGH");
+  }
+  const priority =
+    value.priority === "LOW" ||
+    value.priority === "NORMAL" ||
+    value.priority === "HIGH"
+      ? value.priority
+      : value.scriptId === "device.network.switch"
+        ? "HIGH"
+        : "NORMAL";
+  if (
+    value.preemptRunning !== undefined &&
+    typeof value.preemptRunning !== "boolean"
+  ) {
+    throw new Error("preemptRunning must be a boolean");
+  }
+  if ((value.timeoutMs as number) <= 0) {
+    throw new Error("timeoutMs must be positive");
+  }
+  if ((value.expiresAt as number) <= (value.createdAt as number)) {
+    throw new Error("expiresAt must be later than createdAt");
+  }
 
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -138,5 +175,7 @@ export function parseDeviceTaskRequest(value: unknown): DeviceTaskRequest {
     traceId: value.traceId as string,
     callbackUrl:
       typeof value.callbackUrl === "string" ? value.callbackUrl : undefined,
+    priority,
+    preemptRunning: value.preemptRunning === true,
   };
 }

@@ -76,6 +76,14 @@ const REGISTRY: readonly RegisteredTaskScript[] = [
     defaultTimeoutMs: 30_000,
     maxTimeoutMs: 60_000,
   },
+  {
+    scriptId: "device.network.switch",
+    kind: "autojs",
+    fileName: "device_network_switch.js",
+    version: 1,
+    defaultTimeoutMs: 60_000,
+    maxTimeoutMs: 150_000,
+  },
 ];
 
 /** 获取全部本地可信脚本的只读元数据。 */
@@ -92,6 +100,48 @@ export function getRegisteredScript(
   scriptId: string,
 ): RegisteredTaskScript | undefined {
   return REGISTRY.find((item) => item.scriptId === scriptId);
+}
+
+/**
+ * 校验需要在最终执行端再次约束的脚本参数。
+ *
+ * @returns 合法时返回 null，否则返回稳定的错误说明。
+ */
+export function validateRegisteredTaskParams(
+  scriptId: string,
+  params: Record<string, unknown>,
+  taskTimeoutMs?: number,
+): string | null {
+  if (scriptId !== "device.network.switch") return null;
+  const target = String(
+    params.target ?? params.network ?? "wifi",
+  ).toLowerCase();
+  if (
+    !["wifi", "ethernet", "carrier", "cellular", "mobile", "data"].includes(
+      target,
+    )
+  ) {
+    return "Network target must be wifi, ethernet or carrier";
+  }
+  if (params.timeoutMs !== undefined) {
+    if (
+      typeof params.timeoutMs !== "number" ||
+      !Number.isFinite(params.timeoutMs) ||
+      params.timeoutMs < 1_000 ||
+      params.timeoutMs > 120_000
+    ) {
+      return "Network detection timeoutMs must be between 1000 and 120000";
+    }
+  }
+  const detectionTimeoutMs =
+    typeof params.timeoutMs === "number" ? params.timeoutMs : 20_000;
+  if (
+    taskTimeoutMs !== undefined &&
+    taskTimeoutMs < detectionTimeoutMs + 15_000
+  ) {
+    return "Network task timeout must reserve 15000ms for restore and result delivery";
+  }
+  return null;
 }
 
 /**

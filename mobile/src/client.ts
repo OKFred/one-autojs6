@@ -23,14 +23,27 @@ import {
   getRegisteredScript,
   listRegisteredScripts,
   readRegisteredScript,
+  validateRegisteredTaskParams,
 } from "./task-registry.js";
+import {
+  canPreemptRunning,
+  findHighPriorityEvictionIndex,
+  insertQueuedTask,
+  type QueuedDeviceTask,
+} from "./task-queue.js";
 import { getEmqxBrokerUrl } from "./utils/mqtt.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
 const mobileRoot = path.resolve(sourceDirectory, "..");
 const logsDirectory = path.join(mobileRoot, "logs");
+const resultOutboxDirectory = path.join(
+  mobileRoot,
+  "state",
+  "task-result-outbox",
+);
 const clientVersion = "2.0.0";
+const RESULT_OUTBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** 格式化本地日期。 */
 function formatLocalDate(date: Date, withTime = false): string {
@@ -120,10 +133,17 @@ function redactBrokerUrl(value: string): string {
 interface ActiveTask {
   request: DeviceTaskRequest;
   startedAt: number;
-  timeoutTimer: NodeJS.Timeout;
+  deadlineAt: number;
+  timeoutTimer: NodeJS.Timeout | null;
   pollInterval: NodeJS.Timeout;
   tempFilePath: string;
   resultFilePath: string;
+}
+
+interface TaskResultOutboxEntry {
+  result: DeviceTaskResult;
+  callbackUrl?: string;
+  persistedAt: number;
 }
 
 interface ScriptResultFile {
@@ -133,13 +153,17 @@ interface ScriptResultFile {
   data: unknown;
 }
 
-const taskQueue: DeviceTaskRequest[] = [];
+const taskQueue: QueuedDeviceTask[] = [];
 const queuedTaskIds = new Set<string>();
+const deliveringResultIds = new Set<string>();
 let activeTask: ActiveTask | null = null;
 let isStartingTask = false;
+let queueSequence = 0;
+let taskIntakeChain = Promise.resolve();
 let observerWatcher: NodeJS.Timeout | null = null;
 let observersStarted = false;
 let heartbeatTimer: NodeJS.Timeout | null = null;
+let resultOutboxRetryTimer: NodeJS.Timeout | null = null;
 const lastPublishedEvents = new Map<
   string,
   { key: string; timestamp: number }
@@ -166,6 +190,7 @@ const deviceInfoPromise: Promise<DeviceInfoPayload> = collectDeviceInfo(
 );
 
 const mqttClient = mqtt.connect(brokerUrl, {
+  protocolVersion: 5,
   clean: false,
   clientId: deviceId,
   properties: { sessionExpiryInterval: config.mqtt.sessionExpirySeconds },
@@ -334,7 +359,132 @@ async function applyObserverConfig(): Promise<void> {
   }, 1000);
 }
 
-/** 发布统一任务结果。 */
+/** 返回单个任务结果的本地 outbox 文件。 */
+function resultOutboxPath(taskId: string): string {
+  return path.join(resultOutboxDirectory, `${taskId}.json`);
+}
+
+/** 在任何网络发送之前原子保存任务终态。 */
+function persistTaskResult(entry: TaskResultOutboxEntry): void {
+  fs.mkdirSync(resultOutboxDirectory, { recursive: true });
+  const targetPath = resultOutboxPath(entry.result.taskId);
+  const temporaryPath = `${targetPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(entry), "utf8");
+  fs.renameSync(temporaryPath, targetPath);
+}
+
+/** 删除已经被至少一个可信通道确认的任务结果。 */
+function removePersistedTaskResult(taskId: string): void {
+  fs.rmSync(resultOutboxPath(taskId), { force: true });
+}
+
+/** 通过 MQTT QoS 1 发布并等待 Broker PUBACK。 */
+function publishTaskResultMqtt(result: DeviceTaskResult): Promise<void> {
+  if (!mqttClient.connected) {
+    return Promise.reject(new Error("MQTT client is disconnected"));
+  }
+  return new Promise((resolve, reject) => {
+    mqttClient.publish(
+      resultsTopic,
+      JSON.stringify(result),
+      { qos: config.mqtt.qos, retain: false },
+      (error) => {
+        if (error) reject(error);
+        else resolve();
+      },
+    );
+  });
+}
+
+/** 通过带设备令牌的 HTTP callback 发送任务结果。 */
+async function postTaskResult(entry: TaskResultOutboxEntry): Promise<void> {
+  if (!entry.callbackUrl || !reportToken || !config.report.httpBaseUrl) {
+    throw new Error("Authenticated HTTP callback is not configured");
+  }
+  const callbackUrl = new URL(entry.callbackUrl);
+  if (callbackUrl.protocol !== "https:") {
+    throw new Error("Task callback URL must use HTTPS");
+  }
+  const trustedReportOrigin = new URL(config.report.httpBaseUrl).origin;
+  if (callbackUrl.origin !== trustedReportOrigin) {
+    throw new Error(
+      "Task callback origin does not match the trusted report origin",
+    );
+  }
+  const response = await fetch(callbackUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Device-Token": reportToken,
+    },
+    body: JSON.stringify(entry.result),
+    signal: AbortSignal.timeout(config.report.requestTimeoutMs),
+  });
+  const responseBody: unknown = await response.json().catch(() => null);
+  if (!response.ok || !isRecord(responseBody) || responseBody.ok !== true) {
+    throw new Error(`HTTP task callback rejected (${response.status})`);
+  }
+}
+
+/** 同时尝试可信结果通道，任一确认后清除 outbox。 */
+async function deliverTaskResult(entry: TaskResultOutboxEntry): Promise<void> {
+  const taskId = entry.result.taskId;
+  if (deliveringResultIds.has(taskId)) return;
+  const deliveries: Array<Promise<void>> = [];
+  if (usesMqttReporting && mqttClient.connected)
+    deliveries.push(publishTaskResultMqtt(entry.result));
+  if (entry.callbackUrl && reportToken) deliveries.push(postTaskResult(entry));
+  if (deliveries.length === 0) return;
+  deliveringResultIds.add(taskId);
+  try {
+    await Promise.any(deliveries);
+    removePersistedTaskResult(taskId);
+  } catch (error) {
+    console.warn(`[TASK] Result delivery pending for ${taskId}`, error);
+  } finally {
+    deliveringResultIds.delete(taskId);
+  }
+}
+
+/** 从本地 outbox 读取一条由本进程生成的结果。 */
+function readTaskResultOutboxEntry(filePath: string): TaskResultOutboxEntry {
+  const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  if (
+    !isRecord(parsed) ||
+    !isRecord(parsed.result) ||
+    typeof parsed.result.taskId !== "string" ||
+    typeof parsed.persistedAt !== "number"
+  ) {
+    throw new Error("Invalid task result outbox entry");
+  }
+  return parsed as unknown as TaskResultOutboxEntry;
+}
+
+/** 重放尚未被任一可信通道确认的任务终态。 */
+async function replayTaskResultOutbox(): Promise<void> {
+  fs.mkdirSync(resultOutboxDirectory, { recursive: true });
+  const now = Date.now();
+  for (const fileName of fs.readdirSync(resultOutboxDirectory)) {
+    if (!fileName.endsWith(".json")) continue;
+    const filePath = path.join(resultOutboxDirectory, fileName);
+    try {
+      const entry = readTaskResultOutboxEntry(filePath);
+      if (now - entry.persistedAt > RESULT_OUTBOX_MAX_AGE_MS) {
+        fs.rmSync(filePath, { force: true });
+        continue;
+      }
+      await deliverTaskResult(entry);
+    } catch (error) {
+      console.warn(
+        `[TASK] Ignored corrupt result outbox file ${fileName}`,
+        error,
+      );
+      fs.rmSync(filePath, { force: true });
+    }
+  }
+}
+
+/** 构造、持久化并异步投递统一任务结果。 */
 function publishTaskResult(
   request: DeviceTaskRequest,
   startedAt: number,
@@ -358,41 +508,13 @@ function publishTaskResult(
     durationMs: Math.max(0, finishedAt - startedAt),
     traceId: request.traceId,
   };
-  const resultJson = JSON.stringify(result);
-  mqttClient.publish(resultsTopic, resultJson, {
-    qos: config.mqtt.qos,
-  });
-  if (request.callbackUrl) {
-    try {
-      const callbackUrl = new URL(request.callbackUrl);
-      if (
-        callbackUrl.protocol === "https:" ||
-        callbackUrl.protocol === "http:"
-      ) {
-        void fetch(callbackUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: resultJson,
-        })
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`);
-            }
-          })
-          .catch((error) =>
-            console.warn(
-              `[TASK] HTTP result callback failed for ${request.taskId}`,
-              error,
-            ),
-          );
-      }
-    } catch (error) {
-      console.warn(
-        `[TASK] Ignored invalid callback URL for ${request.taskId}`,
-        error,
-      );
-    }
-  }
+  const entry: TaskResultOutboxEntry = {
+    result,
+    callbackUrl: request.callbackUrl,
+    persistedAt: Date.now(),
+  };
+  persistTaskResult(entry);
+  void deliverTaskResult(entry);
 }
 
 /** 从脚本结果文件中解析统一字段。 */
@@ -427,7 +549,7 @@ function parseResultFile(content: string): ScriptResultFile {
 function cleanupActiveTask(): void {
   const current = activeTask;
   if (!current) return;
-  clearTimeout(current.timeoutTimer);
+  if (current.timeoutTimer) clearTimeout(current.timeoutTimer);
   clearInterval(current.pollInterval);
   for (const filePath of [current.tempFilePath, current.resultFilePath]) {
     void runRootCommand(`rm -f ${shellQuote(filePath)}`).catch((error) =>
@@ -437,6 +559,66 @@ function cleanupActiveTask(): void {
   queuedTaskIds.delete(current.request.taskId);
   activeTask = null;
   setTimeout(processNextTask, 100);
+}
+
+/** 终止超过本机执行时限的运行中任务。 */
+async function timeoutActiveTask(current: ActiveTask): Promise<void> {
+  if (activeTask !== current) return;
+  try {
+    await runRootCommand(`am force-stop ${autojsPackageName}`);
+  } catch (error) {
+    console.warn(`[TASK] Failed to force-stop timed out task`, error);
+  }
+  if (activeTask !== current) return;
+  publishTaskResult(
+    current.request,
+    current.startedAt,
+    "TIMEOUT",
+    "TASK_TIMEOUT",
+    `Script exceeded ${Math.max(0, current.deadlineAt - current.startedAt)}ms and was terminated`,
+  );
+  cleanupActiveTask();
+  setTimeout(() => void applyObserverConfig(), 2000);
+}
+
+/** 根据剩余截止时间为运行中任务安装超时定时器。 */
+function scheduleActiveTaskTimeout(current: ActiveTask): void {
+  if (current.timeoutTimer) clearTimeout(current.timeoutTimer);
+  current.timeoutTimer = setTimeout(
+    () => void timeoutActiveTask(current),
+    Math.max(1, current.deadlineAt - Date.now()),
+  );
+}
+
+/** 显式中断当前任务并让不低于其优先级的新任务优先执行。 */
+async function preemptActiveTask(incoming: DeviceTaskRequest): Promise<void> {
+  const current = activeTask;
+  if (!current || !canPreemptRunning(incoming, current.request)) return;
+  if (current.timeoutTimer) {
+    clearTimeout(current.timeoutTimer);
+    current.timeoutTimer = null;
+  }
+  try {
+    await runRootCommand(`am force-stop ${autojsPackageName}`);
+  } catch (error) {
+    console.warn(
+      `[TASK] Failed to preempt ${current.request.taskId}; it will continue`,
+      error,
+    );
+    if (activeTask === current) scheduleActiveTaskTimeout(current);
+    return;
+  }
+  if (activeTask !== current) return;
+  publishTaskResult(
+    current.request,
+    current.startedAt,
+    "CANCELLED",
+    "PREEMPTED_BY_TASK",
+    `Task was preempted by ${incoming.taskId}`,
+    { preemptedByTaskId: incoming.taskId },
+  );
+  cleanupActiveTask();
+  setTimeout(() => void applyObserverConfig(), 2000);
 }
 
 /** 完成尚未进入执行状态的任务并继续队列。 */
@@ -535,6 +717,19 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
     );
     return;
   }
+  const remainingTaskMs = Math.min(
+    request.timeoutMs,
+    request.expiresAt - Date.now(),
+  );
+  const paramsError = validateRegisteredTaskParams(
+    request.scriptId,
+    request.params,
+    remainingTaskMs,
+  );
+  if (paramsError) {
+    rejectQueuedTask(request, "INVALID_PARAMS", paramsError);
+    return;
+  }
 
   if (definition.kind === "client") {
     const startedAt = Date.now();
@@ -566,6 +761,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
       request.timeoutMs || definition.defaultTimeoutMs,
       definition.maxTimeoutMs,
       config.tasks.maxTimeoutMs,
+      request.expiresAt - Date.now(),
     ),
   );
   const resultPath = path.join(
@@ -601,21 +797,6 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
   }
 
   let firstResultSeenAt = 0;
-  const timeoutTimer = setTimeout(() => {
-    if (!activeTask || activeTask.request.taskId !== request.taskId) return;
-    void runRootCommand(`am force-stop ${autojsPackageName}`).finally(() => {
-      publishTaskResult(
-        request,
-        startedAt,
-        "TIMEOUT",
-        "TASK_TIMEOUT",
-        `Script exceeded ${timeoutMs}ms and was terminated`,
-      );
-      cleanupActiveTask();
-      setTimeout(() => void applyObserverConfig(), 2000);
-    });
-  }, timeoutMs);
-
   const pollInterval = setInterval(() => {
     if (!fs.existsSync(resultPath)) return;
     if (!firstResultSeenAt) firstResultSeenAt = Date.now();
@@ -643,15 +824,26 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
     }
   }, config.tasks.resultPollIntervalMs);
 
-  activeTask = {
+  const currentTask: ActiveTask = {
     request,
     startedAt,
-    timeoutTimer,
+    deadlineAt: startedAt + timeoutMs,
+    timeoutTimer: null,
     pollInterval,
     tempFilePath: targetPath,
     resultFilePath: resultPath,
   };
+  activeTask = currentTask;
+  scheduleActiveTaskTimeout(currentTask);
   isStartingTask = false;
+
+  const queuedPreemptor = taskQueue.find((queued) =>
+    canPreemptRunning(queued.request, request),
+  );
+  if (queuedPreemptor) {
+    await preemptActiveTask(queuedPreemptor.request);
+    if (activeTask !== currentTask) return;
+  }
 
   try {
     await runRootCommand(
@@ -675,8 +867,9 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
 /** 串行执行队列中的下一项任务。 */
 function processNextTask(): void {
   if (activeTask || isStartingTask) return;
-  const request = taskQueue.shift();
-  if (request) {
+  const queued = taskQueue.shift();
+  if (queued) {
+    const request = queued.request;
     isStartingTask = true;
     void executeTask(request).catch((error) => {
       publishTaskResult(
@@ -693,8 +886,8 @@ function processNextTask(): void {
   }
 }
 
-/** 校验、去重并将收到的任务加入本机队列。 */
-function enqueueTask(value: unknown): void {
+/** 校验、去重并将收到的任务加入本机优先队列。 */
+async function enqueueTask(value: unknown): Promise<void> {
   let request: DeviceTaskRequest;
   try {
     request = parseDeviceTaskRequest(value);
@@ -717,17 +910,31 @@ function enqueueTask(value: unknown): void {
     return;
   }
   if (taskQueue.length >= config.tasks.queueLimit) {
+    const evictionIndex = findHighPriorityEvictionIndex(taskQueue, request);
+    if (evictionIndex < 0) {
+      publishTaskResult(
+        request,
+        Date.now(),
+        "REJECTED",
+        "QUEUE_FULL",
+        "Device task queue is full",
+      );
+      return;
+    }
+    const [evicted] = taskQueue.splice(evictionIndex, 1);
+    queuedTaskIds.delete(evicted.request.taskId);
     publishTaskResult(
-      request,
+      evicted.request,
       Date.now(),
-      "REJECTED",
-      "QUEUE_FULL",
-      "Device task queue is full",
+      "CANCELLED",
+      "QUEUE_EVICTED",
+      `Queued task was replaced by high-priority task ${request.taskId}`,
+      { replacedByTaskId: request.taskId },
     );
-    return;
   }
   queuedTaskIds.add(request.taskId);
-  taskQueue.push(request);
+  insertQueuedTask(taskQueue, { request, sequence: queueSequence++ });
+  if (activeTask) await preemptActiveTask(request);
   processNextTask();
 }
 
@@ -742,12 +949,18 @@ mqttClient.on("connect", () => {
     .catch((error) =>
       console.error("[DEVICE_INFO] Static collection failed safely", error),
     );
+  void replayTaskResultOutbox();
 });
 
 mqttClient.on("message", (topic, payload) => {
   if (topic !== tasksTopic) return;
   try {
-    enqueueTask(JSON.parse(payload.toString()) as unknown);
+    const value: unknown = JSON.parse(payload.toString());
+    taskIntakeChain = taskIntakeChain
+      .then(() => enqueueTask(value))
+      .catch((error) =>
+        console.error("[TASK] Failed to process queued task", error),
+      );
   } catch (error) {
     console.warn("[TASK] Ignored non-JSON task payload", error);
   }
@@ -775,6 +988,12 @@ function startDeviceReporting(): void {
   heartbeatTimer = setInterval(() => {
     publishReport("presence", presenceTopic, presence("ONLINE"), true);
   }, config.report.heartbeatSeconds * 1000);
+  if (resultOutboxRetryTimer) clearInterval(resultOutboxRetryTimer);
+  resultOutboxRetryTimer = setInterval(
+    () => void replayTaskResultOutbox(),
+    30_000,
+  );
+  void replayTaskResultOutbox();
 }
 
 startDeviceReporting();

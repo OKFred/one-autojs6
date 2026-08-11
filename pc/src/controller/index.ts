@@ -9,3 +9,4 @@ export { executeUpdate } from "./executeUpdate.js";
 export { tiktokPost } from "./tiktokPost.js";
 export { proxyFile } from "./proxyFile.js";
 export { downloadFile } from "./downloadFile.js";
+export { switchNetwork } from "./switchNetwork.js";

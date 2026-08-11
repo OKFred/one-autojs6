@@ -48,7 +48,7 @@
       gap: 10px;
       align-items: center;
     }
-    select, button {
+    select, input, button {
       padding: 8px 12px;
       font-size: 14px;
       border-radius: 6px;
@@ -63,6 +63,9 @@
     }
     select:focus {
       border-color: #409eff;
+    }
+    input {
+      min-width: 220px;
     }
     button {
       background-color: #409eff;
@@ -206,6 +209,7 @@
       <div style="flex:1"></div>
       
       <div class="control-group">
+        <input v-model="apiToken" type="password" autocomplete="off" placeholder="PC API Bearer Token" />
         <select v-model="selectedCommand">
           <option value="/api/apps">获取应用列表 (apps)</option>
           <option value="/api/apps/details">获取详细应用信息 (apps/details)</option>
@@ -260,6 +264,8 @@
         // 默认选中的指令
         const selectedCommand = ref('/api/apps');
         const isSending = ref(false);
+        const apiToken = ref(sessionStorage.getItem('one-autojs6-api-token') || '');
+        let screenSocket = null;
 
         // 统一添加日志的方法
         const appendLog = (type, topic, payload) => {
@@ -354,14 +360,23 @@
         // 发送 HTTP 指令
         const sendCommand = async () => {
           if (isSending.value) return;
+          if (!apiToken.value) {
+            appendLog('error', 'HTTP_ERR', '请先输入 PC API Bearer Token');
+            return;
+          }
           isSending.value = true;
+          sessionStorage.setItem('one-autojs6-api-token', apiToken.value);
+          setupScreenMqtt();
           
           appendLog('http', 'HTTP_REQ', `-> POST ${selectedCommand.value}`);
           
           try {
             const res = await fetch(selectedCommand.value, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' }
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiToken.value}`
+              }
             });
             const data = await res.json();
             appendLog('http', 'HTTP_RES', `<- [${res.status}] ${JSON.stringify(data)}`);
@@ -374,7 +389,20 @@
 
         // 初始化屏幕推流连接
         const setupScreenMqtt = () => {
-          const screenWs = new WebSocket(`ws://${window.location.host}/api/screen`);
+          if (!apiToken.value) return;
+          if (screenSocket && (
+            screenSocket.readyState === WebSocket.OPEN ||
+            screenSocket.readyState === WebSocket.CONNECTING
+          )) return;
+          const encodedToken = btoa(unescape(encodeURIComponent(apiToken.value)))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/g, '');
+          const screenWs = new WebSocket(
+            `ws://${window.location.host}/api/screen`,
+            ['one-autojs6', `bearer.${encodedToken}`]
+          );
+          screenSocket = screenWs;
           screenWs.binaryType = 'blob';
 
           screenWs.onopen = () => {
@@ -396,6 +424,7 @@
           };
           
           screenWs.onclose = () => {
+            screenSocket = null;
             appendLog('system', 'SYSTEM', '原生截屏流已断开');
           };
         };
@@ -412,6 +441,7 @@
           taskResult,
           selectedCommand,
           isSending,
+          apiToken,
           sendCommand
         };
       }
