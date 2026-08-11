@@ -66,6 +66,41 @@ v2 客户端没有远程 JavaScript/Shell 执行实现，也不订阅旧公共�
 
 上述 JSON 作为 Node Server `POST /admin/mobile/async-task/dispatch` 的请求体。最终作品链接位于任务详情的 `resultDataJson.postUrl`（字段本身为 JSON 字符串）。
 
+图片详情或视频文案需要确定性输入时，可在手机本机配置中启用受信任的
+`com.github.uiautomator/.AdbKeyboard`。仓库默认关闭；启用前必须把已安装
+APK 的 SHA-256 写入 `tiktok.adbKeyboard.apkSha256`。客户端仅在
+`tiktok.post/publish` 执行期间临时启用并切换输入法，结束、超时、抢占或
+进程重启后都会恢复原输入法并重新禁用该包。任务参数不能覆盖这些本机设置，
+也不会启动该包的 UIAutomator、HTTP、屏幕或模拟定位服务。
+
+可在本机配置中启用 `tiktok.networkPolicy`，作为所有会打开 TikTok 的动作的
+发布前网络门禁。初始只允许 `GB`：两个独立 IPv4 地区探针必须一致，IPv6
+必须同样命中允许地区或完全不可用；任一地区条件失败都会在打开 TikTok 前
+拒绝任务。`ip111.cn` 作为辅助连通性诊断，不参与放行判定，因为部分代理节点
+会单独阻断该站。探针结果只记录国家代码、时间和耗时，不记录完整公网 IP。
+任务参数不能关闭门禁或覆盖探针地址。
+
+```json
+{
+  "tiktok": {
+    "networkPolicy": {
+      "enabled": true,
+      "allowedCountries": ["GB"],
+      "requireWifi": true,
+      "probeTimeoutMs": 12000
+    }
+  }
+}
+```
+
+路由节点或设备 ACL 变更后，可在手机 Termux 中运行 `pnpm network:check`。
+它会在至少两分钟内连续采样五次，且不会输出公网 IP。PassWall 页面上的
+“点我检测”只代表节点/主线路基础连通性，不能代替这项手机实际出口检查。
+
+任务超时或显式抢占时，客户端先用 AutoJS6 `engines.all()` 精确匹配并停止
+当前任务脚本；不会停止事件监听。只有定向停止失败时才使用整包
+`am force-stop`，随后恢复固定的 AutoJS6 无障碍组件，恢复前不会调度下一项。
+
 ## 事件监听
 
 `autojs6-config.json` 可分别启用：

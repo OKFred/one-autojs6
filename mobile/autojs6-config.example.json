@@ -30,6 +30,28 @@
     "queueLimit": 20,
     "resultPollIntervalMs": 500
   },
+  "tiktok": {
+    "expectedHandle": "your_tiktok_handle",
+    "allowedMaterialRoots": [
+      "/sdcard/Download/tiktok-materials",
+      "/sdcard/Download",
+      "/sdcard/DCIM/Camera"
+    ],
+    "minIntervalSeconds": 1800,
+    "maxPostsPerDay": 3,
+    "materialReuseSeconds": 86400,
+    "captionReuseSeconds": 86400,
+    "adbKeyboard": {
+      "enabled": false,
+      "apkSha256": ""
+    },
+    "networkPolicy": {
+      "enabled": false,
+      "allowedCountries": ["GB"],
+      "requireWifi": true,
+      "probeTimeoutMs": 12000
+    }
+  },
   "events": {
     "battery": { "enabled": true, "debounceMs": 1000 },
     "network": { "enabled": true, "debounceMs": 1000 },

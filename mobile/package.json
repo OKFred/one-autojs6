@@ -5,7 +5,10 @@
   "main": "src/client.ts",
   "scripts": {
     "dev": "tsx --no-cache src/client.ts",
-    "start": "tsx --no-cache src/client.ts"
+    "start": "tsx --no-cache src/client.ts",
+    "network:check": "tsx --no-cache src/tiktok-network-check.ts",
+    "test": "tsx test/task-queue.test.ts && tsx test/tiktok-policy.test.ts && tsx test/adb-keyboard.test.ts && tsx test/tiktok-network-policy.test.ts && tsx test/autojs-engine.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

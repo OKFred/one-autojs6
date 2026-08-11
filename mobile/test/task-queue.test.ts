@@ -70,6 +70,15 @@ assert.equal(
   ),
   true,
 );
+assert.equal(
+  canPreemptRunning(
+    task("incoming_05", "HIGH", true),
+    task("running_005", "NORMAL"),
+    true,
+  ),
+  false,
+  "tasks past an irreversible side-effect boundary must not be preempted",
+);
 
 const evictionQueue: QueuedDeviceTask[] = [
   { request: task("normal_old1", "NORMAL"), sequence: 0 },

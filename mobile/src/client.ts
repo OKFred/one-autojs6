@@ -1,10 +1,16 @@
 import { execFile } from "child_process";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import mqtt from "mqtt";
 
+import { AdbKeyboardManager } from "./adb-keyboard.js";
+import {
+  buildAutoJsEngineStopScript,
+  parseAutoJsEngineStopResult,
+} from "./autojs-engine.js";
 import { loadConfig } from "./config.js";
 import { collectDeviceInfo } from "./device-info.js";
 import {
@@ -31,6 +37,19 @@ import {
   insertQueuedTask,
   type QueuedDeviceTask,
 } from "./task-queue.js";
+import { TikTokLedger } from "./tiktok-ledger.js";
+import {
+  applyTikTokPublicationCheckpoint,
+  applyTikTokScriptResult,
+  importLegacyTikTokState,
+  markTikTokPublicationPhase,
+  prepareTikTokTask,
+  type PreparedTikTokTask,
+} from "./tiktok-policy.js";
+import {
+  attestTikTokNetwork,
+  TikTokNetworkPolicyError,
+} from "./tiktok-network-policy.js";
 import { getEmqxBrokerUrl } from "./utils/mqtt.js";
 
 const currentFile = fileURLToPath(import.meta.url);
@@ -42,6 +61,7 @@ const resultOutboxDirectory = path.join(
   "state",
   "task-result-outbox",
 );
+const stateDirectory = path.join(mobileRoot, "state");
 const clientVersion = "2.0.0";
 const RESULT_OUTBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -100,12 +120,20 @@ if (!/^[A-Za-z0-9._:-]{1,100}$/.test(deviceId)) {
 }
 const brokerUrl = getEmqxBrokerUrl();
 const autojsPackageName = "org.autojs.autojs6";
+const autojsAccessibilityService =
+  "org.autojs.autojs6/org.autojs.autojs.core.accessibility.AccessibilityServiceUsher";
+const tikTokPackageName = "com.zhiliaoapp.musically";
 const tempScriptDirectory = process.env.TEMP_SCRIPT_DIR || "/sdcard/Download";
 const tasksTopic = `autojs6/v2/devices/${deviceId}/tasks`;
 const resultsTopic = `autojs6/v2/devices/${deviceId}/results`;
 const eventsTopic = `autojs6/v2/devices/${deviceId}/events`;
 const presenceTopic = `autojs6/v2/devices/${deviceId}/presence`;
 const infoTopic = `autojs6/v2/devices/${deviceId}/info`;
+const deviceLogId = crypto
+  .createHash("sha256")
+  .update(deviceId)
+  .digest("hex")
+  .slice(0, 12);
 const reportToken = process.env.AUTOJS6_REPORT_TOKEN;
 const usesMqttReporting =
   config.report.transport === "mqtt" || config.report.transport === "both";
@@ -116,6 +144,45 @@ if (usesHttpReporting && (!config.report.httpBaseUrl || !reportToken)) {
   throw new Error(
     "HTTP reporting requires report.httpBaseUrl and AUTOJS6_REPORT_TOKEN",
   );
+}
+
+/** 将旧共享目录中的 TikTok 去重历史迁移到 Termux 私有账本。 */
+function migrateLegacyTikTokState(): void {
+  try {
+    const result = importLegacyTikTokState(
+      new TikTokLedger(stateDirectory),
+      "/sdcard/Download/tiktok_post_state.json",
+      config.tiktok.allowedMaterialRoots,
+    );
+    if (result.imported) {
+      console.log(
+        `[TikTok] Migrated legacy reuse history (${result.materialFingerprints} media, ${result.captionFingerprints} captions)`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      "[TikTok] Legacy history migration was deferred; the original file was preserved",
+      error,
+    );
+  }
+}
+
+migrateLegacyTikTokState();
+
+const adbKeyboardManager = new AdbKeyboardManager(
+  config.tiktok.adbKeyboard,
+  stateDirectory,
+);
+try {
+  if (await adbKeyboardManager.recoverOnStartup()) {
+    console.log("[TikTok] Recovered input method state after interrupted task");
+  }
+} catch (error) {
+  console.error(
+    "[TikTok] Input method recovery failed; refusing to accept device tasks",
+    error,
+  );
+  throw error;
 }
 
 /** 隐去 MQTT URL 中的认证信息，避免凭据进入控制台和本地日志。 */
@@ -134,10 +201,19 @@ interface ActiveTask {
   request: DeviceTaskRequest;
   startedAt: number;
   deadlineAt: number;
+  sideEffectCommitted: boolean;
+  checkpointPhase: string;
   timeoutTimer: NodeJS.Timeout | null;
   pollInterval: NodeJS.Timeout;
   tempFilePath: string;
   resultFilePath: string;
+  checkpointFilePath: string;
+  checkpointAckFilePath: string;
+  engineStopScriptPath: string;
+  engineStopResultPath: string;
+  tiktok?: PreparedTikTokTask;
+  adbKeyboardActive: boolean;
+  cleanupPromise?: Promise<void>;
 }
 
 interface TaskResultOutboxEntry {
@@ -257,9 +333,58 @@ function runRootCommand(command: string): Promise<void> {
   });
 }
 
+/** 等待固定时长，不阻塞 Node.js 事件循环。 */
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** 使用 `su -c` 读取仅由本地代码构造的 Android 命令输出。 */
+function readRootCommand(command: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "su",
+      ["-c", command],
+      { encoding: "utf8", maxBuffer: 1024 * 1024 },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(String(stdout));
+      },
+    );
+  });
+}
+
 /** 为本地生成的路径添加 POSIX shell 单引号。 */
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+/** 确保固定 AutoJS6 无障碍组件在强制终止脚本后重新启用。 */
+async function ensureAutoJsAccessibilityService(): Promise<void> {
+  const raw = (
+    await readRootCommand("settings get secure enabled_accessibility_services")
+  ).trim();
+  const current = raw && raw !== "null" ? raw : "";
+  const components = current ? current.split(":").filter(Boolean) : [];
+  if (
+    components.some(
+      (component) =>
+        !/^[A-Za-z0-9._]+\/[A-Za-z0-9._]+$/.test(component),
+    )
+  ) {
+    throw new Error("AUTOJS_ACCESSIBILITY_SETTINGS_INVALID");
+  }
+  if (!components.includes(autojsAccessibilityService)) {
+    const next = [...components, autojsAccessibilityService].join(":");
+    await runRootCommand(
+      `settings put secure enabled_accessibility_services ${shellQuote(next)}`,
+    );
+  }
+  const enabled = (
+    await readRootCommand("settings get secure accessibility_enabled")
+  ).trim();
+  if (enabled !== "1") {
+    await runRootCommand("settings put secure accessibility_enabled 1");
+  }
 }
 
 /** 将设备事件按配置防抖后发布。 */
@@ -314,6 +439,7 @@ async function applyObserverConfig(): Promise<void> {
     );
     return;
   }
+  await ensureAutoJsAccessibilityService();
 
   const observerPath = path.join(tempScriptDirectory, "autojs_observer.js");
   const eventPath = path.join(tempScriptDirectory, "autojs_events.txt");
@@ -545,39 +671,311 @@ function parseResultFile(content: string): ScriptResultFile {
   };
 }
 
-/** 清理当前任务并调度队列中的下一项。 */
-function cleanupActiveTask(): void {
+/** 从策略异常中提取不含路径和文案的稳定错误码。 */
+function tikTokPolicyError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = message.split(":", 1)[0];
+  return /^[A-Z0-9_]{3,80}$/.test(code) ? code : "INVALID_TIKTOK_PARAMS";
+}
+
+/** 从网络门禁异常中提取不包含地址信息的稳定错误码。 */
+function tikTokNetworkPolicyError(error: unknown): string {
+  return error instanceof TikTokNetworkPolicyError
+    ? error.code
+    : "TIKTOK_NETWORK_PROBE_FAILED";
+}
+
+/** 移除 TikTok 结果中的账号、素材路径和完整文案，只保留运行状态与已验证链接。 */
+function sanitizeTikTokResult(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const account = isRecord(value.account) ? value.account : {};
+  const media = isRecord(value.media) ? value.media : {};
+  const post = isRecord(value.post) ? value.post : {};
+  return {
+    contractVersion: value.contractVersion,
+    action: value.action,
+    publicationId: value.publicationId,
+    phase: value.phase,
+    outcome: value.outcome,
+    published: value.published === true,
+    retrySafe: value.retrySafe === true,
+    nextAction: value.nextAction,
+    account: {
+      verified: account.verified === true,
+      matched:
+        account.matched === undefined
+          ? account.verified === true
+          : account.matched === true,
+    },
+    media: {
+      kind: media.kind,
+      size: media.size,
+      metadata: media.metadata,
+    },
+    post: {
+      shareUrl: post.shareUrl,
+      canonicalUrl: post.canonicalUrl,
+      postId: post.postId,
+      postType: post.postType,
+      verified: post.verified === true,
+    },
+    warnings: Array.isArray(value.warnings) ? value.warnings : [],
+    error: value.error ?? null,
+    success: value.success === true,
+    postUrl: value.postUrl,
+    mediaType: value.mediaType,
+  };
+}
+
+/** 将私有 TikTok 发布记录转换为可安全回传的结构化结果。 */
+function tikTokPublicationResult(prepared: PreparedTikTokTask): unknown {
+  const record =
+    prepared.ledger.get(prepared.request.publicationId) ?? prepared.publication;
+  if (!record) {
+    return {
+      contractVersion: 2,
+      action: prepared.request.action,
+      publicationId: prepared.request.publicationId,
+      phase: "PREFLIGHT",
+      outcome: "READY",
+      published: false,
+      retrySafe: true,
+      nextAction: "publish",
+    };
+  }
+  const committed = [
+    "COMMITTING",
+    "SUBMITTED",
+    "POST_CONFIRMED",
+    "LINK_CONFIRMED",
+  ].includes(record.phase);
+  const published = ["POST_CONFIRMED", "LINK_CONFIRMED"].includes(
+    record.phase,
+  );
+  const canonicalUrl = record.canonicalUrl || record.postUrl || "";
+  return {
+    contractVersion: 2,
+    action: prepared.request.action,
+    publicationId: record.publicationId,
+    phase: record.phase,
+    outcome: record.outcome,
+    published,
+    retrySafe: !committed,
+    nextAction:
+      record.phase === "LINK_CONFIRMED"
+        ? "none"
+        : committed
+          ? "recover"
+          : "publish",
+    account: {
+      verified: record.account !== "LEGACY_UNVERIFIED",
+      matched: record.account !== "LEGACY_UNVERIFIED",
+    },
+    media: {
+      kind: record.media.kind,
+      size: record.media.size,
+    },
+    post: {
+      shareUrl: record.shareUrl || canonicalUrl,
+      canonicalUrl,
+      postId: record.postId || "",
+      postType: record.media.kind === "image" ? "photo" : "video",
+      verified: record.phase === "LINK_CONFIRMED",
+    },
+    error: record.errorCode
+      ? { code: record.errorCode, message: "TikTok publication requires attention" }
+      : null,
+    success: record.phase === "LINK_CONFIRMED",
+    postUrl: canonicalUrl,
+    mediaType: record.media.kind,
+  };
+}
+
+/** 将无需启动 AutoJS 的 TikTok 查询或幂等命中直接完成。 */
+function completePreparedTikTokTask(
+  request: DeviceTaskRequest,
+  prepared: PreparedTikTokTask,
+  startedAt: number,
+): void {
+  const cached = prepared.decision === "CACHED";
+  publishTaskResult(
+    request,
+    startedAt,
+    "SUCCESS",
+    cached ? "POST_ALREADY_CONFIRMED" : "PUBLICATION_STATUS",
+    cached
+      ? "TikTok publication was already completed; no new post was created"
+      : "TikTok publication status loaded from the private device ledger",
+    tikTokPublicationResult(prepared),
+  );
+  queuedTaskIds.delete(request.taskId);
+  isStartingTask = false;
+  setTimeout(processNextTask, 100);
+}
+
+/** 将 TikTok 执行失败写入私有账本；账本故障不覆盖原任务结果。 */
+function recordTikTokFailure(
+  prepared: PreparedTikTokTask | undefined,
+  code: string,
+  published = false,
+): void {
+  if (!prepared?.publication) return;
+  try {
+    applyTikTokScriptResult(prepared, { code, published });
+  } catch (error) {
+    console.warn("[TikTok] Failed to update the private publication ledger", error);
+  }
+}
+
+/** 清理当前任务、恢复输入法并在完成后调度下一项。 */
+async function cleanupActiveTask(): Promise<void> {
   const current = activeTask;
   if (!current) return;
+  if (current.cleanupPromise) return current.cleanupPromise;
   if (current.timeoutTimer) clearTimeout(current.timeoutTimer);
   clearInterval(current.pollInterval);
-  for (const filePath of [current.tempFilePath, current.resultFilePath]) {
-    void runRootCommand(`rm -f ${shellQuote(filePath)}`).catch((error) =>
-      console.warn(`[TASK] Failed to remove ${filePath}`, error),
+  current.timeoutTimer = null;
+  current.cleanupPromise = (async () => {
+    if (current.adbKeyboardActive || adbKeyboardManager.hasPendingRecovery()) {
+      await adbKeyboardManager.restore();
+      current.adbKeyboardActive = false;
+    }
+    for (const filePath of [
+      current.tempFilePath,
+      current.resultFilePath,
+      current.checkpointFilePath,
+      current.checkpointAckFilePath,
+      current.engineStopScriptPath,
+      current.engineStopResultPath,
+    ]) {
+      await runRootCommand(`rm -f ${shellQuote(filePath)}`).catch((error) =>
+        console.warn(`[TASK] Failed to remove ${filePath}`, error),
+      );
+    }
+    queuedTaskIds.delete(current.request.taskId);
+    if (activeTask === current) activeTask = null;
+    setTimeout(processNextTask, 100);
+  })().catch((error) => {
+    console.error(
+      "[TikTok] Input method restore failed; restarting client before another task",
+      error,
+    );
+    setTimeout(() => process.exit(1), 250);
+  });
+  return current.cleanupPromise;
+}
+
+/** 通过一个独立 AutoJS6 控制引擎停止指定任务脚本。 */
+async function stopActiveTaskEngine(current: ActiveTask): Promise<boolean> {
+  const localStopPath = path.join(
+    sourceDirectory,
+    `local_autojs_stop_${current.request.taskId}.js`,
+  );
+  fs.writeFileSync(
+    localStopPath,
+    buildAutoJsEngineStopScript(
+      current.tempFilePath,
+      current.engineStopResultPath,
+    ),
+    "utf8",
+  );
+  try {
+    await ensureAutoJsAccessibilityService();
+    await runRootCommand(
+      `rm -f ${shellQuote(current.engineStopResultPath)} && cp ${shellQuote(localStopPath)} ${shellQuote(current.engineStopScriptPath)} && chmod 600 ${shellQuote(current.engineStopScriptPath)} && rm -f ${shellQuote(localStopPath)} && am start -n ${autojsPackageName}/org.autojs.autojs.external.open.RunIntentActivity -d file://${current.engineStopScriptPath} -t text/javascript`,
+    );
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      if (fs.existsSync(current.engineStopResultPath)) {
+        const result = parseAutoJsEngineStopResult(
+          fs.readFileSync(current.engineStopResultPath, "utf8"),
+        );
+        return result.stopped && result.matchedEngines === 1;
+      }
+      await delay(200);
+    }
+    return false;
+  } finally {
+    fs.rmSync(localStopPath, { force: true });
+  }
+}
+
+/**
+ * 优先停止指定任务引擎；失败时才终止 AutoJS6 整包并恢复无障碍。
+ */
+async function terminateActiveTask(current: ActiveTask): Promise<boolean> {
+  try {
+    if (await stopActiveTaskEngine(current)) {
+      console.log(`[TASK] Stopped task engine ${current.request.taskId}`);
+      return true;
+    }
+    console.warn(
+      `[TASK] Target engine was not stopped; using package fallback for ${current.request.taskId}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[TASK] Target engine stop failed; using package fallback for ${current.request.taskId}`,
+      error,
     );
   }
-  queuedTaskIds.delete(current.request.taskId);
-  activeTask = null;
-  setTimeout(processNextTask, 100);
+  try {
+    await runRootCommand(`am force-stop ${autojsPackageName}`);
+    await delay(500);
+    await ensureAutoJsAccessibilityService();
+    console.warn(
+      `[TASK] AutoJS6 package fallback was required for ${current.request.taskId}`,
+    );
+    return true;
+  } catch (error) {
+    console.error(
+      `[TASK] Failed to terminate ${current.request.taskId}; queue remains blocked`,
+      error,
+    );
+    return false;
+  }
 }
 
 /** 终止超过本机执行时限的运行中任务。 */
 async function timeoutActiveTask(current: ActiveTask): Promise<void> {
   if (activeTask !== current) return;
-  try {
-    await runRootCommand(`am force-stop ${autojsPackageName}`);
-  } catch (error) {
-    console.warn(`[TASK] Failed to force-stop timed out task`, error);
+  if (!(await terminateActiveTask(current))) {
+    current.timeoutTimer = setTimeout(
+      () => void timeoutActiveTask(current),
+      1000,
+    );
+    return;
   }
   if (activeTask !== current) return;
+  recordTikTokFailure(
+    current.tiktok,
+    current.sideEffectCommitted ? "PUBLISH_OUTCOME_UNKNOWN" : "TASK_TIMEOUT",
+  );
   publishTaskResult(
     current.request,
     current.startedAt,
     "TIMEOUT",
-    "TASK_TIMEOUT",
-    `Script exceeded ${Math.max(0, current.deadlineAt - current.startedAt)}ms and was terminated`,
+    current.sideEffectCommitted ? "PUBLISH_OUTCOME_UNKNOWN" : "TASK_TIMEOUT",
+    current.sideEffectCommitted
+      ? "TikTok publish crossed the commit boundary before timing out; do not retry publish"
+      : `Script exceeded ${Math.max(0, current.deadlineAt - current.startedAt)}ms and was terminated`,
+    current.sideEffectCommitted
+      ? current.tiktok
+        ? tikTokPublicationResult(current.tiktok)
+        : {
+            contractVersion: 2,
+            action: "publish",
+            publicationId:
+              typeof current.request.params.publicationId === "string"
+                ? current.request.params.publicationId
+                : current.request.taskId,
+            phase: current.checkpointPhase || "COMMITTING",
+            outcome: "UNKNOWN",
+            published: false,
+            retrySafe: false,
+            nextAction: "recover",
+          }
+      : null,
   );
-  cleanupActiveTask();
+  await cleanupActiveTask();
   setTimeout(() => void applyObserverConfig(), 2000);
 }
 
@@ -593,22 +991,35 @@ function scheduleActiveTaskTimeout(current: ActiveTask): void {
 /** 显式中断当前任务并让不低于其优先级的新任务优先执行。 */
 async function preemptActiveTask(incoming: DeviceTaskRequest): Promise<void> {
   const current = activeTask;
-  if (!current || !canPreemptRunning(incoming, current.request)) return;
+  if (!current) return;
+  if (current.cleanupPromise) return;
+  if (
+    current.sideEffectCommitted &&
+    canPreemptRunning(incoming, current.request, false)
+  ) {
+    console.warn(
+      `[TASK] Deferred preemption of ${current.request.taskId}; TikTok publish is past the commit boundary`,
+    );
+    return;
+  }
+  if (
+    !canPreemptRunning(
+      incoming,
+      current.request,
+      current.sideEffectCommitted,
+    )
+  )
+    return;
   if (current.timeoutTimer) {
     clearTimeout(current.timeoutTimer);
     current.timeoutTimer = null;
   }
-  try {
-    await runRootCommand(`am force-stop ${autojsPackageName}`);
-  } catch (error) {
-    console.warn(
-      `[TASK] Failed to preempt ${current.request.taskId}; it will continue`,
-      error,
-    );
+  if (!(await terminateActiveTask(current))) {
     if (activeTask === current) scheduleActiveTaskTimeout(current);
     return;
   }
   if (activeTask !== current) return;
+  recordTikTokFailure(current.tiktok, "PREEMPTED_BY_TASK");
   publishTaskResult(
     current.request,
     current.startedAt,
@@ -617,7 +1028,7 @@ async function preemptActiveTask(incoming: DeviceTaskRequest): Promise<void> {
     `Task was preempted by ${incoming.taskId}`,
     { preemptedByTaskId: incoming.taskId },
   );
-  cleanupActiveTask();
+  await cleanupActiveTask();
   setTimeout(() => void applyObserverConfig(), 2000);
 }
 
@@ -638,6 +1049,9 @@ function buildWrappedScript(
   request: DeviceTaskRequest,
   scriptBody: string,
   resultPath: string,
+  checkpointPath: string,
+  checkpointAckPath: string,
+  deadlineAt: number,
 ): string {
   const paramsLiteral = JSON.stringify(request.params);
   const trustedBody = scriptBody.replace(
@@ -648,8 +1062,12 @@ function buildWrappedScript(
 var taskResult = "Script execution succeeded";
 var taskStatus = "SUCCESS";
 var taskCode = "OK";
+var taskMessage = "Script execution succeeded";
 var taskId = ${JSON.stringify(request.taskId)};
 var resPath = ${JSON.stringify(resultPath)};
+var taskCheckpointPath = ${JSON.stringify(checkpointPath)};
+var taskCheckpointAckPath = ${JSON.stringify(checkpointAckPath)};
+var taskDeadlineAt = ${JSON.stringify(deadlineAt)};
 try {
   device.wakeUp();
   ${trustedBody}
@@ -658,7 +1076,7 @@ try {
   files.write(resPath, JSON.stringify({
     status: String(taskStatus),
     code: String(taskCode),
-    message: String(taskStatus) === "SUCCESS" ? "Script execution succeeded" : String(taskResult),
+    message: String(taskMessage),
     data: parsedTaskData
   }));
 } catch (error) {
@@ -768,6 +1186,22 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
     tempScriptDirectory,
     `autojs_res_${request.taskId}.json`,
   );
+  const checkpointPath = path.join(
+    tempScriptDirectory,
+    `autojs_checkpoint_${request.taskId}.json`,
+  );
+  const checkpointAckPath = path.join(
+    tempScriptDirectory,
+    `autojs_checkpoint_${request.taskId}.ack`,
+  );
+  const engineStopScriptPath = path.join(
+    tempScriptDirectory,
+    `autojs_stop_${request.taskId}.js`,
+  );
+  const engineStopResultPath = path.join(
+    tempScriptDirectory,
+    `autojs_stop_${request.taskId}.json`,
+  );
   const targetPath = path.join(
     tempScriptDirectory,
     `autojs_task_${request.taskId}.js`,
@@ -776,18 +1210,193 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
     sourceDirectory,
     `local_autojs_task_${request.taskId}.js`,
   );
+  const deadlineAt = startedAt + timeoutMs;
+  let tiktok: PreparedTikTokTask | undefined;
+  let adbKeyboardActive = false;
+  let scriptRequest = request;
+
+  if (request.scriptId === "tiktok.post") {
+    try {
+      tiktok = prepareTikTokTask(request.params, config.tiktok, {
+        stateDirectory,
+      });
+      if (!tiktok.scriptParams) {
+        completePreparedTikTokTask(request, tiktok, startedAt);
+        return;
+      }
+      scriptRequest = { ...request, params: tiktok.scriptParams };
+      if (Date.now() >= deadlineAt) {
+        recordTikTokFailure(tiktok, "TASK_EXPIRED_DURING_PREFLIGHT");
+        publishTaskResult(
+          request,
+          startedAt,
+          "TIMEOUT",
+          "TASK_EXPIRED_DURING_PREFLIGHT",
+          "TikTok task expired while validating media and local policy",
+          tikTokPublicationResult(tiktok),
+        );
+        queuedTaskIds.delete(request.taskId);
+        isStartingTask = false;
+        setTimeout(processNextTask, 100);
+        return;
+      }
+    } catch (error) {
+      const code = tikTokPolicyError(error);
+      rejectQueuedTask(
+        request,
+        code,
+        `TikTok task rejected by local policy: ${code}`,
+      );
+      return;
+    }
+  }
+
+  if (tiktok?.scriptParams && tiktok.request.action !== "status") {
+    try {
+      const attestation = await attestTikTokNetwork(
+        config.tiktok.networkPolicy,
+        {
+          readConnectivityState: () =>
+            readRootCommand(
+              "dumpsys connectivity | grep 'NetworkAgentInfo'",
+            ),
+        },
+      );
+      if (attestation) {
+        console.log(
+          `[TikTok] Network policy passed ipv4=${attestation.ipv4Countries.join(",")} ipv6=${attestation.ipv6.status} durationMs=${attestation.durationMs}`,
+        );
+      }
+    } catch (error) {
+      const code = tikTokNetworkPolicyError(error);
+      recordTikTokFailure(tiktok, code);
+      publishTaskResult(
+        request,
+        startedAt,
+        "REJECTED",
+        code,
+        "TikTok task was blocked by the device network policy",
+        tikTokPublicationResult(tiktok),
+      );
+      queuedTaskIds.delete(request.taskId);
+      isStartingTask = false;
+      setTimeout(processNextTask, 100);
+      return;
+    }
+  }
+
+  if (tiktok?.scriptParams) {
+    try {
+      await runRootCommand(`am force-stop --user 0 ${tikTokPackageName}`);
+    } catch (error) {
+      recordTikTokFailure(tiktok, "TIKTOK_RESET_FAILED");
+      publishTaskResult(
+        request,
+        startedAt,
+        "REJECTED",
+        "TIKTOK_RESET_FAILED",
+        error instanceof Error ? error.message : String(error),
+        tikTokPublicationResult(tiktok),
+      );
+      queuedTaskIds.delete(request.taskId);
+      isStartingTask = false;
+      setTimeout(processNextTask, 100);
+      return;
+    }
+  }
+
+  if (tiktok?.request.action === "publish") {
+    try {
+      adbKeyboardActive = await adbKeyboardManager.activateForPublish(
+        request.taskId,
+      );
+    } catch (error) {
+      const restorePending = adbKeyboardManager.hasPendingRecovery();
+      recordTikTokFailure(tiktok, "ADB_KEYBOARD_PREPARE_FAILED");
+      publishTaskResult(
+        request,
+        startedAt,
+        "REJECTED",
+        "ADB_KEYBOARD_PREPARE_FAILED",
+        error instanceof Error ? error.message : String(error),
+        tikTokPublicationResult(tiktok),
+      );
+      queuedTaskIds.delete(request.taskId);
+      isStartingTask = false;
+      if (restorePending) {
+        console.error(
+          "[TikTok] AdbKeyboard rollback is pending; restarting client",
+        );
+        setTimeout(() => process.exit(1), 250);
+      } else {
+        setTimeout(processNextTask, 100);
+      }
+      return;
+    }
+    if (Date.now() >= deadlineAt) {
+      recordTikTokFailure(tiktok, "TASK_EXPIRED_DURING_IME_PREPARE");
+      publishTaskResult(
+        request,
+        startedAt,
+        "TIMEOUT",
+        "TASK_EXPIRED_DURING_IME_PREPARE",
+        "TikTok task expired while preparing the trusted input method",
+        tikTokPublicationResult(tiktok),
+      );
+      queuedTaskIds.delete(request.taskId);
+      isStartingTask = false;
+      try {
+        if (adbKeyboardActive) await adbKeyboardManager.restore();
+      } catch (error) {
+        console.error("[TikTok] AdbKeyboard restore failed", error);
+        setTimeout(() => process.exit(1), 250);
+        return;
+      }
+      setTimeout(processNextTask, 100);
+      return;
+    }
+  }
 
   try {
+    await ensureAutoJsAccessibilityService();
     const scriptBody = readRegisteredScript(definition);
     fs.writeFileSync(
       localPath,
-      buildWrappedScript(request, scriptBody, resultPath),
+      buildWrappedScript(
+        scriptRequest,
+        scriptBody,
+        resultPath,
+        checkpointPath,
+        checkpointAckPath,
+        deadlineAt,
+      ),
       "utf8",
     );
     await runRootCommand(
-      `rm -f ${shellQuote(resultPath)} && cp ${shellQuote(localPath)} ${shellQuote(targetPath)} && chmod 600 ${shellQuote(targetPath)} && rm -f ${shellQuote(localPath)}`,
+      `rm -f ${shellQuote(resultPath)} ${shellQuote(checkpointPath)} ${shellQuote(checkpointAckPath)} && cp ${shellQuote(localPath)} ${shellQuote(targetPath)} && chmod 600 ${shellQuote(targetPath)} && rm -f ${shellQuote(localPath)}`,
     );
   } catch (error) {
+    recordTikTokFailure(tiktok, "SCRIPT_PREPARE_FAILED");
+    if (adbKeyboardActive) {
+      try {
+        await adbKeyboardManager.restore();
+        adbKeyboardActive = false;
+      } catch (restoreError) {
+        publishTaskResult(
+          request,
+          startedAt,
+          "FAILURE",
+          "ADB_KEYBOARD_RESTORE_FAILED",
+          "Input method restore failed; the mobile client will restart",
+          tikTokPublicationResult(tiktok as PreparedTikTokTask),
+        );
+        queuedTaskIds.delete(request.taskId);
+        isStartingTask = false;
+        console.error("[TikTok] AdbKeyboard restore failed", restoreError);
+        setTimeout(() => process.exit(1), 250);
+        return;
+      }
+    }
     rejectQueuedTask(
       request,
       "SCRIPT_PREPARE_FAILED",
@@ -797,20 +1406,82 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
   }
 
   let firstResultSeenAt = 0;
-  const pollInterval = setInterval(() => {
+  const pollInterval = setInterval(async () => {
+    const current = activeTask;
+    if (
+      current?.request.taskId === request.taskId &&
+      fs.existsSync(checkpointPath)
+    ) {
+      try {
+        const checkpoint: unknown = JSON.parse(
+          fs.readFileSync(checkpointPath, "utf8"),
+        );
+        if (isRecord(checkpoint) && typeof checkpoint.phase === "string") {
+          if (
+            current.tiktok &&
+            checkpoint.publicationId !== current.tiktok.request.publicationId
+          ) {
+            throw new Error("TikTok checkpoint publicationId mismatch");
+          }
+          const checkpointChanged =
+            current.checkpointPhase !== checkpoint.phase;
+          current.checkpointPhase = checkpoint.phase;
+          if (checkpoint.phase === "EDITOR_READY") {
+            fs.writeFileSync(checkpointAckPath, checkpoint.phase, "utf8");
+          }
+          if (
+            checkpoint.phase === "COMMITTING" ||
+            checkpoint.phase === "SUBMITTED"
+          ) {
+            current.sideEffectCommitted = true;
+            if (checkpointChanged && current.tiktok) {
+              const baselinePostIds = Array.isArray(checkpoint.baselinePostIds)
+                ? checkpoint.baselinePostIds.filter(
+                    (value): value is string => typeof value === "string",
+                  )
+                : undefined;
+              const baselineTileCount =
+                typeof checkpoint.baselineTileCount === "number"
+                  ? checkpoint.baselineTileCount
+                  : undefined;
+              applyTikTokPublicationCheckpoint(current.tiktok, {
+                baselinePostIds,
+                baselineTileCount,
+                postId:
+                  typeof checkpoint.postId === "string"
+                    ? checkpoint.postId
+                    : undefined,
+                canonicalUrl:
+                  typeof checkpoint.canonicalUrl === "string"
+                    ? checkpoint.canonicalUrl
+                    : undefined,
+              });
+              markTikTokPublicationPhase(
+                current.tiktok,
+                checkpoint.phase,
+              );
+            }
+            fs.writeFileSync(checkpointAckPath, checkpoint.phase, "utf8");
+          }
+        }
+      } catch (error) {
+        console.warn(`[TASK] Ignored malformed TikTok checkpoint`, error);
+      }
+    }
     if (!fs.existsSync(resultPath)) return;
     if (!firstResultSeenAt) firstResultSeenAt = Date.now();
     try {
       const result = parseResultFile(fs.readFileSync(resultPath, "utf8"));
+      if (tiktok) applyTikTokScriptResult(tiktok, result.data);
       publishTaskResult(
         request,
         startedAt,
         result.status,
         result.code,
         result.message,
-        result.data,
+        tiktok ? sanitizeTikTokResult(result.data) : result.data,
       );
-      cleanupActiveTask();
+      await cleanupActiveTask();
     } catch (error) {
       if (Date.now() - firstResultSeenAt < 3000) return;
       publishTaskResult(
@@ -820,18 +1491,27 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         "RESULT_PARSE_FAILED",
         error instanceof Error ? error.message : String(error),
       );
-      cleanupActiveTask();
+      recordTikTokFailure(tiktok, "RESULT_PARSE_FAILED", Boolean(activeTask?.sideEffectCommitted));
+      await cleanupActiveTask();
     }
   }, config.tasks.resultPollIntervalMs);
 
   const currentTask: ActiveTask = {
     request,
     startedAt,
-    deadlineAt: startedAt + timeoutMs,
+    deadlineAt,
+    sideEffectCommitted: false,
+    checkpointPhase: "",
     timeoutTimer: null,
     pollInterval,
     tempFilePath: targetPath,
     resultFilePath: resultPath,
+    checkpointFilePath: checkpointPath,
+    checkpointAckFilePath: checkpointAckPath,
+    engineStopScriptPath,
+    engineStopResultPath,
+    tiktok,
+    adbKeyboardActive,
   };
   activeTask = currentTask;
   scheduleActiveTaskTimeout(currentTask);
@@ -853,6 +1533,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
       `[TASK] Started ${request.taskId} ${request.scriptId} timeout=${timeoutMs}ms`,
     );
   } catch (error) {
+    recordTikTokFailure(tiktok, "AUTOJS_LAUNCH_FAILED");
     publishTaskResult(
       request,
       startedAt,
@@ -860,7 +1541,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
       "AUTOJS_LAUNCH_FAILED",
       error instanceof Error ? error.message : String(error),
     );
-    cleanupActiveTask();
+    await cleanupActiveTask();
   }
 }
 
@@ -940,8 +1621,11 @@ async function enqueueTask(value: unknown): Promise<void> {
 
 mqttClient.on("connect", () => {
   mqttClient.subscribe(tasksTopic, { qos: config.mqtt.qos }, (error) => {
-    if (error) console.error(`[MQTT] Failed to subscribe ${tasksTopic}`, error);
-    else console.log(`[MQTT] Subscribed ${tasksTopic}`);
+    if (error) {
+      console.error(`[MQTT] Task subscription failed device=${deviceLogId}`, error);
+    } else {
+      console.log(`[MQTT] Task subscription ready device=${deviceLogId}`);
+    }
   });
   publishReport("presence", presenceTopic, presence("ONLINE"), true);
   void deviceInfoPromise

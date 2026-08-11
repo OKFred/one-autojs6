@@ -32,6 +32,7 @@
       padding: 10px 20px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.05);
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 15px;
       z-index: 10;
@@ -66,6 +67,15 @@
     }
     input {
       min-width: 220px;
+    }
+    textarea {
+      width: min(720px, 80vw);
+      height: 92px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #dcdfe6;
+      font: 12px/1.4 'Consolas', 'Courier New', monospace;
+      resize: vertical;
     }
     button {
       background-color: #409eff;
@@ -216,13 +226,19 @@
           <option value="/api/devices/update">设备自更新 (devices/update)</option>
           <option value="/api/apps/check-update">检查宿主更新 (apps/check-update)</option>
           <option value="/api/apps/execute-update">执行宿主更新 (apps/execute-update)</option>
-          <option value="/api/tiktok/post?titles=Daily%20look,Outfit%20detail,Simple%20style&detailsPool=Which%20look%20is%20your%20favorite%3F,A%20small%20detail%20I%20liked%20today.&materialDir=/sdcard/DCIM/Camera">TikTok 自动发帖（素材/标题轮换）</option>
+          <option value="/api/tiktok/post">TikTok v2（默认预检，可编辑 JSON 后发布）</option>
           <option value="/api/files/download?protocol=smb&url=smb://192.168.1.4/share/test.jpg&fileName=test.jpg">文件统一下发 (files/download)</option>
         </select>
         <button @click="sendCommand" :disabled="isSending">
           {{ isSending ? '发送中...' : '发送指令' }}
         </button>
       </div>
+      <textarea
+        v-model="requestBody"
+        spellcheck="false"
+        aria-label="JSON 请求体"
+        placeholder="JSON 请求体"
+      ></textarea>
     </div>
     
     <div class="main-content">
@@ -253,7 +269,7 @@
   </div>
 
   <script>
-    const { createApp, ref, onMounted, nextTick } = Vue;
+    const { createApp, ref, onMounted, nextTick, watch } = Vue;
 
     createApp({
       setup() {
@@ -263,6 +279,7 @@
         const taskResult = ref('');
         // 默认选中的指令
         const selectedCommand = ref('/api/apps');
+        const requestBody = ref('{}');
         const isSending = ref(false);
         const apiToken = ref(sessionStorage.getItem('one-autojs6-api-token') || '');
         let screenSocket = null;
@@ -371,12 +388,16 @@
           appendLog('http', 'HTTP_REQ', `-> POST ${selectedCommand.value}`);
           
           try {
+            const payload = requestBody.value.trim()
+              ? JSON.parse(requestBody.value)
+              : {};
             const res = await fetch(selectedCommand.value, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${apiToken.value}`
-              }
+              },
+              body: JSON.stringify(payload)
             });
             const data = await res.json();
             appendLog('http', 'HTTP_RES', `<- [${res.status}] ${JSON.stringify(data)}`);
@@ -386,6 +407,32 @@
             isSending.value = false;
           }
         };
+
+        watch(selectedCommand, (value) => {
+          requestBody.value = value === '/api/tiktok/post'
+            ? JSON.stringify({
+                contractVersion: 2,
+                action: 'preflight',
+                media: {
+                  mode: 'direct',
+                  kind: 'video',
+                  path: '/sdcard/Download/tiktok-materials/example.mp4'
+                },
+                content: {
+                  title: 'Evening walk',
+                  details: 'A quiet moment from today.'
+                },
+                policy: {
+                  minIntervalSeconds: 1800,
+                  maxPostsPerDay: 3,
+                  materialReuseSeconds: 86400,
+                  captionReuseSeconds: 86400
+                },
+                link: { maxAttempts: 8, retrySeconds: 15 },
+                timeout: 420
+              }, null, 2)
+            : '{}';
+        });
 
         // 初始化屏幕推流连接
         const setupScreenMqtt = () => {
@@ -440,6 +487,7 @@
           screenImg,
           taskResult,
           selectedCommand,
+          requestBody,
           isSending,
           apiToken,
           sendCommand

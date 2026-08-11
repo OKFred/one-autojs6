@@ -11,6 +11,26 @@ export interface EventObserverConfig {
   packageDenyList: string[];
 }
 
+/** TikTok 发布的本机安全策略。 */
+export interface TikTokConfig {
+  expectedHandle?: string;
+  allowedMaterialRoots: string[];
+  minIntervalSeconds: number;
+  maxPostsPerDay: number;
+  materialReuseSeconds: number;
+  captionReuseSeconds: number;
+  adbKeyboard: {
+    enabled: boolean;
+    apkSha256: string;
+  };
+  networkPolicy: {
+    enabled: boolean;
+    allowedCountries: string[];
+    requireWifi: boolean;
+    probeTimeoutMs: number;
+  };
+}
+
 /** 手机守护进程配置。 */
 export interface Autojs6Config {
   deviceId?: string;
@@ -34,6 +54,7 @@ export interface Autojs6Config {
     queueLimit: number;
     resultPollIntervalMs: number;
   };
+  tiktok: TikTokConfig;
   events: Record<
     "battery" | "network" | "sms" | "notification",
     EventObserverConfig
@@ -78,6 +99,27 @@ export const DEFAULT_CONFIG: Autojs6Config = {
     queueLimit: 20,
     resultPollIntervalMs: 500,
   },
+  tiktok: {
+    allowedMaterialRoots: [
+      "/sdcard/Download/tiktok-materials",
+      "/sdcard/Download",
+      "/sdcard/DCIM/Camera",
+    ],
+    minIntervalSeconds: 1800,
+    maxPostsPerDay: 3,
+    materialReuseSeconds: 86400,
+    captionReuseSeconds: 86400,
+    adbKeyboard: {
+      enabled: false,
+      apkSha256: "",
+    },
+    networkPolicy: {
+      enabled: false,
+      allowedCountries: ["GB"],
+      requireWifi: true,
+      probeTimeoutMs: 12000,
+    },
+  },
   events: {
     battery: { ...DEFAULT_EVENT, enabled: true },
     network: { ...DEFAULT_EVENT, enabled: true },
@@ -97,6 +139,17 @@ function stringArray(value: unknown, fallback: string[]): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string")
     ? value
     : fallback;
+}
+
+/** 将有限整数配置约束在安全范围内。 */
+function boundedInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(minimum, Math.min(Math.trunc(value), maximum));
 }
 
 /** 合并单个事件配置。 */
@@ -143,6 +196,7 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
   const report = isRecord(parsed.report) ? parsed.report : {};
   const security = isRecord(parsed.security) ? parsed.security : {};
   const tasks = isRecord(parsed.tasks) ? parsed.tasks : {};
+  const tiktok = isRecord(parsed.tiktok) ? parsed.tiktok : {};
   const events = isRecord(parsed.events) ? parsed.events : {};
   const qos = mqtt.qos === 0 || mqtt.qos === 2 ? mqtt.qos : 1;
 
@@ -203,6 +257,81 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
           typeof tasks.resultPollIntervalMs === "number"
             ? tasks.resultPollIntervalMs
             : DEFAULT_CONFIG.tasks.resultPollIntervalMs,
+      },
+      tiktok: {
+        expectedHandle:
+          typeof tiktok.expectedHandle === "string" &&
+          tiktok.expectedHandle.trim()
+            ? tiktok.expectedHandle.trim().replace(/^@/, "")
+            : DEFAULT_CONFIG.tiktok.expectedHandle,
+        allowedMaterialRoots: stringArray(
+          tiktok.allowedMaterialRoots,
+          DEFAULT_CONFIG.tiktok.allowedMaterialRoots,
+        ),
+        minIntervalSeconds: boundedInteger(
+          tiktok.minIntervalSeconds,
+          DEFAULT_CONFIG.tiktok.minIntervalSeconds,
+          60,
+          86400,
+        ),
+        maxPostsPerDay: boundedInteger(
+          tiktok.maxPostsPerDay,
+          DEFAULT_CONFIG.tiktok.maxPostsPerDay,
+          1,
+          100,
+        ),
+        materialReuseSeconds: boundedInteger(
+          tiktok.materialReuseSeconds,
+          DEFAULT_CONFIG.tiktok.materialReuseSeconds,
+          0,
+          2592000,
+        ),
+        captionReuseSeconds: boundedInteger(
+          tiktok.captionReuseSeconds,
+          DEFAULT_CONFIG.tiktok.captionReuseSeconds,
+          0,
+          2592000,
+        ),
+        adbKeyboard: {
+          enabled:
+            isRecord(tiktok.adbKeyboard) &&
+            typeof tiktok.adbKeyboard.enabled === "boolean"
+              ? tiktok.adbKeyboard.enabled
+              : DEFAULT_CONFIG.tiktok.adbKeyboard.enabled,
+          apkSha256:
+            isRecord(tiktok.adbKeyboard) &&
+            typeof tiktok.adbKeyboard.apkSha256 === "string"
+              ? tiktok.adbKeyboard.apkSha256.trim().toLowerCase()
+              : DEFAULT_CONFIG.tiktok.adbKeyboard.apkSha256,
+        },
+        networkPolicy: {
+          enabled:
+            isRecord(tiktok.networkPolicy) &&
+            typeof tiktok.networkPolicy.enabled === "boolean"
+              ? tiktok.networkPolicy.enabled
+              : DEFAULT_CONFIG.tiktok.networkPolicy.enabled,
+          allowedCountries: stringArray(
+            isRecord(tiktok.networkPolicy)
+              ? tiktok.networkPolicy.allowedCountries
+              : undefined,
+            DEFAULT_CONFIG.tiktok.networkPolicy.allowedCountries,
+          )
+            .map((country) => country.trim().toUpperCase())
+            .filter((country) => /^[A-Z]{2}$/.test(country)),
+          requireWifi:
+            isRecord(tiktok.networkPolicy) &&
+            typeof tiktok.networkPolicy.requireWifi === "boolean"
+              ? tiktok.networkPolicy.requireWifi
+              : DEFAULT_CONFIG.tiktok.networkPolicy.requireWifi,
+          probeTimeoutMs: boundedInteger(
+            isRecord(tiktok.networkPolicy)
+              ? tiktok.networkPolicy.probeTimeoutMs
+              : undefined,
+            DEFAULT_CONFIG.tiktok.networkPolicy.probeTimeoutMs,
+            3000,
+            30000,
+          ),
+        },
       },
       events: {
         battery: mergeEventConfig(

@@ -21,8 +21,10 @@ export function priorityRank(priority: TaskPriority): number {
 export function canPreemptRunning(
   incoming: DeviceTaskRequest,
   running: DeviceTaskRequest,
+  sideEffectCommitted = false,
 ): boolean {
   return (
+    !sideEffectCommitted &&
     incoming.preemptRunning &&
     priorityRank(incoming.priority) >= priorityRank(running.priority)
   );
