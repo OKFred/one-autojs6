@@ -6,11 +6,15 @@ import {
   type DeviceInfoPayload,
   type IdentifierAvailability,
 } from "./protocol.js";
+import type { DeploymentRuntimeInfo } from "./release-manifest.js";
 
 const execFileAsync = promisify(execFile);
 
 /** 执行一个无需 shell 的 Android 命令并返回去空白文本。 */
-async function readCommand(command: string, args: string[] = []): Promise<string> {
+async function readCommand(
+  command: string,
+  args: string[] = [],
+): Promise<string> {
   try {
     const { stdout } = await execFileAsync(command, args, {
       timeout: 5000,
@@ -83,6 +87,7 @@ export async function collectDeviceInfo(
   deviceId: string,
   clientVersion: string,
   trustedScripts: Array<{ scriptId: string; version: number }>,
+  deployment: DeploymentRuntimeInfo,
 ): Promise<DeviceInfoPayload> {
   const [
     manufacturer,
@@ -128,7 +133,19 @@ export async function collectDeviceInfo(
     capabilities: {
       trustedScripts,
       root: rootUser === "0",
+      deployment: {
+        protocolVersion: deployment.deploymentProtocolVersion,
+        supervisorVersion: deployment.supervisorVersion,
+      },
     },
-    reportedExtra: {},
+    reportedExtra: {
+      deployment: {
+        releaseVersion: deployment.releaseVersion,
+        releaseDigest: deployment.releaseDigest,
+        environment: deployment.environment,
+        environmentRevision: deployment.environmentRevision,
+        lastDeploymentId: deployment.lastDeploymentId,
+      },
+    },
   };
 }
