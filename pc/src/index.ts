@@ -24,6 +24,9 @@ import {
   proxyFile,
   downloadFile,
   switchNetwork,
+  createClientDeployment,
+  getClientDeployment,
+  rollbackClientDeployment,
 } from "./controller/index.js";
 
 dotenv.config();
@@ -89,6 +92,11 @@ app.post("/api/apps/details", createAppsDetails);
 
 // 下发设备自更新任务
 app.post("/api/devices/update", createUpdate);
+
+// 客户端不可变发布部署与回滚
+app.post("/api/devices/deployments", createClientDeployment);
+app.get("/api/deployments/:deploymentId", getClientDeployment);
+app.post("/api/deployments/:deploymentId/rollback", rollbackClientDeployment);
 
 // 检查宿主应用版本与更新状态
 app.post("/api/apps/check-update", checkUpdate);

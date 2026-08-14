@@ -29,8 +29,22 @@ export type TrustedScriptId =
   | "app.update.zip"
   | "file.download"
   | "tiktok.post"
-  | "client.self-update"
   | "device.network.switch";
+
+/** Node Server 客户端部署视图。 */
+export interface ClientDeployment {
+  deploymentId: string;
+  clientId: string;
+  releaseVersion: string;
+  environment: "development" | "staging" | "production";
+  environmentRevision: number;
+  activationMode: "GRACEFUL" | "FORCE";
+  phase: string;
+  resultCode: string | null;
+  resultMessage: string | null;
+  createTimeUtc: number;
+  finishedAtUtc: number | null;
+}
 
 /** Node Server 返回的任务创建结果。 */
 export interface DispatchedTask {
@@ -450,5 +464,50 @@ export class NodeServerService {
       pageNo: 1,
       pageSize: 100,
     };
+  }
+
+  /** 通过 Node Server 创建不可变客户端部署。 */
+  public async applyClientDeployment(input: {
+    clientId: string;
+    releaseVersion: string;
+    environment: "development" | "staging" | "production";
+    activationMode: "GRACEFUL" | "FORCE";
+    drainTimeoutMs?: number;
+    confirmForce?: boolean;
+  }): Promise<ClientDeployment> {
+    if (!String(process.env.NODE_SERVER_BASE_URL || "").trim()) {
+      throw new Error("Client deployment requires NODE_SERVER_BASE_URL");
+    }
+    const { confirmForce, ...deployment } = input;
+    return this.request<ClientDeployment>(
+      "/admin/mobile/client-deployment/apply",
+      {
+        ...deployment,
+        forceConfirmed: confirmForce === true,
+      },
+    );
+  }
+
+  /** 查询客户端部署状态。 */
+  public async getClientDeployment(
+    deploymentId: string,
+  ): Promise<ClientDeployment> {
+    return this.request<ClientDeployment>(
+      "/admin/mobile/client-deployment/get",
+      { deploymentId },
+    );
+  }
+
+  /** 回滚到指定部署的前一个健康组合。 */
+  public async rollbackClientDeployment(input: {
+    deploymentId: string;
+    activationMode: "GRACEFUL" | "FORCE";
+    confirmForce?: boolean;
+  }): Promise<ClientDeployment> {
+    const { confirmForce, ...deployment } = input;
+    return this.request<ClientDeployment>(
+      "/admin/mobile/client-deployment/rollback",
+      { ...deployment, forceConfirmed: confirmForce === true },
+    );
   }
 }

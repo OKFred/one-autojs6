@@ -87,8 +87,20 @@ export interface DeviceInfoPayload {
   capabilities: {
     trustedScripts: Array<{ scriptId: string; version: number }>;
     root: boolean;
+    deployment: {
+      protocolVersion: 1;
+      supervisorVersion: string;
+    };
   };
-  reportedExtra: Record<string, unknown>;
+  reportedExtra: {
+    deployment: {
+      releaseVersion: string;
+      releaseDigest: string;
+      environment: string;
+      environmentRevision: number;
+      lastDeploymentId: string | null;
+    };
+  };
 }
 
 /** 判断值是否为普通 JSON 对象。 */

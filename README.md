@@ -85,13 +85,13 @@ Upon startup, the console will print:
 
 Copy the `mobile/` folder into your phone's Termux workspace.
 
-To support **remote self-update and self-restart** of the mobile client, directly start it with our provided daemon shell script under `mobile/`:
+For production, install the stable mobile supervisor once and use the daemon entrypoint:
 
 ```bash
 bash node_daemon.sh
 ```
 
-This script automatically pulls and starts the Node client. When you dispatch a self-update task via PC Server, the daemon script captures the exit code `99` from Node.js, automatically switches to the root project directory to execute `git pull`, and smoothly restarts the client. It also handles automatic delayed restarts in case the process crashes unexpectedly.
+The daemon now starts the separately installed supervisor. Releases are immutable `vX.Y.Z` archives, environments have isolated state, and failed activations automatically roll back. Repository `git pull/reset` and the legacy self-update task are disabled after migration.
 
 Upon startup, the console will display:
 
@@ -114,7 +114,6 @@ The project includes an intuitive Web Dashboard for real-time MQTT message monit
    pnpm run dev:all
    ```
 3. Access the dashboard: Open your browser and navigate to [http://localhost:3000/dashboard/](http://localhost:3000/dashboard/).
-
 
 ---
 
@@ -209,7 +208,7 @@ PC Server provides the following HTTP endpoints:
 - **Content-Type**: `application/json`
 - **Query Parameters**:
   - `timeout` (number, optional, default: 30): Timeout duration in seconds.
-- **Description**: Asynchronously dispatches the self-update task (`cat = update`). The mobile Node client sends a SUCCESS callback and exits with status code `99` after 1.5s. The outer daemon script (`node_daemon.sh`) intercepts the exit code, pulls repository updates under the root folder for safety, and automatically restarts the client.
+- **Deprecated**: This endpoint returns HTTP 410. Use the client deployment APIs to select an immutable release and environment, then poll the deployment status.
 - **Response**:
   ```json
   {

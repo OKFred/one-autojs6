@@ -70,13 +70,6 @@ const REGISTRY: readonly RegisteredTaskScript[] = [
     maxTimeoutMs: 900000,
   },
   {
-    scriptId: "client.self-update",
-    kind: "client",
-    version: 1,
-    defaultTimeoutMs: 30_000,
-    maxTimeoutMs: 60_000,
-  },
-  {
     scriptId: "device.network.switch",
     kind: "autojs",
     fileName: "device_network_switch.js",

@@ -10,3 +10,8 @@ export { tiktokPost } from "./tiktokPost.js";
 export { proxyFile } from "./proxyFile.js";
 export { downloadFile } from "./downloadFile.js";
 export { switchNetwork } from "./switchNetwork.js";
+export {
+  createClientDeployment,
+  getClientDeployment,
+  rollbackClientDeployment,
+} from "./clientDeployment.js";

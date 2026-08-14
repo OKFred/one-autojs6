@@ -2,12 +2,12 @@
 
 手机端现在只执行本地注册过的可信脚本。Node Server 通过 MQTT 下发 `scriptId + params`，不会再下发 JavaScript 或 Shell 源码。
 
-## 部署
+## 开发运行
 
 1. 将 `autojs6-config.example.json` 复制为 `autojs6-config.json`。
 2. 配置 `.env` 中的 MQTT 连接信息，并为每台设备设置唯一 `deviceId`。
 3. 确认 `task-scripts/` 随 mobile 目录一起部署到 Termux。
-4. 运行 `npm start`。客户端只订阅 `autojs6/v2/devices/{deviceId}/tasks`。
+4. 仅开发时运行 `npm start`。客户端订阅业务任务和独立部署管理主题。
 
 可通过 `AUTOJS6_CONFIG_PATH` 指向其他配置路径。修改配置后重启守护进程生效。
 
@@ -30,10 +30,20 @@ v2 客户端没有远程 JavaScript/Shell 执行实现，也不订阅旧公共�
 | `app.update.zip`        | `task-scripts/app_update_zip.js`        | 安全解压并安装 HTTPS ZIP 更新包                  |
 | `file.download`         | `task-scripts/file_download.js`         | 下载文件到 `/sdcard/`                            |
 | `tiktok.post`           | `task-scripts/tiktok_post_v2.js`        | 图片/视频发布、素材轮换、标题/详情选择和链接回传 |
-| `client.self-update`    | 手机客户端固定动作                      | 退出码 99，交给本地 daemon 更新并重启            |
 | `device.network.switch` | `task-scripts/device_network_switch.js` | Wi-Fi、以太网和蜂窝网络切换与失败恢复            |
 
 新增脚本时需要同时修改 `src/task-registry.ts` 与 Node Server 的可信脚本目录，并随手机客户端部署对应文件。不要让服务端传文件路径。
+
+## 正式发布与隔离部署
+
+- 正式客户端只由 `vX.Y.Z` Tag 构建，Tag 必须与 `mobile/package.json` 一致。
+- CI 生成含逐文件 SHA-256 的不可变归档并通过 Node Server 预签名地址直传 R2/S3。
+- 手机一次性运行 `bootstrap/install-supervisor.sh` 安装独立 supervisor；普通版本不能覆盖它。
+- `releases/` 保存只读版本，`state/<environment>` 与 `logs/<environment>` 按环境隔离，`management.env` 固定管理通道。
+- `node_daemon.sh` 只启动已安装 supervisor，不再执行 `git pull/reset`；`client.self-update` 已禁用。
+- 默认 `GRACEFUL` 排空，`FORCE` 需二次确认。新组合 90 秒内未就绪会自动切回上一健康组合。
+
+完整目录和迁移说明见 `bootstrap/install-supervisor.sh`。原手机仓库目录在金丝雀稳定观察期内保留，用作人工恢复入口。
 
 ## 优先级与显式抢占
 
