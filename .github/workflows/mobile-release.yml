@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
-          version: 10.28.2
+          version: 11.20.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,7 +28,9 @@ jobs:
       - name: Build immutable artifact
         id: artifact
         run: |
-          metadata="$(node scripts/build-mobile-release.mjs "${GITHUB_REF_NAME}")"
+          node scripts/build-mobile-release.mjs "${GITHUB_REF_NAME}"
+          metadata="${GITHUB_WORKSPACE}/.tmp/releases/${GITHUB_REF_NAME}.metadata.json"
+          test -f "${metadata}"
           echo "metadata=${metadata}" >> "${GITHUB_OUTPUT}"
       - name: Publish to Node Server
         env:
