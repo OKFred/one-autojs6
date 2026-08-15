@@ -1,0 +1,21 @@
+name: Mobile release preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify Node Server release storage
+        env:
+          NODE_SERVER_RELEASE_URL: ${{ secrets.NODE_SERVER_RELEASE_URL }}
+          MOBILE_RELEASE_PUBLISH_TOKEN: ${{ secrets.MOBILE_RELEASE_PUBLISH_TOKEN }}
+        run: node scripts/preflight-mobile-release.mjs
