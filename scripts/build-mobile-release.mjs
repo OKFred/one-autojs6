@@ -115,20 +115,6 @@ try {
     fs.rmSync(path.join(releaseRoot, "node_modules", ".package-lock.json"), {
       force: true,
     });
-    fs.writeFileSync(
-      path.join(releaseRoot, "package.json"),
-      `${JSON.stringify(
-        {
-          name: packageJson.name,
-          version: packageJson.version,
-          type: packageJson.type,
-          main: "dist/client.js",
-          dependencies: packageJson.dependencies,
-        },
-        null,
-        2,
-      )}\n`,
-    );
   } else {
     runPnpm(
       [
@@ -142,6 +128,20 @@ try {
       { cwd: repositoryRoot, stdio: "inherit" },
     );
   }
+  fs.writeFileSync(
+    path.join(releaseRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: packageJson.name,
+        version: packageJson.version,
+        type: packageJson.type,
+        main: "dist/client.js",
+        dependencies: packageJson.dependencies,
+      },
+      null,
+      2,
+    )}\n`,
+  );
   for (const removable of [
     "src",
     "test",
