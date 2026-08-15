@@ -168,6 +168,16 @@ try {
       force: true,
     });
   }
+  for (const deployMetadata of [
+    "node_modules/.bin",
+    "node_modules/.modules.yaml",
+    "node_modules/.pnpm/node_modules/.bin",
+  ]) {
+    fs.rmSync(path.join(releaseRoot, deployMetadata), {
+      recursive: true,
+      force: true,
+    });
+  }
   fs.cpSync(path.join(mobileRoot, "dist"), path.join(releaseRoot, "dist"), {
     recursive: true,
   });
@@ -210,7 +220,6 @@ try {
     releaseVersion,
     packageVersion: packageJson.version,
     gitCommit,
-    createdAt: new Date().toISOString(),
     protocolVersion: 2,
     deploymentProtocolVersion: 1,
     minimumSupervisorVersion: "1.0.0",
