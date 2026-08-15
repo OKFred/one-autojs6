@@ -13,7 +13,6 @@ const trustedScriptIds: TrustedScriptId[] = [
   "app.update.zip",
   "file.download",
   "tiktok.post",
-  "client.self-update",
   "device.network.switch",
 ];
 

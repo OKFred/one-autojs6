@@ -88,7 +88,6 @@ export const DEFAULT_CONFIG: Autojs6Config = {
       "app.update.zip",
       "file.download",
       "tiktok.post",
-      "client.self-update",
       "device.network.switch",
     ],
     maxParamsBytes: 65536,

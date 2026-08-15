@@ -12,6 +12,11 @@ import {
   parseAutoJsEngineStopResult,
 } from "./autojs-engine.js";
 import { loadConfig } from "./config.js";
+import {
+  DeploymentManager,
+  type PendingActivation,
+} from "./deployment-manager.js";
+import type { DeviceDeploymentEvent } from "./deployment-protocol.js";
 import { collectDeviceInfo } from "./device-info.js";
 import {
   PROTOCOL_VERSION,
@@ -51,18 +56,30 @@ import {
   TikTokNetworkPolicyError,
 } from "./tiktok-network-policy.js";
 import { getEmqxBrokerUrl } from "./utils/mqtt.js";
+import {
+  deploymentRuntimeInfo,
+  loadReleaseManifest,
+} from "./release-manifest.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
 const mobileRoot = path.resolve(sourceDirectory, "..");
-const logsDirectory = path.join(mobileRoot, "logs");
+const logsDirectory = path.resolve(
+  process.env.AUTOJS6_LOG_DIR || path.join(mobileRoot, "logs"),
+);
+const stateDirectory = path.resolve(
+  process.env.AUTOJS6_STATE_DIR || path.join(mobileRoot, "state"),
+);
+const sharedStateDirectory = path.resolve(
+  process.env.AUTOJS6_SHARED_STATE_DIR || stateDirectory,
+);
 const resultOutboxDirectory = path.join(
-  mobileRoot,
-  "state",
+  sharedStateDirectory,
   "task-result-outbox",
 );
-const stateDirectory = path.join(mobileRoot, "state");
-const clientVersion = "2.0.0";
+const releaseManifest = loadReleaseManifest();
+const runtimeDeployment = deploymentRuntimeInfo(releaseManifest);
+const clientVersion = releaseManifest.packageVersion;
 const RESULT_OUTBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** 格式化本地日期。 */
@@ -123,12 +140,28 @@ const autojsPackageName = "org.autojs.autojs6";
 const autojsAccessibilityService =
   "org.autojs.autojs6/org.autojs.autojs.core.accessibility.AccessibilityServiceUsher";
 const tikTokPackageName = "com.zhiliaoapp.musically";
-const tempScriptDirectory = process.env.TEMP_SCRIPT_DIR || "/sdcard/Download";
+const tempScriptBase = process.env.TEMP_SCRIPT_DIR || "/sdcard/Download";
+const tempScriptDirectory =
+  process.env.AUTOJS6_TEMP_SCRIPT_DIR ||
+  path.join(
+    tempScriptBase,
+    "one-autojs6-runtime",
+    runtimeDeployment.environment,
+    runtimeDeployment.lastDeploymentId || "development",
+  );
 const tasksTopic = `autojs6/v2/devices/${deviceId}/tasks`;
 const resultsTopic = `autojs6/v2/devices/${deviceId}/results`;
 const eventsTopic = `autojs6/v2/devices/${deviceId}/events`;
 const presenceTopic = `autojs6/v2/devices/${deviceId}/presence`;
 const infoTopic = `autojs6/v2/devices/${deviceId}/info`;
+const deploymentCommandsTopic = `autojs6/deploy/v1/devices/${deviceId}/commands`;
+const deploymentEventsTopic = `autojs6/deploy/v1/devices/${deviceId}/events`;
+const deploymentRootDirectory = path.resolve(
+  process.env.AUTOJS6_DEPLOYMENT_ROOT ||
+    path.join(process.env.HOME || mobileRoot, ".local", "share", "one-autojs6"),
+);
+const deploymentReadyFile = process.env.AUTOJS6_DEPLOYMENT_READY_FILE || "";
+fs.mkdirSync(tempScriptDirectory, { recursive: true });
 const deviceLogId = crypto
   .createHash("sha256")
   .update(deviceId)
@@ -171,7 +204,7 @@ migrateLegacyTikTokState();
 
 const adbKeyboardManager = new AdbKeyboardManager(
   config.tiktok.adbKeyboard,
-  stateDirectory,
+  sharedStateDirectory,
 );
 try {
   if (await adbKeyboardManager.recoverOnStartup()) {
@@ -236,10 +269,12 @@ let activeTask: ActiveTask | null = null;
 let isStartingTask = false;
 let queueSequence = 0;
 let taskIntakeChain = Promise.resolve();
+let deploymentIntakeChain = Promise.resolve();
 let observerWatcher: NodeJS.Timeout | null = null;
 let observersStarted = false;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 let resultOutboxRetryTimer: NodeJS.Timeout | null = null;
+let deploymentBlockId: string | null = null;
 const lastPublishedEvents = new Map<
   string,
   { key: string; timestamp: number }
@@ -263,6 +298,7 @@ const deviceInfoPromise: Promise<DeviceInfoPayload> = collectDeviceInfo(
     scriptId,
     version,
   })),
+  runtimeDeployment,
 );
 
 const mqttClient = mqtt.connect(brokerUrl, {
@@ -367,8 +403,7 @@ async function ensureAutoJsAccessibilityService(): Promise<void> {
   const components = current ? current.split(":").filter(Boolean) : [];
   if (
     components.some(
-      (component) =>
-        !/^[A-Za-z0-9._]+\/[A-Za-z0-9._]+$/.test(component),
+      (component) => !/^[A-Za-z0-9._]+\/[A-Za-z0-9._]+$/.test(component),
     )
   ) {
     throw new Error("AUTOJS_ACCESSIBILITY_SETTINGS_INVALID");
@@ -506,14 +541,22 @@ function removePersistedTaskResult(taskId: string): void {
 
 /** 通过 MQTT QoS 1 发布并等待 Broker PUBACK。 */
 function publishTaskResultMqtt(result: DeviceTaskResult): Promise<void> {
-  if (!mqttClient.connected) {
+  return publishMqttWithAck(resultsTopic, result, false);
+}
+
+/** 通过 MQTT QoS 配置发布任意可信载荷并等待 PUBACK。 */
+function publishMqttWithAck(
+  topic: string,
+  payload: unknown,
+  retain: boolean,
+): Promise<void> {
+  if (!mqttClient.connected)
     return Promise.reject(new Error("MQTT client is disconnected"));
-  }
   return new Promise((resolve, reject) => {
     mqttClient.publish(
-      resultsTopic,
-      JSON.stringify(result),
-      { qos: config.mqtt.qos, retain: false },
+      topic,
+      JSON.stringify(payload),
+      { qos: config.mqtt.qos, retain },
       (error) => {
         if (error) reject(error);
         else resolve();
@@ -749,9 +792,7 @@ function tikTokPublicationResult(prepared: PreparedTikTokTask): unknown {
     "POST_CONFIRMED",
     "LINK_CONFIRMED",
   ].includes(record.phase);
-  const published = ["POST_CONFIRMED", "LINK_CONFIRMED"].includes(
-    record.phase,
-  );
+  const published = ["POST_CONFIRMED", "LINK_CONFIRMED"].includes(record.phase);
   const canonicalUrl = record.canonicalUrl || record.postUrl || "";
   return {
     contractVersion: 2,
@@ -783,7 +824,10 @@ function tikTokPublicationResult(prepared: PreparedTikTokTask): unknown {
       verified: record.phase === "LINK_CONFIRMED",
     },
     error: record.errorCode
-      ? { code: record.errorCode, message: "TikTok publication requires attention" }
+      ? {
+          code: record.errorCode,
+          message: "TikTok publication requires attention",
+        }
       : null,
     success: record.phase === "LINK_CONFIRMED",
     postUrl: canonicalUrl,
@@ -823,7 +867,10 @@ function recordTikTokFailure(
   try {
     applyTikTokScriptResult(prepared, { code, published });
   } catch (error) {
-    console.warn("[TikTok] Failed to update the private publication ledger", error);
+    console.warn(
+      "[TikTok] Failed to update the private publication ledger",
+      error,
+    );
   }
 }
 
@@ -1003,11 +1050,7 @@ async function preemptActiveTask(incoming: DeviceTaskRequest): Promise<void> {
     return;
   }
   if (
-    !canPreemptRunning(
-      incoming,
-      current.request,
-      current.sideEffectCommitted,
-    )
+    !canPreemptRunning(incoming, current.request, current.sideEffectCommitted)
   )
     return;
   if (current.timeoutTimer) {
@@ -1030,6 +1073,90 @@ async function preemptActiveTask(incoming: DeviceTaskRequest): Promise<void> {
   );
   await cleanupActiveTask();
   setTimeout(() => void applyObserverConfig(), 2000);
+}
+
+/** 取消部署进入排空态前已经排队但尚未启动的业务任务。 */
+function cancelQueuedTasksForDeployment(deploymentId: string): void {
+  while (taskQueue.length > 0) {
+    const queued = taskQueue.shift();
+    if (!queued) continue;
+    queuedTaskIds.delete(queued.request.taskId);
+    publishTaskResult(
+      queued.request,
+      Date.now(),
+      "CANCELLED",
+      "DEPLOYMENT_DRAINING",
+      `Task was cancelled because deployment ${deploymentId} entered drain mode`,
+      { deploymentId },
+    );
+  }
+}
+
+/** 强制部署时停止当前任务，并确认设备级清理已经完成。 */
+async function forceStopActiveTaskForDeployment(
+  deploymentId: string,
+): Promise<boolean> {
+  for (
+    let attempt = 0;
+    isStartingTask && !activeTask && attempt < 40;
+    attempt += 1
+  ) {
+    await delay(250);
+  }
+  const current = activeTask;
+  if (!current) {
+    if (isStartingTask) return false;
+    try {
+      await adbKeyboardManager.recoverOnStartup({
+        attempts: 3,
+        initialDelayMs: 250,
+        maximumDelayMs: 1000,
+      });
+      fs.rmSync(tempScriptDirectory, { recursive: true, force: true });
+      fs.mkdirSync(tempScriptDirectory, { recursive: true });
+      return !adbKeyboardManager.hasPendingRecovery();
+    } catch {
+      return false;
+    }
+  }
+  if (current.timeoutTimer) {
+    clearTimeout(current.timeoutTimer);
+    current.timeoutTimer = null;
+  }
+  if (!(await terminateActiveTask(current))) return false;
+  if (activeTask !== current) return activeTask === null;
+  recordTikTokFailure(
+    current.tiktok,
+    current.sideEffectCommitted
+      ? "PUBLISH_OUTCOME_UNKNOWN"
+      : "FORCED_BY_DEPLOYMENT",
+  );
+  publishTaskResult(
+    current.request,
+    current.startedAt,
+    "CANCELLED",
+    current.sideEffectCommitted
+      ? "PUBLISH_OUTCOME_UNKNOWN"
+      : "FORCED_BY_DEPLOYMENT",
+    `Task was stopped by forced deployment ${deploymentId}`,
+    {
+      deploymentId,
+      retrySafe: !current.sideEffectCommitted,
+    },
+  );
+  await cleanupActiveTask();
+  try {
+    await adbKeyboardManager.recoverOnStartup({
+      attempts: 3,
+      initialDelayMs: 250,
+      maximumDelayMs: 1000,
+    });
+    fs.rmSync(tempScriptDirectory, { recursive: true, force: true });
+    fs.mkdirSync(tempScriptDirectory, { recursive: true });
+  } catch {
+    return false;
+  }
+  return activeTask === null && !adbKeyboardManager.hasPendingRecovery();
 }
 
 /** 完成尚未进入执行状态的任务并继续队列。 */
@@ -1150,25 +1277,11 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
   }
 
   if (definition.kind === "client") {
-    const startedAt = Date.now();
-    if (definition.scriptId !== "client.self-update") {
-      rejectQueuedTask(
-        request,
-        "CLIENT_ACTION_NOT_SUPPORTED",
-        `Unsupported client action: ${definition.scriptId}`,
-      );
-      return;
-    }
-    publishTaskResult(
+    rejectQueuedTask(
       request,
-      startedAt,
-      "SUCCESS",
-      "CLIENT_UPDATE_TRIGGERED",
-      "Client update signal accepted; daemon will restart",
+      "LEGACY_CLIENT_ACTION_DISABLED",
+      "Client actions use the dedicated deployment protocol",
     );
-    queuedTaskIds.delete(request.taskId);
-    isStartingTask = false;
-    setTimeout(() => process.exit(99), 1500);
     return;
   }
 
@@ -1257,9 +1370,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         config.tiktok.networkPolicy,
         {
           readConnectivityState: () =>
-            readRootCommand(
-              "dumpsys connectivity | grep 'NetworkAgentInfo'",
-            ),
+            readRootCommand("dumpsys connectivity | grep 'NetworkAgentInfo'"),
         },
       );
       if (attestation) {
@@ -1456,10 +1567,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
                     ? checkpoint.canonicalUrl
                     : undefined,
               });
-              markTikTokPublicationPhase(
-                current.tiktok,
-                checkpoint.phase,
-              );
+              markTikTokPublicationPhase(current.tiktok, checkpoint.phase);
             }
             fs.writeFileSync(checkpointAckPath, checkpoint.phase, "utf8");
           }
@@ -1491,7 +1599,11 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         "RESULT_PARSE_FAILED",
         error instanceof Error ? error.message : String(error),
       );
-      recordTikTokFailure(tiktok, "RESULT_PARSE_FAILED", Boolean(activeTask?.sideEffectCommitted));
+      recordTikTokFailure(
+        tiktok,
+        "RESULT_PARSE_FAILED",
+        Boolean(activeTask?.sideEffectCommitted),
+      );
       await cleanupActiveTask();
     }
   }, config.tasks.resultPollIntervalMs);
@@ -1547,7 +1659,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
 
 /** 串行执行队列中的下一项任务。 */
 function processNextTask(): void {
-  if (activeTask || isStartingTask) return;
+  if (activeTask || isStartingTask || deploymentBlockId) return;
   const queued = taskQueue.shift();
   if (queued) {
     const request = queued.request;
@@ -1586,6 +1698,17 @@ async function enqueueTask(value: unknown): Promise<void> {
     );
     return;
   }
+  if (deploymentBlockId) {
+    publishTaskResult(
+      request,
+      Date.now(),
+      "REJECTED",
+      "DEPLOYMENT_DRAINING",
+      `Device is draining for deployment ${deploymentBlockId}`,
+      { deploymentId: deploymentBlockId },
+    );
+    return;
+  }
   if (queuedTaskIds.has(request.taskId)) {
     console.warn(`[TASK] Ignored duplicate task ${request.taskId}`);
     return;
@@ -1619,14 +1742,130 @@ async function enqueueTask(value: unknown): Promise<void> {
   processNextTask();
 }
 
-mqttClient.on("connect", () => {
-  mqttClient.subscribe(tasksTopic, { qos: config.mqtt.qos }, (error) => {
-    if (error) {
-      console.error(`[MQTT] Task subscription failed device=${deviceLogId}`, error);
-    } else {
-      console.log(`[MQTT] Task subscription ready device=${deviceLogId}`);
-    }
+/** 原子写入 supervisor 待激活描述并退出当前发布进程。 */
+async function requestSupervisorActivation(
+  pending: PendingActivation,
+): Promise<void> {
+  const pendingPath = path.join(
+    deploymentRootDirectory,
+    "run",
+    "pending-activation.json",
+  );
+  fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
+  const temporaryPath = `${pendingPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(pending, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
   });
+  fs.renameSync(temporaryPath, pendingPath);
+  await delay(250);
+  process.exit(98);
+}
+
+/** 发布部署事件并等待 Broker 确认。 */
+function publishDeploymentEvent(event: DeviceDeploymentEvent): Promise<void> {
+  return publishMqttWithAck(deploymentEventsTopic, event, false);
+}
+
+const deploymentManager = new DeploymentManager({
+  deviceId,
+  rootDirectory: deploymentRootDirectory,
+  hooks: {
+    blockTaskIntake: (deploymentId) => {
+      deploymentBlockId = deploymentId;
+    },
+    unblockTaskIntake: (deploymentId) => {
+      if (deploymentBlockId === deploymentId) {
+        deploymentBlockId = null;
+        processNextTask();
+      }
+    },
+    cancelQueuedTasks: cancelQueuedTasksForDeployment,
+    isTaskExecutorIdle: () => !activeTask && !isStartingTask,
+    forceStopActiveTask: forceStopActiveTaskForDeployment,
+    publishEvent: publishDeploymentEvent,
+    activate: requestSupervisorActivation,
+  },
+});
+
+/** 重放 supervisor 生成但尚未上报的回滚结果。 */
+async function replayDeploymentOutcomes(): Promise<void> {
+  const outcomeDirectory = path.join(
+    deploymentRootDirectory,
+    "run",
+    "deployment-outcomes",
+  );
+  if (!fs.existsSync(outcomeDirectory)) return;
+  for (const fileName of fs.readdirSync(outcomeDirectory)) {
+    if (!fileName.endsWith(".json")) continue;
+    const filePath = path.join(outcomeDirectory, fileName);
+    try {
+      const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as Omit<
+        DeviceDeploymentEvent,
+        "deviceId"
+      >;
+      await publishDeploymentEvent({ ...value, deviceId });
+      fs.rmSync(filePath, { force: true });
+    } catch (error) {
+      console.warn("[DEPLOYMENT] Failed to replay supervisor outcome", error);
+    }
+  }
+}
+
+/** 新发布版本通过管理通道健康门禁后写入 ready 标记。 */
+async function reportDeploymentReady(): Promise<void> {
+  if (!deploymentReadyFile || !runtimeDeployment.lastDeploymentId) return;
+  const baseEvent = {
+    protocolVersion: 1 as const,
+    deploymentId: runtimeDeployment.lastDeploymentId,
+    deviceId,
+    releaseVersion: runtimeDeployment.releaseVersion,
+    environment: runtimeDeployment.environment,
+    environmentRevision: runtimeDeployment.environmentRevision,
+    timestamp: Date.now(),
+  };
+  await publishDeploymentEvent({
+    ...baseEvent,
+    phase: "VERIFYING",
+    code: "CLIENT_CONNECTED",
+    message: "New client connected to the stable management channel",
+  });
+  await publishMqttWithAck(infoTopic, await deviceInfoPromise, true);
+  await publishDeploymentEvent({
+    ...baseEvent,
+    timestamp: Date.now(),
+    phase: "SUCCEEDED",
+    code: "DEPLOYMENT_READY",
+    message: "New client passed deployment health checks",
+  });
+  fs.mkdirSync(path.dirname(deploymentReadyFile), { recursive: true });
+  fs.writeFileSync(deploymentReadyFile, `${Date.now()}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+mqttClient.on("connect", () => {
+  mqttClient.subscribe(
+    [tasksTopic, deploymentCommandsTopic],
+    { qos: config.mqtt.qos },
+    (error) => {
+      if (error) {
+        console.error(
+          `[MQTT] Management subscription failed device=${deviceLogId}`,
+          error,
+        );
+      } else {
+        console.log(
+          `[MQTT] Task and deployment subscriptions ready device=${deviceLogId}`,
+        );
+        void replayDeploymentOutcomes();
+        void reportDeploymentReady().catch((readyError) =>
+          console.error("[DEPLOYMENT] Health report failed", readyError),
+        );
+      }
+    },
+  );
   publishReport("presence", presenceTopic, presence("ONLINE"), true);
   void deviceInfoPromise
     .then((info) => publishReport("info", infoTopic, info, true))
@@ -1637,9 +1876,20 @@ mqttClient.on("connect", () => {
 });
 
 mqttClient.on("message", (topic, payload) => {
-  if (topic !== tasksTopic) return;
+  if (topic !== tasksTopic && topic !== deploymentCommandsTopic) return;
   try {
     const value: unknown = JSON.parse(payload.toString());
+    if (topic === deploymentCommandsTopic) {
+      deploymentIntakeChain = deploymentIntakeChain
+        .then(() => deploymentManager.handle(value))
+        .catch((error) =>
+          console.error(
+            "[DEPLOYMENT] Failed to process deployment command",
+            error,
+          ),
+        );
+      return;
+    }
     taskIntakeChain = taskIntakeChain
       .then(() => enqueueTask(value))
       .catch((error) =>
