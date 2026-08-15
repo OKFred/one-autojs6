@@ -31,6 +31,10 @@ jobs:
           node scripts/build-mobile-release.mjs "${GITHUB_REF_NAME}"
           metadata="${GITHUB_WORKSPACE}/.tmp/releases/${GITHUB_REF_NAME}.metadata.json"
           test -f "${metadata}"
+          first_sha="$(node -e 'const fs=require("node:fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).artifactSha256)' "${metadata}")"
+          node scripts/build-mobile-release.mjs "${GITHUB_REF_NAME}"
+          second_sha="$(node -e 'const fs=require("node:fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).artifactSha256)' "${metadata}")"
+          test "${first_sha}" = "${second_sha}"
           echo "metadata=${metadata}" >> "${GITHUB_OUTPUT}"
       - name: Publish to Node Server
         env:
