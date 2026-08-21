@@ -137,6 +137,18 @@ AUTOJS6_REPORT_URL=https://example.com/api/v1/admin/mobile/device
 
 令牌由管理端“设备状态”抽屉生成或重置，明文只显示一次，不应写入 `autojs6-config.json` 或日志。
 
+## 短期设备运维 WSS
+
+日常前台任务仍通过 MQTT v2 可信脚本队列执行。启用 `ops.enabled` 后，客户端额外订阅
+`autojs6/ops/v1/devices/{deviceId}/commands`；只有收到短期会话命令时才主动连接配置白名单内的
+WSS Origin，会话默认由服务端限制为 10 分钟且最长 30 分钟。
+
+运维通道只接受固定的结构化操作：音量读取/设置/静音恢复、存储统计、白名单目录分页、前台
+应用/Activity/窗口、网络信息和能力查询。它不支持任意 JavaScript、Shell、PTY、ttyd 或文件内容
+下载。文件根目录通过 `ops.fileRoots` 配置；客户端日志和部署运行目录由进程自动加入，密钥和业务
+状态目录默认不开放。启用运维前必须设置 `AUTOJS6_REPORT_TOKEN`，该设备凭据只用于 WSS 请求头，
+不会出现在 MQTT 命令或 URL 中。
+
 ## Node 与 Worker 结果回传
 
 任务包含 `callbackUrl` 时，手机会同时发送 MQTT 结果和 HTTP 结果。Node Server 通过 taskId、deviceId、scriptId、traceId 幂等落库：Node 运行时可依赖 MQTT Listener，Worker 运行时通过 HTTP callback 收取结果。

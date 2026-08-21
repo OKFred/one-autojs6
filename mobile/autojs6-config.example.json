@@ -29,6 +29,18 @@
     "queueLimit": 20,
     "resultPollIntervalMs": 500
   },
+  "ops": {
+    "enabled": false,
+    "allowedWsOrigins": ["wss://hodor.this-time.com"],
+    "fileRoots": [
+      {
+        "id": "shared-download",
+        "label": "Downloads",
+        "path": "/sdcard/Download"
+      },
+      { "id": "camera", "label": "Camera", "path": "/sdcard/DCIM" }
+    ]
+  },
   "tiktok": {
     "expectedHandle": "your_tiktok_handle",
     "allowedMaterialRoots": [

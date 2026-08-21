@@ -31,6 +31,13 @@ export interface TikTokConfig {
   };
 }
 
+/** Temporary WSS device operations configuration. */
+export interface DeviceOpsConfig {
+  enabled: boolean;
+  allowedWsOrigins: string[];
+  fileRoots: Array<{ id: string; label: string; path: string }>;
+}
+
 /** 手机守护进程配置。 */
 export interface Autojs6Config {
   deviceId?: string;
@@ -54,6 +61,7 @@ export interface Autojs6Config {
     queueLimit: number;
     resultPollIntervalMs: number;
   };
+  ops: DeviceOpsConfig;
   tiktok: TikTokConfig;
   events: Record<
     "battery" | "network" | "sms" | "notification",
@@ -97,6 +105,14 @@ export const DEFAULT_CONFIG: Autojs6Config = {
     maxTimeoutMs: 900000,
     queueLimit: 20,
     resultPollIntervalMs: 500,
+  },
+  ops: {
+    enabled: false,
+    allowedWsOrigins: ["wss://hodor.this-time.com"],
+    fileRoots: [
+      { id: "shared-download", label: "Downloads", path: "/sdcard/Download" },
+      { id: "camera", label: "Camera", path: "/sdcard/DCIM" },
+    ],
   },
   tiktok: {
     allowedMaterialRoots: [
@@ -195,6 +211,7 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
   const report = isRecord(parsed.report) ? parsed.report : {};
   const security = isRecord(parsed.security) ? parsed.security : {};
   const tasks = isRecord(parsed.tasks) ? parsed.tasks : {};
+  const ops = isRecord(parsed.ops) ? parsed.ops : {};
   const tiktok = isRecord(parsed.tiktok) ? parsed.tiktok : {};
   const events = isRecord(parsed.events) ? parsed.events : {};
   const qos = mqtt.qos === 0 || mqtt.qos === 2 ? mqtt.qos : 1;
@@ -256,6 +273,39 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
           typeof tasks.resultPollIntervalMs === "number"
             ? tasks.resultPollIntervalMs
             : DEFAULT_CONFIG.tasks.resultPollIntervalMs,
+      },
+      ops: {
+        enabled:
+          typeof ops.enabled === "boolean"
+            ? ops.enabled
+            : DEFAULT_CONFIG.ops.enabled,
+        allowedWsOrigins: stringArray(
+          ops.allowedWsOrigins,
+          DEFAULT_CONFIG.ops.allowedWsOrigins,
+        ).filter((origin) => {
+          try {
+            const url = new URL(origin);
+            return (
+              url.origin === origin &&
+              (url.protocol === "wss:" ||
+                (url.protocol === "ws:" &&
+                  (url.hostname === "localhost" ||
+                    url.hostname === "127.0.0.1")))
+            );
+          } catch {
+            return false;
+          }
+        }),
+        fileRoots: Array.isArray(ops.fileRoots)
+          ? ops.fileRoots.flatMap((value) =>
+              isRecord(value) &&
+              typeof value.id === "string" &&
+              typeof value.label === "string" &&
+              typeof value.path === "string"
+                ? [{ id: value.id, label: value.label, path: value.path }]
+                : [],
+            )
+          : DEFAULT_CONFIG.ops.fileRoots,
       },
       tiktok: {
         expectedHandle:

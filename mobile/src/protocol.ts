@@ -91,6 +91,12 @@ export interface DeviceInfoPayload {
       protocolVersion: 1;
       supervisorVersion: string;
     };
+    ops: {
+      protocolVersion: 1;
+      enabled: boolean;
+      arbitraryShell: false;
+      operations: string[];
+    };
   };
   reportedExtra: {
     deployment: {

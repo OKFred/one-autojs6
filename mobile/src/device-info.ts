@@ -88,6 +88,7 @@ export async function collectDeviceInfo(
   clientVersion: string,
   trustedScripts: Array<{ scriptId: string; version: number }>,
   deployment: DeploymentRuntimeInfo,
+  ops: { enabled: boolean; operations: string[] },
 ): Promise<DeviceInfoPayload> {
   const [
     manufacturer,
@@ -136,6 +137,12 @@ export async function collectDeviceInfo(
       deployment: {
         protocolVersion: deployment.deploymentProtocolVersion,
         supervisorVersion: deployment.supervisorVersion,
+      },
+      ops: {
+        protocolVersion: 1,
+        enabled: ops.enabled,
+        arbitraryShell: false,
+        operations: ops.operations,
       },
     },
     reportedExtra: {

@@ -60,6 +60,12 @@ import {
   deploymentRuntimeInfo,
   loadReleaseManifest,
 } from "./release-manifest.js";
+import { DEVICE_OPS } from "./ops-protocol.js";
+import { DeviceOpsExecutor } from "./ops-executor.js";
+import {
+  DeviceOpsSessionManager,
+  type DeviceOpsSessionEvent,
+} from "./ops-session.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
@@ -156,6 +162,8 @@ const presenceTopic = `autojs6/v2/devices/${deviceId}/presence`;
 const infoTopic = `autojs6/v2/devices/${deviceId}/info`;
 const deploymentCommandsTopic = `autojs6/deploy/v1/devices/${deviceId}/commands`;
 const deploymentEventsTopic = `autojs6/deploy/v1/devices/${deviceId}/events`;
+const opsCommandsTopic = `autojs6/ops/v1/devices/${deviceId}/commands`;
+const opsEventsTopic = `autojs6/ops/v1/devices/${deviceId}/events`;
 const deploymentRootDirectory = path.resolve(
   process.env.AUTOJS6_DEPLOYMENT_ROOT ||
     path.join(process.env.HOME || mobileRoot, ".local", "share", "one-autojs6"),
@@ -177,6 +185,9 @@ if (usesHttpReporting && (!config.report.httpBaseUrl || !reportToken)) {
   throw new Error(
     "HTTP reporting requires report.httpBaseUrl and AUTOJS6_REPORT_TOKEN",
   );
+}
+if (config.ops.enabled && !reportToken) {
+  throw new Error("WSS operations require AUTOJS6_REPORT_TOKEN");
 }
 
 /** 将旧共享目录中的 TikTok 去重历史迁移到 Termux 私有账本。 */
@@ -299,6 +310,7 @@ const deviceInfoPromise: Promise<DeviceInfoPayload> = collectDeviceInfo(
     version,
   })),
   runtimeDeployment,
+  { enabled: config.ops.enabled, operations: [...DEVICE_OPS] },
 );
 
 const mqttClient = mqtt.connect(brokerUrl, {
@@ -1767,12 +1779,43 @@ function publishDeploymentEvent(event: DeviceDeploymentEvent): Promise<void> {
   return publishMqttWithAck(deploymentEventsTopic, event, false);
 }
 
+/** Publish a non-secret operations session lifecycle event. */
+function publishOpsEvent(event: DeviceOpsSessionEvent): Promise<void> {
+  return publishMqttWithAck(opsEventsTopic, event, false);
+}
+
+const opsExecutor = new DeviceOpsExecutor({
+  fileRoots: [
+    ...config.ops.fileRoots,
+    { id: "client-logs", label: "Client logs", path: logsDirectory },
+    {
+      id: "client-run",
+      label: "Deployment runtime",
+      path: path.join(deploymentRootDirectory, "run"),
+    },
+  ],
+  sharedStateDirectory,
+});
+
+const opsSessionManager = new DeviceOpsSessionManager({
+  deviceId,
+  reportToken: reportToken || "",
+  allowedWsOrigins: config.ops.allowedWsOrigins,
+  executor: opsExecutor,
+  isDeploymentBlocked: () => Boolean(deploymentBlockId),
+  publishEvent: publishOpsEvent,
+});
+
 const deploymentManager = new DeploymentManager({
   deviceId,
   rootDirectory: deploymentRootDirectory,
   hooks: {
     blockTaskIntake: (deploymentId) => {
       deploymentBlockId = deploymentId;
+      void opsSessionManager.close(
+        "DEPLOYMENT_STARTED",
+        "Operations session closed because deployment started",
+      );
     },
     unblockTaskIntake: (deploymentId) => {
       if (deploymentBlockId === deploymentId) {
@@ -1846,26 +1889,24 @@ async function reportDeploymentReady(): Promise<void> {
 }
 
 mqttClient.on("connect", () => {
-  mqttClient.subscribe(
-    [tasksTopic, deploymentCommandsTopic],
-    { qos: config.mqtt.qos },
-    (error) => {
-      if (error) {
-        console.error(
-          `[MQTT] Management subscription failed device=${deviceLogId}`,
-          error,
-        );
-      } else {
-        console.log(
-          `[MQTT] Task and deployment subscriptions ready device=${deviceLogId}`,
-        );
-        void replayDeploymentOutcomes();
-        void reportDeploymentReady().catch((readyError) =>
-          console.error("[DEPLOYMENT] Health report failed", readyError),
-        );
-      }
-    },
-  );
+  const managementTopics = [tasksTopic, deploymentCommandsTopic];
+  if (config.ops.enabled) managementTopics.push(opsCommandsTopic);
+  mqttClient.subscribe(managementTopics, { qos: config.mqtt.qos }, (error) => {
+    if (error) {
+      console.error(
+        `[MQTT] Management subscription failed device=${deviceLogId}`,
+        error,
+      );
+    } else {
+      console.log(
+        `[MQTT] Task, deployment and operations subscriptions ready device=${deviceLogId}`,
+      );
+      void replayDeploymentOutcomes();
+      void reportDeploymentReady().catch((readyError) =>
+        console.error("[DEPLOYMENT] Health report failed", readyError),
+      );
+    }
+  });
   publishReport("presence", presenceTopic, presence("ONLINE"), true);
   void deviceInfoPromise
     .then((info) => publishReport("info", infoTopic, info, true))
@@ -1876,7 +1917,12 @@ mqttClient.on("connect", () => {
 });
 
 mqttClient.on("message", (topic, payload) => {
-  if (topic !== tasksTopic && topic !== deploymentCommandsTopic) return;
+  if (
+    topic !== tasksTopic &&
+    topic !== deploymentCommandsTopic &&
+    topic !== opsCommandsTopic
+  )
+    return;
   try {
     const value: unknown = JSON.parse(payload.toString());
     if (topic === deploymentCommandsTopic) {
@@ -1887,6 +1933,14 @@ mqttClient.on("message", (topic, payload) => {
             "[DEPLOYMENT] Failed to process deployment command",
             error,
           ),
+        );
+      return;
+    }
+    if (topic === opsCommandsTopic) {
+      void opsSessionManager
+        .handleOpenCommand(value)
+        .catch((error) =>
+          console.error("[OPS] Failed to process open-session command", error),
         );
       return;
     }

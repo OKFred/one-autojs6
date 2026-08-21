@@ -7,16 +7,18 @@
     "dev": "tsx --no-cache src/client.ts",
     "start": "tsx --no-cache src/client.ts",
     "network:check": "tsx --no-cache src/tiktok-network-check.ts",
-    "test": "tsx test/task-queue.test.ts && tsx test/tiktok-policy.test.ts && tsx test/adb-keyboard.test.ts && tsx test/tiktok-network-policy.test.ts && tsx test/autojs-engine.test.ts && tsx test/deployment.test.ts",
+    "test": "tsx test/task-queue.test.ts && tsx test/tiktok-policy.test.ts && tsx test/adb-keyboard.test.ts && tsx test/tiktok-network-policy.test.ts && tsx test/autojs-engine.test.ts && tsx test/deployment.test.ts && tsx test/ops.test.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
-    "mqtt": "^5.10.3"
+    "mqtt": "^5.10.3",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
