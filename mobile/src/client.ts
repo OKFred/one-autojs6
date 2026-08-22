@@ -11,7 +11,7 @@ import {
   buildAutoJsEngineStopScript,
   parseAutoJsEngineStopResult,
 } from "./autojs-engine.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveReportChannels } from "./config.js";
 import {
   DeploymentManager,
   type PendingActivation,
@@ -179,10 +179,12 @@ const deviceLogId = crypto
   .digest("hex")
   .slice(0, 12);
 const reportToken = process.env.AUTOJS6_REPORT_TOKEN;
-const usesMqttReporting =
-  config.report.transport === "mqtt" || config.report.transport === "both";
-const usesHttpReporting =
-  config.report.transport === "http" || config.report.transport === "both";
+const reportChannels = resolveReportChannels(
+  config.report.transport,
+  process.env.AUTOJS6_REPORT_URL,
+);
+const usesMqttReporting = reportChannels.mqtt;
+const usesHttpReporting = reportChannels.http;
 
 if (usesHttpReporting && (!config.report.httpBaseUrl || !reportToken)) {
   throw new Error(

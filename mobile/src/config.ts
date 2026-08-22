@@ -143,6 +143,26 @@ export const DEFAULT_CONFIG: Autojs6Config = {
   },
 };
 
+/**
+ * 解析设备上报通道；supervisor 注入的管理 URL 不受业务环境模板关闭。
+ *
+ * @param transport 环境模板声明的上报模式。
+ * @param managementReportUrl supervisor 注入的设备级 HTTPS 上报地址。
+ * @returns 当前客户端应启用的 MQTT 与 HTTPS 通道。
+ */
+export function resolveReportChannels(
+  transport: Autojs6Config["report"]["transport"],
+  managementReportUrl?: string,
+): { mqtt: boolean; http: boolean } {
+  return {
+    mqtt: transport === "mqtt" || transport === "both",
+    http:
+      Boolean(managementReportUrl?.trim()) ||
+      transport === "http" ||
+      transport === "both",
+  };
+}
+
 /** 返回当前 mobile 项目的根目录。 */
 function getMobileRoot(): string {
   const currentFile = fileURLToPath(import.meta.url);
