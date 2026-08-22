@@ -40,10 +40,12 @@ v2 客户端没有远程 JavaScript/Shell 执行实现，也不订阅旧公共�
 - CI 生成含逐文件 SHA-256 的不可变归档并通过 Node Server 预签名地址直传 R2/S3。
 - 手机一次性运行 `bootstrap/install-supervisor.sh` 安装独立 supervisor；普通版本不能覆盖它。
 - `releases/` 保存只读版本，`state/<environment>` 与 `logs/<environment>` 按环境隔离，`management.env` 固定管理通道。
+- supervisor 在每次启动目标组合前创建权限为 `0700` 的环境 state、log 和部署运行目录，空环境也不会复用其他环境的状态目录。
 - `node_daemon.sh` 只启动已安装 supervisor，不再执行 `git pull/reset`；`client.self-update` 已禁用。
 - 默认 `GRACEFUL` 排空，`FORCE` 需二次确认。新组合 90 秒内未就绪会自动切回上一健康组合。
 
 完整目录和迁移说明见 `bootstrap/install-supervisor.sh`。原手机仓库目录在金丝雀稳定观察期内保留，用作人工恢复入口。
+旧 Magisk 启动脚本若备份在 `/data/adb/service.d/`，必须移出该目录或移除可执行位；仅修改文件后缀不能阻止 Magisk 启动它，否则会形成新旧客户端双实例。
 
 ## 优先级与显式抢占
 

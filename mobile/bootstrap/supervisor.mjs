@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
-const SUPERVISOR_VERSION = "1.0.0";
+const SUPERVISOR_VERSION = "1.0.1";
 const HEALTH_TIMEOUT_MS = 90_000;
 const RESTART_DELAY_MS = 5_000;
 const rootDirectory = path.resolve(
@@ -68,6 +69,34 @@ function readEnvFile(filePath) {
   return result;
 }
 
+/** 为目标环境创建互相隔离的持久化和运行目录。 */
+export function prepareRuntimeDirectories(
+  descriptor,
+  deploymentRoot = rootDirectory,
+) {
+  if (
+    descriptor.environment !== "development" &&
+    descriptor.environment !== "staging" &&
+    descriptor.environment !== "production"
+  ) {
+    throw new Error("Unsupported deployment environment");
+  }
+  const deploymentId = descriptor.deploymentId || "active";
+  if (deploymentId !== "active" && !/^[0-9a-fA-F-]{36}$/.test(deploymentId)) {
+    throw new Error("Invalid deployment identifier");
+  }
+  const directories = {
+    stateDirectory: path.join(deploymentRoot, "state", descriptor.environment),
+    sharedStateDirectory: path.join(deploymentRoot, "state", "shared"),
+    logsDirectory: path.join(deploymentRoot, "logs", descriptor.environment),
+    runtimeDirectory: path.join(deploymentRoot, "run", deploymentId),
+  };
+  for (const directory of Object.values(directories)) {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  }
+  return directories;
+}
+
 /** 安全替换当前发布目录软链。 */
 function switchCurrentLink(releaseDirectory) {
   const releasesRoot = path.resolve(rootDirectory, "releases");
@@ -86,6 +115,7 @@ function switchCurrentLink(releaseDirectory) {
 
 /** 构造客户端子进程环境，管理通道优先且不可被环境密钥覆盖。 */
 function childEnvironment(descriptor, readyFile) {
+  const runtimeDirectories = prepareRuntimeDirectories(descriptor);
   const management = readEnvFile(
     path.join(rootDirectory, "device", "management.env"),
   );
@@ -116,17 +146,10 @@ function childEnvironment(descriptor, readyFile) {
       "release-manifest.json",
     ),
     AUTOJS6_CONFIG_PATH: descriptor.environmentConfigPath,
-    AUTOJS6_STATE_DIR: path.join(
-      rootDirectory,
-      "state",
-      descriptor.environment,
-    ),
-    AUTOJS6_SHARED_STATE_DIR: path.join(rootDirectory, "state", "shared"),
-    AUTOJS6_LOG_DIR: path.join(rootDirectory, "logs", descriptor.environment),
-    AUTOJS6_RUNTIME_DIR: path.join(
-      runDirectory,
-      descriptor.deploymentId || "active",
-    ),
+    AUTOJS6_STATE_DIR: runtimeDirectories.stateDirectory,
+    AUTOJS6_SHARED_STATE_DIR: runtimeDirectories.sharedStateDirectory,
+    AUTOJS6_LOG_DIR: runtimeDirectories.logsDirectory,
+    AUTOJS6_RUNTIME_DIR: runtimeDirectories.runtimeDirectory,
     AUTOJS6_ENVIRONMENT: descriptor.environment,
     AUTOJS6_ENVIRONMENT_REVISION: String(descriptor.environmentRevision),
     AUTOJS6_RELEASE_DIGEST: descriptor.releaseDigest,
@@ -279,7 +302,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("[SUPERVISOR] Fatal error", error);
-  process.exitCode = 1;
-});
+const entrypoint = process.argv[1]
+  ? pathToFileURL(path.resolve(process.argv[1])).href
+  : "";
+if (entrypoint === import.meta.url) {
+  main().catch((error) => {
+    console.error("[SUPERVISOR] Fatal error", error);
+    process.exitCode = 1;
+  });
+}
