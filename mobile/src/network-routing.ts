@@ -732,7 +732,7 @@ export class NetworkRoutingManager {
         hasRule(
           route.family === 4 ? snapshot.ipv4Rules : snapshot.ipv6Rules,
           MANAGEMENT_RULE_START + index,
-          `to\\s+${escape(route.cidr)}\\b.*lookup\\s+${escape(route.table)}\\b`,
+          `to\\s+${escape(route.cidr)}(?=\\s|$).*lookup\\s+${escape(route.table)}\\b`,
         ),
     );
     const ipv4DefaultValid = hasRule(

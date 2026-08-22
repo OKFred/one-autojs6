@@ -31,6 +31,7 @@ fd00:12::/48 via fe80::1 dev wlan0 table wlan0 proto ra
 fd00:12::/64 dev wlan0 table wlan0 proto kernel
 2001:db8:1::/64 dev wlan0 table wlan0 proto ra
 fe80::/64 dev bt-pan table bt-pan proto kernel
+fd95:d1e:12:: dev bt-pan table bt-pan proto kernel
 `;
 const subscriptions = `
 SubscriptionInfoRecord{subId=4 mccString=460 mncString=11 displayName=China Telecom}
@@ -133,7 +134,7 @@ function createDependencies(
         }
         if (command === "ip -6 rule show") {
           if (!managedRulesActive) return "";
-          return `10451: from all to fe80::/64 iif lo lookup bt-pan\n10500: from all to fd00:12::/48 iif lo lookup wlan0\n10501: from all to fd00:12::/64 iif lo lookup wlan0\n10600: from all iif lo lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
+          return `10451: from all to fe80::/64 iif lo lookup bt-pan\n10452: from all to fd95:d1e:12:: iif lo lookup bt-pan\n10500: from all to fd00:12::/48 iif lo lookup wlan0\n10501: from all to fd00:12::/64 iif lo lookup wlan0\n10600: from all iif lo lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
         }
         if (command.includes("mobile_data_always_on")) return "1\n";
         if (command.includes("mobile_data")) return "1\n";
