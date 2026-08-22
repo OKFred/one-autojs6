@@ -80,9 +80,7 @@ export interface NetworkRoutingDependencies {
   now(): number;
 }
 
-const IPV4_RULE_START = 10_400;
 const BOUND_INTERFACE_RULE_START = 10_400;
-const MANAGEMENT_RULE_START = 10_420;
 const IPV4_LAN_RULE_START = 10_500;
 const IPV4_DEFAULT_RULE = 10_600;
 const IPV6_DEFAULT_RULE = 10_600;
@@ -657,7 +655,18 @@ export class NetworkRoutingManager {
   }
 
   private clearManagedRulesCommand(): string {
-    return `for family in 4 6; do ip -$family rule show | while IFS=: read -r p rest; do case "$p" in ''|*[!0-9]*) continue ;; esac; if [ "$p" -ge ${IPV4_RULE_START} ] && [ "$p" -le 10699 ]; then ip -$family rule del priority "$p" 2>/dev/null || true; fi; done; done; ip -6 route flush table ${IPV6_BLOCK_TABLE} 2>/dev/null || true`;
+    const ipv4Priorities = [
+      BOUND_INTERFACE_RULE_START,
+      BOUND_INTERFACE_RULE_START + 1,
+      ...Array.from({ length: 16 }, (_, index) => IPV4_LAN_RULE_START + index),
+      IPV4_DEFAULT_RULE,
+    ].join(" ");
+    const ipv6Priorities = [
+      BOUND_INTERFACE_RULE_START,
+      BOUND_INTERFACE_RULE_START + 1,
+      IPV6_DEFAULT_RULE,
+    ].join(" ");
+    return `for p in ${ipv4Priorities}; do ip -4 rule del priority "$p" 2>/dev/null || true; done; for p in ${ipv6Priorities}; do ip -6 rule del priority "$p" 2>/dev/null || true; done; ip -6 route flush table ${IPV6_BLOCK_TABLE} 2>/dev/null || true`;
   }
 
   private buildApplyCommand(
@@ -678,12 +687,6 @@ export class NetworkRoutingManager {
         );
       }
       priority += 1;
-    }
-    priority = MANAGEMENT_RULE_START;
-    for (const route of snapshot.managementRoutes) {
-      commands.push(
-        `ip -${route.family} rule add priority ${priority++} from all to ${route.cidr} fwmark 0x0/0xffff iif lo lookup ${route.table}`,
-      );
     }
     priority = IPV4_LAN_RULE_START;
     for (const cidr of policy.lanCidrs) {

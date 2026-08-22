@@ -19,6 +19,10 @@ if (process.env.AUTOJS6_ROUTING_DEVICE_CANARY !== "1") {
 const LAN_CIDRS = ["192.168.0.0/16"];
 const CURL = "/data/data/com.termux/files/usr/bin/curl";
 const HTTP_STATUS_MARKER = "__AUTOJS6_HTTP_STATUS__";
+const MANAGED_PRIORITY_PATTERN =
+  /^(?:10400|10401|105(?:0[0-9]|1[0-5])|10600):/m;
+const CLEAN_MANAGED_RULES =
+  'for p in 10400 10401 10500 10501 10502 10503 10504 10505 10506 10507 10508 10509 10510 10511 10512 10513 10514 10515 10600; do ip -4 rule del priority "$p" 2>/dev/null || true; done; for p in 10400 10401 10600; do ip -6 rule del priority "$p" 2>/dev/null || true; done; ip -6 route flush table 16661 2>/dev/null || true';
 
 function adb(args: string[]): string {
   return execFileSync("adb", args, {
@@ -138,15 +142,23 @@ const devices = adb(["devices"])
   .slice(1)
   .map((line) => line.trim().split(/\s+/))
   .filter((parts) => parts[0] && parts[1] === "device");
-if (devices.length !== 1) throw new Error("Exactly one ADB device is required");
-const serialIp = devices[0][0].match(/^([^:]+):\d+$/)?.[1];
+const selectedSerial = process.env.ANDROID_SERIAL;
+const selectedDevices = selectedSerial
+  ? devices.filter((parts) => parts[0] === selectedSerial)
+  : devices;
+if (selectedDevices.length !== 1) {
+  throw new Error(
+    "Exactly one ADB device is required; set ANDROID_SERIAL when multiple transports are connected",
+  );
+}
+const serialIp = selectedDevices[0][0].match(/^([^:]+):\d+$/)?.[1];
 if (serialIp && !ipv4InCidrs(serialIp, LAN_CIDRS)) {
   throw new Error("TCP ADB is not protected by the configured LAN CIDR");
 }
 
 const initialRules = readRoot("ip -4 rule show");
-if (/^(?:10(?:4\d\d|5\d\d|6\d\d)):/m.test(initialRules)) {
-  throw new Error("Managed routing priority range is already in use");
+if (MANAGED_PRIORITY_PATTERN.test(initialRules)) {
+  throw new Error("Managed routing priorities are already in use");
 }
 const connectivity = readRoot("dumpsys connectivity");
 const baselineNetId = Number(
@@ -239,7 +251,7 @@ try {
 
   const disabled = await manager.disable({ generation: 3 });
   report.disable.result = disabled.code;
-  report.disable.rulesRemoved = !/^(?:10(?:4\d\d|5\d\d|6\d\d)):/m.test(
+  report.disable.rulesRemoved = !MANAGED_PRIORITY_PATTERN.test(
     readRoot("ip -4 rule show"),
   );
   report.disable.defaultRestored = publicExit() === wifiExit;
@@ -276,8 +288,8 @@ try {
   });
   report.rollback.result = rolledBack.code;
   report.rollback.rulesRemoved =
-    !/^(?:10(?:4\d\d|5\d\d|6\d\d)):/m.test(readRoot("ip -4 rule show")) &&
-    !/^(?:10(?:4\d\d|5\d\d|6\d\d)):/m.test(readRoot("ip -6 rule show"));
+    !MANAGED_PRIORITY_PATTERN.test(readRoot("ip -4 rule show")) &&
+    !MANAGED_PRIORITY_PATTERN.test(readRoot("ip -6 rule show"));
   report.rollback.defaultRestored = publicExit() === wifiExit;
   cleanlyDisabled =
     rolledBack.code === "NETWORK_ROUTING_ROLLED_BACK" &&
@@ -293,7 +305,7 @@ try {
 } finally {
   if (!cleanlyDisabled) {
     runRoot(
-      `for family in 4 6; do ip -$family rule show | while IFS=: read -r p rest; do case "$p" in ''|*[!0-9]*) continue ;; esac; if [ "$p" -ge 10400 ] && [ "$p" -le 10699 ]; then ip -$family rule del priority "$p" 2>/dev/null || true; fi; done; done; ip -6 route flush table 16661 2>/dev/null || true; ndc network default set ${baselineNetId}`,
+      `${CLEAN_MANAGED_RULES}; ndc network default set ${baselineNetId}`,
     );
   }
   const resolvedTemporaryRoot = path.resolve(temporaryRoot);

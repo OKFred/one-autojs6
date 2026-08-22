@@ -161,6 +161,12 @@ try {
   assert.match(healthyContext.mutations[0], /lookup wlan0/);
   assert.match(healthyContext.mutations[0], /lookup rmnet_data2/);
   assert.match(healthyContext.mutations[0], /fwmark 0x0\/0xffff iif lo/);
+  assert.doesNotMatch(healthyContext.mutations[0], /-ge 10400/);
+  assert.doesNotMatch(healthyContext.mutations[0], /priority 10420/);
+  assert.match(
+    healthyContext.mutations[0],
+    /ip -4 rule del priority "\$p"/,
+  );
   assert.match(healthyContext.mutations[0], /ndc network default set 108/);
   assert.equal(healthyContext.reconnects, 1);
   assert.equal(result.data.wifiInterface, "wlan0");
