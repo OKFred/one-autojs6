@@ -67,6 +67,7 @@ import {
   type DeviceOpsSessionEvent,
 } from "./ops-session.js";
 import { curlProbe, NetworkRoutingManager } from "./network-routing.js";
+import { forceReconnectMqtt } from "./mqtt-reconnect.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
@@ -336,28 +337,7 @@ const mqttClient = mqtt.connect(brokerUrl, {
 
 /** 强制管理 MQTT 套接字按当前默认路由重新建立。 */
 function reconnectManagementMqtt(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let completed = false;
-    const finish = (error?: Error) => {
-      if (completed) return;
-      completed = true;
-      clearTimeout(timer);
-      mqttClient.off("connect", onConnect);
-      if (error) reject(error);
-      else resolve();
-    };
-    const onConnect = () => finish();
-    const timer = setTimeout(
-      () => finish(new Error("MQTT_RECONNECT_TIMEOUT")),
-      30_000,
-    );
-    mqttClient.once("connect", onConnect);
-    try {
-      mqttClient.reconnect();
-    } catch (error) {
-      finish(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
+  return forceReconnectMqtt(mqttClient);
 }
 
 const networkRoutingManager = new NetworkRoutingManager(sharedStateDirectory, {
