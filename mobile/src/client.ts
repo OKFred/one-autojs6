@@ -318,6 +318,7 @@ const deviceInfoPromise: Promise<DeviceInfoPayload> = collectDeviceInfo(
 
 const mqttClient = mqtt.connect(brokerUrl, {
   protocolVersion: 5,
+  manualConnect: true,
   clean: false,
   clientId: deviceId,
   properties: { sessionExpiryInterval: config.mqtt.sessionExpirySeconds },
@@ -1873,7 +1874,13 @@ async function publishDeploymentEvent(
     );
   }
   if (httpResult.status === "rejected") {
-    throw httpResult.reason;
+    console.warn(
+      "[DEPLOYMENT] HTTPS event delivery failed; MQTT PUBACK remains authoritative",
+      httpResult.reason,
+    );
+  }
+  if (mqttResult.status === "rejected" && httpResult.status === "rejected") {
+    throw new Error("DEPLOYMENT_EVENT_DELIVERY_FAILED");
   }
 }
 
@@ -2103,6 +2110,7 @@ function startDeviceReporting(): void {
   void replayTaskResultOutbox();
 }
 
+mqttClient.connect();
 startDeviceReporting();
 
 console.log(`[CLIENT] AutoJS6 device client ${clientVersion} started`);
