@@ -192,6 +192,20 @@ try {
   fs.cpSync(path.join(mobileRoot, "dist"), path.join(releaseRoot, "dist"), {
     recursive: true,
   });
+  const observerScriptsDirectory = path.join(mobileRoot, "src", "scripts");
+  const packagedObserverScriptsDirectory = path.join(
+    releaseRoot,
+    "dist",
+    "scripts",
+  );
+  for (const fileName of fs
+    .readdirSync(observerScriptsDirectory)
+    .filter((fileName) => fileName.endsWith(".js"))) {
+    fs.copyFileSync(
+      path.join(observerScriptsDirectory, fileName),
+      path.join(packagedObserverScriptsDirectory, fileName),
+    );
+  }
   fs.cpSync(
     path.join(mobileRoot, "task-scripts"),
     path.join(releaseRoot, "task-scripts"),
@@ -202,6 +216,18 @@ try {
       /^(\.env|logs|state|test|src)(\/|$)/.test(filePath) ||
       (!filePath.startsWith("node_modules/") && filePath.endsWith(".ts")),
   );
+  const missingObserverScripts = fs
+    .readdirSync(observerScriptsDirectory)
+    .filter((fileName) => fileName.endsWith(".js"))
+    .filter(
+      (fileName) =>
+        !fs.existsSync(path.join(packagedObserverScriptsDirectory, fileName)),
+    );
+  if (missingObserverScripts.length > 0) {
+    throw new Error(
+      `Release is missing observer scripts: ${missingObserverScripts.join(", ")}`,
+    );
+  }
   for (const developmentPackage of ["typescript", "tsx", "@types/node"]) {
     if (
       fs.existsSync(path.join(releaseRoot, "node_modules", developmentPackage))
