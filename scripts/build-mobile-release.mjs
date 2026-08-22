@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import zlib from "node:zlib";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
@@ -219,6 +220,12 @@ try {
       cwd: repositoryRoot,
       encoding: "utf8",
     }).trim();
+  const createdAt = new Date(
+    execFileSync("git", ["show", "-s", "--format=%cI", gitCommit], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    }).trim(),
+  ).toISOString();
   const files = Object.fromEntries(
     listFiles(releaseRoot).map((filePath) => [
       filePath,
@@ -230,12 +237,17 @@ try {
     releaseVersion,
     packageVersion: packageJson.version,
     gitCommit,
+    createdAt,
     protocolVersion: 2,
     deploymentProtocolVersion: 1,
     minimumSupervisorVersion: "1.0.0",
     entrypoint: "dist/client.js",
     files,
   };
+  const { parseReleaseManifest } = await import(
+    pathToFileURL(path.join(mobileRoot, "dist", "release-manifest.js")).href
+  );
+  parseReleaseManifest(manifest);
   fs.writeFileSync(
     path.join(releaseRoot, "release-manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,

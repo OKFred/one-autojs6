@@ -14,6 +14,13 @@ const activePath = path.join(rootDirectory, "active.json");
 const previousPath = path.join(rootDirectory, "previous-healthy.json");
 const pendingPath = path.join(runDirectory, "pending-activation.json");
 const currentLink = path.join(rootDirectory, "current");
+const configuredNodeExecutable = process.env.PREFIX
+  ? path.join(process.env.PREFIX, "bin", "node")
+  : "";
+const nodeExecutable =
+  configuredNodeExecutable && fs.existsSync(configuredNodeExecutable)
+    ? configuredNodeExecutable
+    : process.execPath;
 
 /** 等待固定时长。 */
 function delay(milliseconds) {
@@ -142,7 +149,7 @@ function spawnClient(descriptor, readyFile = "") {
   ) {
     throw new Error("Release entrypoint escapes release directory");
   }
-  return spawn(process.execPath, [entrypoint], {
+  return spawn(nodeExecutable, [entrypoint], {
     cwd: descriptor.releaseDirectory,
     env: childEnvironment(descriptor, readyFile),
     stdio: "inherit",

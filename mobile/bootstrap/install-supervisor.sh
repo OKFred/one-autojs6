@@ -35,6 +35,7 @@ fi
 TARGET_RELEASE="$DEPLOYMENT_ROOT/releases/$PACKAGE_VERSION"
 
 mkdir -p "$DEPLOYMENT_ROOT/bootstrap" "$DEPLOYMENT_ROOT/device" \
+    "$DEPLOYMENT_ROOT/releases" \
     "$DEPLOYMENT_ROOT/environments/$ENVIRONMENT/revisions" \
     "$DEPLOYMENT_ROOT/secrets" "$DEPLOYMENT_ROOT/state/shared" \
     "$DEPLOYMENT_ROOT/state/$ENVIRONMENT" "$DEPLOYMENT_ROOT/logs/$ENVIRONMENT" \
@@ -45,8 +46,16 @@ if [ -e "$TARGET_RELEASE" ]; then
     exit 1
 fi
 cp -a "$RELEASE_SOURCE" "$TARGET_RELEASE"
-cp "$SCRIPT_DIR/supervisor.mjs" "$DEPLOYMENT_ROOT/bootstrap/supervisor.mjs"
-chmod 500 "$DEPLOYMENT_ROOT/bootstrap/supervisor.mjs"
+SUPERVISOR_TARGET="$DEPLOYMENT_ROOT/bootstrap/supervisor.mjs"
+SUPERVISOR_TEMP="$SUPERVISOR_TARGET.$$.tmp"
+cp "$SCRIPT_DIR/supervisor.mjs" "$SUPERVISOR_TEMP"
+chmod 500 "$SUPERVISOR_TEMP"
+mv -f "$SUPERVISOR_TEMP" "$SUPERVISOR_TARGET"
+DAEMON_TARGET="$DEPLOYMENT_ROOT/bootstrap/node_daemon.sh"
+DAEMON_TEMP="$DAEMON_TARGET.$$.tmp"
+cp "$SCRIPT_DIR/../node_daemon.sh" "$DAEMON_TEMP"
+chmod 500 "$DAEMON_TEMP"
+mv -f "$DAEMON_TEMP" "$DAEMON_TARGET"
 cp "$CONFIG_SOURCE" "$DEPLOYMENT_ROOT/environments/$ENVIRONMENT/revisions/$REVISION.json"
 chmod 600 "$DEPLOYMENT_ROOT/environments/$ENVIRONMENT/revisions/$REVISION.json"
 if [ -n "$SECRETS_SOURCE" ]; then
@@ -93,4 +102,4 @@ fs.symlinkSync(releaseDirectory, link, "dir");
 NODE
 
 echo "Supervisor installed at $DEPLOYMENT_ROOT"
-echo "Legacy repository was not removed. Update the Magisk service entry to run mobile/node_daemon.sh."
+echo "Legacy repository was not removed. Update the Magisk service entry to run $DEPLOYMENT_ROOT/bootstrap/node_daemon.sh."
