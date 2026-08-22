@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { parseNetworkRoutingPolicy } from "./network-routing.js";
 
 /** 手机本地可信脚本定义。 */
 export interface RegisteredTaskScript {
@@ -77,6 +78,20 @@ const REGISTRY: readonly RegisteredTaskScript[] = [
     defaultTimeoutMs: 60_000,
     maxTimeoutMs: 150_000,
   },
+  {
+    scriptId: "device.network.routing.apply",
+    kind: "client",
+    version: 1,
+    defaultTimeoutMs: 120_000,
+    maxTimeoutMs: 300_000,
+  },
+  {
+    scriptId: "device.network.routing.disable",
+    kind: "client",
+    version: 1,
+    defaultTimeoutMs: 60_000,
+    maxTimeoutMs: 120_000,
+  },
 ];
 
 /** 获取全部本地可信脚本的只读元数据。 */
@@ -105,6 +120,21 @@ export function validateRegisteredTaskParams(
   params: Record<string, unknown>,
   taskTimeoutMs?: number,
 ): string | null {
+  if (scriptId === "device.network.routing.apply") {
+    try {
+      parseNetworkRoutingPolicy(params);
+      return null;
+    } catch (error) {
+      return error instanceof Error
+        ? error.message
+        : "Invalid network routing policy";
+    }
+  }
+  if (scriptId === "device.network.routing.disable") {
+    return Number.isInteger(params.generation) && Number(params.generation) >= 1
+      ? null
+      : "generation must be a positive integer";
+  }
   if (scriptId !== "device.network.switch") return null;
   const target = String(
     params.target ?? params.network ?? "wifi",

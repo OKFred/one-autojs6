@@ -24,6 +24,9 @@ import {
   proxyFile,
   downloadFile,
   switchNetwork,
+  applyNetworkRouting,
+  disableNetworkRouting,
+  getNetworkRouting,
   createClientDeployment,
   getClientDeployment,
   rollbackClientDeployment,
@@ -112,6 +115,11 @@ app.post("/api/files/download", downloadFile);
 
 // 手机网络切换 (wifi, ethernet, carrier)
 app.post("/api/network/switch", switchNetwork);
+
+// 持久网络分流只代理 Node Server，不提供直连 MQTT 回退。
+app.post("/api/network-routing/get", getNetworkRouting);
+app.post("/api/network-routing/apply", applyNetworkRouting);
+app.post("/api/network-routing/disable", disableNetworkRouting);
 
 // PC 代理拉取 SMB 等资源
 app.get("/api/proxy", proxyFile);

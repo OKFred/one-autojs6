@@ -46,6 +46,32 @@ export interface ClientDeployment {
   finishedAtUtc: number | null;
 }
 
+export interface NetworkRoutingView {
+  id: number;
+  clientId: string;
+  policyRevision: number;
+  generation: number;
+  lanCidrs: string[];
+  lanProbeUrls: string[];
+  internetProbeUrl: string;
+  probeTimeoutMs: number;
+  desiredTarget: "wifi" | "carrier" | null;
+  actualTarget: "wifi" | "carrier" | null;
+  state: string;
+  lastTaskId: string | null;
+  lastErrorCode: string | null;
+  lastResult: Record<string, unknown> | null;
+  lastVerifiedTimeUtc: number | null;
+}
+
+export interface NetworkRoutingTask {
+  taskId: string;
+  status: "PENDING";
+  generation: number;
+  traceId: string;
+  expiresAtUtc: number;
+}
+
 /** Node Server 返回的任务创建结果。 */
 export interface DispatchedTask {
   taskId: string;
@@ -508,6 +534,40 @@ export class NodeServerService {
     return this.request<ClientDeployment>(
       "/admin/mobile/client-deployment/rollback",
       { ...deployment, forceConfirmed: confirmForce === true },
+    );
+  }
+
+  /** 查询 Node Server 持有的每设备网络分流配置。 */
+  public getNetworkRouting(clientId: string): Promise<NetworkRoutingView> {
+    return this.request<NetworkRoutingView>(
+      "/admin/mobile/network-routing/get",
+      {
+        clientId: this.resolveTargetClientId(clientId),
+      },
+    );
+  }
+
+  /** 仅通过 Node Server 控制面应用持久网络分流。 */
+  public applyNetworkRouting(input: {
+    clientId: string;
+    internetTarget: "wifi" | "carrier";
+  }): Promise<NetworkRoutingTask> {
+    return this.request<NetworkRoutingTask>(
+      "/admin/mobile/network-routing/apply",
+      {
+        clientId: this.resolveTargetClientId(input.clientId),
+        internetTarget: input.internetTarget,
+      },
+    );
+  }
+
+  /** 仅通过 Node Server 控制面停用持久网络分流。 */
+  public disableNetworkRouting(clientId: string): Promise<NetworkRoutingTask> {
+    return this.request<NetworkRoutingTask>(
+      "/admin/mobile/network-routing/disable",
+      {
+        clientId: this.resolveTargetClientId(clientId),
+      },
     );
   }
 }

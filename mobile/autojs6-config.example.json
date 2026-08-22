@@ -19,7 +19,9 @@
       "app.update.zip",
       "file.download",
       "tiktok.post",
-      "device.network.switch"
+      "device.network.switch",
+      "device.network.routing.apply",
+      "device.network.routing.disable"
     ],
     "maxParamsBytes": 65536
   },

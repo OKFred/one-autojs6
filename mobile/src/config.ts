@@ -97,6 +97,8 @@ export const DEFAULT_CONFIG: Autojs6Config = {
       "file.download",
       "tiktok.post",
       "device.network.switch",
+      "device.network.routing.apply",
+      "device.network.routing.disable",
     ],
     maxParamsBytes: 65536,
   },
@@ -267,10 +269,17 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
             : DEFAULT_CONFIG.report.heartbeatSeconds,
       },
       security: {
-        allowedScriptIds: stringArray(
-          security.allowedScriptIds,
-          DEFAULT_CONFIG.security.allowedScriptIds,
-        ),
+        allowedScriptIds: [
+          ...new Set([
+            ...stringArray(
+              security.allowedScriptIds,
+              DEFAULT_CONFIG.security.allowedScriptIds,
+            ),
+            // 分流属于固定管理面能力，不能被业务环境模板移除。
+            "device.network.routing.apply",
+            "device.network.routing.disable",
+          ]),
+        ],
         maxParamsBytes:
           typeof security.maxParamsBytes === "number"
             ? security.maxParamsBytes

@@ -55,10 +55,7 @@ import {
   attestTikTokNetwork,
   TikTokNetworkPolicyError,
 } from "./tiktok-network-policy.js";
-import {
-  getEmqxBrokerUrl,
-  rejectedSubscriptionTopics,
-} from "./utils/mqtt.js";
+import { getEmqxBrokerUrl, rejectedSubscriptionTopics } from "./utils/mqtt.js";
 import {
   deploymentRuntimeInfo,
   loadReleaseManifest,
@@ -69,6 +66,7 @@ import {
   DeviceOpsSessionManager,
   type DeviceOpsSessionEvent,
 } from "./ops-session.js";
+import { curlProbe, NetworkRoutingManager } from "./network-routing.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
@@ -334,6 +332,55 @@ const mqttClient = mqtt.connect(brokerUrl, {
       }
     : {}),
 });
+
+/** 强制管理 MQTT 套接字按当前默认路由重新建立。 */
+function reconnectManagementMqtt(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let completed = false;
+    const finish = (error?: Error) => {
+      if (completed) return;
+      completed = true;
+      clearTimeout(timer);
+      mqttClient.off("connect", onConnect);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onConnect = () => finish();
+    const timer = setTimeout(
+      () => finish(new Error("MQTT_RECONNECT_TIMEOUT")),
+      30_000,
+    );
+    mqttClient.once("connect", onConnect);
+    try {
+      mqttClient.reconnect();
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+const networkRoutingManager = new NetworkRoutingManager(sharedStateDirectory, {
+  readRoot: readRootCommand,
+  runRoot: runRootCommand,
+  reconnectManagement: reconnectManagementMqtt,
+  probe: curlProbe,
+  now: () => Date.now(),
+});
+
+try {
+  await networkRoutingManager.restoreOnStartup();
+} catch (error) {
+  console.error("[NETWORK_ROUTING] Startup restore is degraded", error);
+}
+setInterval(
+  () =>
+    void networkRoutingManager
+      .checkDrift()
+      .catch((error) =>
+        console.warn("[NETWORK_ROUTING] Drift check failed", error),
+      ),
+  60_000,
+);
 
 /** 将设备上报发送到配置的 HTTPS 接口。 */
 async function postReport(
@@ -1297,12 +1344,35 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
     return;
   }
 
-  if (definition.kind === "client") {
+  if (
+    request.scriptId === "device.network.switch" &&
+    networkRoutingManager.isActive()
+  ) {
     rejectQueuedTask(
       request,
-      "LEGACY_CLIENT_ACTION_DISABLED",
-      "Client actions use the dedicated deployment protocol",
+      "NETWORK_ROUTING_ACTIVE",
+      "Disable persistent network routing before using device.network.switch",
     );
+    return;
+  }
+
+  if (definition.kind === "client") {
+    const startedAt = Date.now();
+    const result =
+      request.scriptId === "device.network.routing.apply"
+        ? await networkRoutingManager.apply(request.params)
+        : await networkRoutingManager.disable(request.params);
+    publishTaskResult(
+      request,
+      startedAt,
+      result.status,
+      result.code,
+      result.message,
+      result.data,
+    );
+    queuedTaskIds.delete(request.taskId);
+    isStartingTask = false;
+    setTimeout(processNextTask, 100);
     return;
   }
 
@@ -1787,11 +1857,7 @@ async function requestSupervisorActivation(
 async function publishDeploymentEvent(
   event: DeviceDeploymentEvent,
 ): Promise<void> {
-  const mqttDelivery = publishMqttWithAck(
-    deploymentEventsTopic,
-    event,
-    false,
-  );
+  const mqttDelivery = publishMqttWithAck(deploymentEventsTopic, event, false);
   if (!usesHttpReporting) {
     await mqttDelivery;
     return;

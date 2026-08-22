@@ -11,6 +11,11 @@ export { proxyFile } from "./proxyFile.js";
 export { downloadFile } from "./downloadFile.js";
 export { switchNetwork } from "./switchNetwork.js";
 export {
+  applyNetworkRouting,
+  disableNetworkRouting,
+  getNetworkRouting,
+} from "./networkRouting.js";
+export {
   createClientDeployment,
   getClientDeployment,
   rollbackClientDeployment,
