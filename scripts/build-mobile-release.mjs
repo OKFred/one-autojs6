@@ -102,6 +102,25 @@ function listArchiveEntries(directory, prefix = "") {
   return result.sort();
 }
 
+/**
+ * 拒绝含链接的最终归档，保证旧版安全校验器可以安装。
+ *
+ * @param {string} archivePath 待验证的归档路径。
+ * @returns {void}
+ */
+function assertArchiveHasNoLinks(archivePath) {
+  const verbose = execFileSync("tar", ["-tvzf", archivePath], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const linkedEntry = verbose
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("l") || line.startsWith("h"));
+  if (linkedEntry) {
+    throw new Error("Release archive must not contain symbolic or hard links");
+  }
+}
+
 runWorkspaceBinary(mobileRoot, "tsc", []);
 
 const temporaryRoot = fs.mkdtempSync(
@@ -129,6 +148,7 @@ try {
   } else {
     runPnpm(
       [
+        "--config.node-linker=hoisted",
         "--filter",
         "one-autojs6-mobile",
         "deploy",
@@ -333,6 +353,7 @@ try {
       { stdio: "inherit" },
     );
   }
+  assertArchiveHasNoLinks(archivePath);
   const archiveSha256 = sha256(archivePath);
   const metadata = {
     releaseVersion,

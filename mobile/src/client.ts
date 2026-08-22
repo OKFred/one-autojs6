@@ -335,8 +335,12 @@ const mqttClient = mqtt.connect(brokerUrl, {
 
 /** 将设备上报发送到配置的 HTTPS 接口。 */
 async function postReport(
-  kind: "presence" | "info" | "event",
-  payload: DevicePresencePayload | DeviceInfoPayload | DeviceEventPayload,
+  kind: "presence" | "info" | "event" | "deployment",
+  payload:
+    | DevicePresencePayload
+    | DeviceInfoPayload
+    | DeviceEventPayload
+    | DeviceDeploymentEvent,
 ): Promise<void> {
   if (!usesHttpReporting || !config.report.httpBaseUrl || !reportToken) return;
   const response = await fetch(`${config.report.httpBaseUrl}/report/${kind}`, {
@@ -1777,9 +1781,32 @@ async function requestSupervisorActivation(
   process.exit(98);
 }
 
-/** 发布部署事件并等待 Broker 确认。 */
-function publishDeploymentEvent(event: DeviceDeploymentEvent): Promise<void> {
-  return publishMqttWithAck(deploymentEventsTopic, event, false);
+/** 发布部署事件并等待当前运行时的可信接收通道确认。 */
+async function publishDeploymentEvent(
+  event: DeviceDeploymentEvent,
+): Promise<void> {
+  const mqttDelivery = publishMqttWithAck(
+    deploymentEventsTopic,
+    event,
+    false,
+  );
+  if (!usesHttpReporting) {
+    await mqttDelivery;
+    return;
+  }
+  const [mqttResult, httpResult] = await Promise.allSettled([
+    mqttDelivery,
+    postReport("deployment", event),
+  ]);
+  if (mqttResult.status === "rejected") {
+    console.warn(
+      "[DEPLOYMENT] MQTT event delivery failed; HTTPS remains authoritative",
+      mqttResult.reason,
+    );
+  }
+  if (httpResult.status === "rejected") {
+    throw httpResult.reason;
+  }
 }
 
 /** Publish a non-secret operations session lifecycle event. */

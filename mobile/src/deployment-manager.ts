@@ -133,6 +133,29 @@ function safeArchivePath(value: string): boolean {
   return normalized !== ".." && !normalized.startsWith("../");
 }
 
+/**
+ * 判断归档链接目标按链接所在目录解析后是否仍位于发布根目录内。
+ *
+ * @param entry 归档中的链接条目路径。
+ * @param target 归档声明的链接目标。
+ * @returns 链接最终目标位于发布根目录内时返回 true。
+ */
+export function isSafeArchiveSymlink(entry: string, target: string): boolean {
+  if (
+    !safeArchivePath(entry) ||
+    !target ||
+    path.posix.isAbsolute(target) ||
+    /[\0-\x1f]/.test(target)
+  ) {
+    return false;
+  }
+  const normalizedEntry = path.posix.normalize(entry.replace(/^\.\//, ""));
+  const resolvedTarget = path.posix.normalize(
+    path.posix.join(path.posix.dirname(normalizedEntry), target),
+  );
+  return safeArchivePath(resolvedTarget);
+}
+
 /** 在解包前校验归档条目和软链目标。 */
 async function validateArchive(archivePath: string): Promise<void> {
   const { stdout: names } = await execFileAsync("tar", ["-tzf", archivePath], {
@@ -163,9 +186,17 @@ async function validateArchive(archivePath: string): Promise<void> {
       maxBuffer: 32 * 1024 * 1024,
     },
   );
-  for (const rawLine of verbose.split("\n")) {
-    const line = rawLine.replace(/\r$/, "");
-    if (!line) continue;
+  const verboseLines = verbose
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter(Boolean);
+  if (verboseLines.length !== entries.length) {
+    throw new DeploymentFailure(
+      "ARCHIVE_INVALID",
+      "Release archive listing is inconsistent",
+    );
+  }
+  for (const [index, line] of verboseLines.entries()) {
     const type = line[0];
     if (type === "b" || type === "c" || type === "p") {
       throw new DeploymentFailure(
@@ -176,7 +207,11 @@ async function validateArchive(archivePath: string): Promise<void> {
     if (type === "l" || type === "h") {
       const separator = type === "l" ? " -> " : " link to ";
       const target = line.split(separator).at(-1) || "";
-      if (!safeArchivePath(target)) {
+      const safe =
+        type === "l"
+          ? isSafeArchiveSymlink(entries[index], target)
+          : safeArchivePath(target);
+      if (!safe) {
         throw new DeploymentFailure(
           "ARCHIVE_LINK_UNSAFE",
           "Release archive contains an unsafe link",

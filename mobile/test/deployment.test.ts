@@ -7,6 +7,7 @@ import path from "path";
 
 import {
   DeploymentManager,
+  isSafeArchiveSymlink,
   type PendingActivation,
 } from "../src/deployment-manager.js";
 import { parseDeviceDeploymentCommand } from "../src/deployment-protocol.js";
@@ -82,6 +83,22 @@ const temporaryRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), "one-autojs6-deployment-test-"),
 );
 try {
+  assert.equal(
+    isSafeArchiveSymlink(
+      "./node_modules/.pnpm/mqtt/node_modules/debug",
+      "../../debug/node_modules/debug",
+    ),
+    true,
+  );
+  assert.equal(
+    isSafeArchiveSymlink("./node_modules/mqtt", "../../../outside"),
+    false,
+  );
+  assert.equal(
+    isSafeArchiveSymlink("./node_modules/mqtt", "/system/bin/sh"),
+    false,
+  );
+
   const artifact = createArtifact(temporaryRoot);
   const deploymentRoot = path.join(temporaryRoot, "runtime");
   fs.mkdirSync(path.join(deploymentRoot, "secrets"), { recursive: true });
