@@ -1986,7 +1986,11 @@ async function reportDeploymentReady(): Promise<void> {
   });
 }
 
-mqttClient.on("connect", () => {
+let mqttConnectionHandled = false;
+
+function handleMqttConnect(): void {
+  if (mqttConnectionHandled) return;
+  mqttConnectionHandled = true;
   const managementTopics = [tasksTopic, deploymentCommandsTopic];
   if (config.ops.enabled) managementTopics.push(opsCommandsTopic);
   mqttClient.subscribe(
@@ -2022,7 +2026,14 @@ mqttClient.on("connect", () => {
       console.error("[DEVICE_INFO] Static collection failed safely", error),
     );
   void replayTaskResultOutbox();
+}
+
+mqttClient.on("connect", handleMqttConnect);
+mqttClient.on("close", () => {
+  mqttConnectionHandled = false;
 });
+// 持久路由恢复发生在事件处理器注册之前；补偿恢复期间已经建立的首个连接。
+if (mqttClient.connected) handleMqttConnect();
 
 mqttClient.on("message", (topic, payload) => {
   if (
