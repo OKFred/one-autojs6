@@ -344,6 +344,7 @@ try {
         "--owner=0",
         "--group=0",
         "--numeric-owner",
+        "--hard-dereference",
         "-czf",
         archivePath,
         "-C",
