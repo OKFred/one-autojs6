@@ -24,3 +24,19 @@ export function getEmqxBrokerUrl(): string {
 
   return `${EMQX_PROTOCOL}://${EMQX_USERNAME}:${EMQX_PASSWORD}@${EMQX_HOST}:${EMQX_PORT}`;
 }
+
+/** Return management topics rejected by an MQTT SUBACK packet. */
+export function rejectedSubscriptionTopics(
+  grants: ReadonlyArray<{
+    topic: string;
+    qos: number;
+    reasonCode?: number;
+  }>,
+): string[] {
+  return grants
+    .filter(
+      ({ qos, reasonCode }) =>
+        qos === 128 || (typeof reasonCode === "number" && reasonCode >= 0x80),
+    )
+    .map(({ topic }) => topic);
+}

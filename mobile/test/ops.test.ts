@@ -9,6 +9,7 @@ import {
   parseDeviceOpsOpenSessionCommand,
   parseDeviceOpsRequest,
 } from "../src/ops-protocol.js";
+import { rejectedSubscriptionTopics } from "../src/utils/mqtt.js";
 
 const now = Date.now();
 const openCommand = parseDeviceOpsOpenSessionCommand({
@@ -116,11 +117,22 @@ const capabilities = (await executor.execute(
 )) as { arbitraryShell: boolean; operations: string[] };
 assert.equal(capabilities.arbitraryShell, false);
 assert.equal(capabilities.operations.includes("device.shell.exec"), false);
+assert.deepEqual(
+  rejectedSubscriptionTopics([
+    { topic: "tasks", qos: 1 },
+    { topic: "deploy", qos: 128 },
+    { topic: "ops", qos: 1, reasonCode: 0 },
+    { topic: "events", qos: 1, reasonCode: 0x87 },
+  ]),
+  ["deploy", "events"],
+);
 
+const android13Commands: string[] = [];
 const android13Executor = new DeviceOpsExecutor({
   fileRoots: [{ id: "test-root", label: "Test", path: allowedRoot }],
   sharedStateDirectory: stateRoot,
   runRootCommand: async (command) => {
+    android13Commands.push(command);
     if (command === "dumpsys activity activities") {
       return "topResumedActivity=ActivityRecord{abc u0 com.example.app/.MainActivity} t42}";
     }
@@ -135,7 +147,7 @@ const android13Executor = new DeviceOpsExecutor({
     if (command === "ip -o addr show") return "1: lo inet 127.0.0.1/8";
     if (command === "ip route show") return "default via 192.168.1.1 dev wlan0";
     if (command === "getprop") return "";
-    if (command === "dumpsys wifi") {
+    if (command === "cmd wifi status") {
       return 'WifiInfo: SSID: "TEST", BSSID: 00:11:22:33:44:55, IP: /192.168.1.2';
     }
     return "";
@@ -161,6 +173,8 @@ assert.equal(network.activeTransport, "wifi");
 assert.equal(network.validated, true);
 assert.deepEqual(network.dnsServers, ["1.1.1.1", "2606:4700:4700::1111"]);
 assert.equal(network.wifiSsid, "TEST");
+assert.equal(android13Commands.includes("cmd wifi status"), true);
+assert.equal(android13Commands.includes("dumpsys wifi"), false);
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
 console.log("ops tests passed");

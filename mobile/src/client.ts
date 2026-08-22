@@ -55,7 +55,10 @@ import {
   attestTikTokNetwork,
   TikTokNetworkPolicyError,
 } from "./tiktok-network-policy.js";
-import { getEmqxBrokerUrl } from "./utils/mqtt.js";
+import {
+  getEmqxBrokerUrl,
+  rejectedSubscriptionTopics,
+} from "./utils/mqtt.js";
 import {
   deploymentRuntimeInfo,
   loadReleaseManifest,
@@ -1891,13 +1894,23 @@ async function reportDeploymentReady(): Promise<void> {
 mqttClient.on("connect", () => {
   const managementTopics = [tasksTopic, deploymentCommandsTopic];
   if (config.ops.enabled) managementTopics.push(opsCommandsTopic);
-  mqttClient.subscribe(managementTopics, { qos: config.mqtt.qos }, (error) => {
-    if (error) {
-      console.error(
-        `[MQTT] Management subscription failed device=${deviceLogId}`,
-        error,
-      );
-    } else {
+  mqttClient.subscribe(
+    managementTopics,
+    { qos: config.mqtt.qos },
+    (error, granted = []) => {
+      const rejectedTopics = rejectedSubscriptionTopics(granted);
+      if (error || rejectedTopics.length > 0) {
+        const subscriptionError =
+          error ||
+          new Error(
+            `Broker rejected management topics: ${rejectedTopics.join(", ")}`,
+          );
+        console.error(
+          `[MQTT] Management subscription failed device=${deviceLogId}`,
+          subscriptionError,
+        );
+        return;
+      }
       console.log(
         `[MQTT] Task, deployment and operations subscriptions ready device=${deviceLogId}`,
       );
@@ -1905,8 +1918,8 @@ mqttClient.on("connect", () => {
       void reportDeploymentReady().catch((readyError) =>
         console.error("[DEPLOYMENT] Health report failed", readyError),
       );
-    }
-  });
+    },
+  );
   publishReport("presence", presenceTopic, presence("ONLINE"), true);
   void deviceInfoPromise
     .then((info) => publishReport("info", infoTopic, info, true))

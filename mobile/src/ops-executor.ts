@@ -439,7 +439,7 @@ export class DeviceOpsExecutor {
         this.runRootCommand("ip -o addr show"),
         this.runRootCommand("ip route show"),
         this.runRootCommand("getprop"),
-        this.runRootCommand("dumpsys wifi"),
+        this.runRootCommand("cmd wifi status"),
       ]);
       const activeNetwork = findActiveNetworkLine(connectivity);
       const transport =
