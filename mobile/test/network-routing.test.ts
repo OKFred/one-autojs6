@@ -285,6 +285,7 @@ try {
     attempted: true,
     succeeded: true,
   });
+  assert.equal(rollback.data.failureStage, "POSTCHECK_PROBES");
   assert.equal(rollbackContext.mutations.length, 2);
   assert.match(rollbackContext.mutations[1], /ndc network default set 109/);
   assert.equal(rollbackManager.isActive(), false);
@@ -299,6 +300,7 @@ try {
   );
   const exitMismatch = await exitMismatchManager.apply({ ...policy });
   assert.equal(exitMismatch.code, "NETWORK_ROUTING_ROLLED_BACK");
+  assert.equal(exitMismatch.data.failureStage, "VERIFY_EXIT_IDENTITY");
   assert.equal(exitMismatchContext.mutations.length, 2);
 
   const rollbackFailureRoot = path.join(temporaryRoot, "rollback-failure");

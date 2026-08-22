@@ -34,6 +34,12 @@ export interface NetworkRoutingResult {
     carrierInterface?: string;
     probes?: { lan: boolean; internet: boolean };
     rollback?: { attempted: boolean; succeeded: boolean };
+    failureStage?:
+      | "APPLY_RULES"
+      | "RECONNECT_MANAGEMENT"
+      | "ASSERT_RULES"
+      | "POSTCHECK_PROBES"
+      | "VERIFY_EXIT_IDENTITY";
   };
 }
 
@@ -919,16 +925,23 @@ export class NetworkRoutingManager {
       return this.failure(error, policy.generation, false);
     }
 
+    let failureStage: NonNullable<
+      NetworkRoutingResult["data"]["failureStage"]
+    > = "APPLY_RULES";
     try {
       await this.dependencies.runRoot(this.buildApplyCommand(policy, snapshot));
+      failureStage = "RECONNECT_MANAGEMENT";
       await this.dependencies.reconnectManagement();
       const postSnapshot = await this.inspect();
+      failureStage = "ASSERT_RULES";
       this.assertAppliedPolicy(policy, postSnapshot);
+      failureStage = "POSTCHECK_PROBES";
       const actualPublicIpv4 = await this.runProbes(
         policy,
         postSnapshot,
         false,
       );
+      failureStage = "VERIFY_EXIT_IDENTITY";
       if (actualPublicIpv4 !== targetPublicIpv4) {
         throw new NetworkRoutingError(
           "NETWORK_ROUTING_POSTCHECK_FAILED",
@@ -1000,6 +1013,7 @@ export class NetworkRoutingManager {
           target: policy.internetTarget,
           probes: { lan: false, internet: false },
           rollback: { attempted: true, succeeded: rollbackSucceeded },
+          failureStage,
         },
       };
     }
