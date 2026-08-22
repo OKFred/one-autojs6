@@ -76,7 +76,7 @@ export interface NetworkRoutingDependencies {
     interfaceName?: string;
     timeoutMs: number;
     expectPublicIpv4: boolean;
-  }): Promise<void>;
+  }): Promise<string | void>;
   now(): number;
 }
 
@@ -437,8 +437,8 @@ export function buildCurlProbeInvocation(input: CurlProbeInput): {
   return { file: "su", args: ["-c", command] };
 }
 
-/** 使用 Termux curl 执行有界探针，不返回正文。 */
-export function curlProbe(input: CurlProbeInput): Promise<void> {
+/** 使用 Termux curl 执行有界探针；公网地址只在内存中用于出口一致性校验。 */
+export function curlProbe(input: CurlProbeInput): Promise<string | void> {
   const invocation = buildCurlProbeInvocation(input);
   return new Promise((resolve, reject) => {
     execFile(
@@ -474,7 +474,7 @@ export function curlProbe(input: CurlProbeInput): Promise<void> {
         } else if (status < 200 || status >= 400) {
           return reject(new Error("LAN probe returned an unexpected status"));
         }
-        resolve();
+        resolve(input.expectPublicIpv4 ? body : undefined);
       },
     );
   });
@@ -485,6 +485,7 @@ export class NetworkRoutingManager {
   private readonly directory: string;
   private readonly statePath: string;
   private state: PersistedRoutingState;
+  private operationTail: Promise<void> = Promise.resolve();
 
   constructor(
     sharedStateDirectory: string,
@@ -501,6 +502,20 @@ export class NetworkRoutingManager {
 
   currentGeneration(): number {
     return this.state.generation;
+  }
+
+  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.operationTail;
+    let release: () => void = () => undefined;
+    this.operationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private loadState(): PersistedRoutingState {
@@ -624,7 +639,7 @@ export class NetworkRoutingManager {
     policy: NetworkRoutingPolicy,
     snapshot: NetworkSnapshot,
     bound: boolean,
-  ): Promise<void> {
+  ): Promise<string> {
     for (const url of policy.lanProbeUrls) {
       try {
         await this.dependencies.probe({
@@ -640,16 +655,72 @@ export class NetworkRoutingManager {
     const target =
       policy.internetTarget === "wifi" ? snapshot.wifi : snapshot.carrier;
     try {
-      await this.dependencies.probe({
+      const publicIpv4 = await this.dependencies.probe({
         url: policy.internetProbeUrl,
         interfaceName: bound ? target.interfaceName : undefined,
         timeoutMs: policy.probeTimeoutMs,
         expectPublicIpv4: true,
       });
+      if (typeof publicIpv4 !== "string" || net.isIP(publicIpv4) !== 4) {
+        throw new Error("Internet probe did not return an exit identity");
+      }
+      return publicIpv4;
     } catch {
       throw new NetworkRoutingError(
         bound ? "INTERNET_PREFLIGHT_FAILED" : "INTERNET_POSTCHECK_FAILED",
         "Internet probe failed",
+      );
+    }
+  }
+
+  private assertAppliedPolicy(
+    policy: NetworkRoutingPolicy,
+    snapshot: NetworkSnapshot,
+  ): void {
+    const target =
+      policy.internetTarget === "wifi" ? snapshot.wifi : snapshot.carrier;
+    const escape = (value: string) =>
+      value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hasRule = (rules: string, priority: number, expression: string) =>
+      new RegExp(`^${priority}:.*${expression}`, "m").test(rules);
+    const boundNetworks = [snapshot.wifi, snapshot.carrier];
+    const boundRulesValid = boundNetworks.every((network, index) =>
+      hasRule(
+        snapshot.ipv4Rules,
+        BOUND_INTERFACE_RULE_START + index,
+        `oif\\s+${escape(network.interfaceName)}.*lookup\\s+${escape(String(network.ipv4Table))}\\b`,
+      ),
+    );
+    const lanRulesValid = policy.lanCidrs.every((cidr, index) =>
+      hasRule(
+        snapshot.ipv4Rules,
+        IPV4_LAN_RULE_START + index,
+        `to\\s+${escape(cidr)}\\b.*lookup\\s+${escape(String(snapshot.wifi.ipv4Table))}\\b`,
+      ),
+    );
+    const ipv4DefaultValid = hasRule(
+      snapshot.ipv4Rules,
+      IPV4_DEFAULT_RULE,
+      `lookup\\s+${escape(String(target.ipv4Table))}\\b`,
+    );
+    const expectedIpv6Table =
+      target.ipv6Table && target.ipv6Default
+        ? target.ipv6Table
+        : String(IPV6_BLOCK_TABLE);
+    const ipv6DefaultValid = hasRule(
+      snapshot.ipv6Rules,
+      IPV6_DEFAULT_RULE,
+      `lookup\\s+${escape(expectedIpv6Table)}\\b`,
+    );
+    if (
+      !boundRulesValid ||
+      !lanRulesValid ||
+      !ipv4DefaultValid ||
+      !ipv6DefaultValid
+    ) {
+      throw new NetworkRoutingError(
+        "NETWORK_ROUTING_POSTCHECK_FAILED",
+        "Applied routing rules do not match the requested target",
       );
     }
   }
@@ -726,6 +797,12 @@ export class NetworkRoutingManager {
   }
 
   async apply(raw: Record<string, unknown>): Promise<NetworkRoutingResult> {
+    return this.runExclusive(() => this.applyExclusive(raw));
+  }
+
+  private async applyExclusive(
+    raw: Record<string, unknown>,
+  ): Promise<NetworkRoutingResult> {
     let policy: NetworkRoutingPolicy;
     try {
       policy = parseNetworkRoutingPolicy(raw);
@@ -757,13 +834,14 @@ export class NetworkRoutingManager {
 
     const previous = this.state;
     let snapshot: NetworkSnapshot;
+    let targetPublicIpv4: string;
     try {
       snapshot = await this.inspect();
       await this.assertPrerequisites(
         snapshot,
         policy.internetTarget === "carrier",
       );
-      await this.runProbes(policy, snapshot, true);
+      targetPublicIpv4 = await this.runProbes(policy, snapshot, true);
     } catch (error) {
       return this.failure(error, policy.generation, false);
     }
@@ -772,7 +850,18 @@ export class NetworkRoutingManager {
       await this.dependencies.runRoot(this.buildApplyCommand(policy, snapshot));
       await this.dependencies.reconnectManagement();
       const postSnapshot = await this.inspect();
-      await this.runProbes(policy, postSnapshot, false);
+      this.assertAppliedPolicy(policy, postSnapshot);
+      const actualPublicIpv4 = await this.runProbes(
+        policy,
+        postSnapshot,
+        false,
+      );
+      if (actualPublicIpv4 !== targetPublicIpv4) {
+        throw new NetworkRoutingError(
+          "NETWORK_ROUTING_POSTCHECK_FAILED",
+          "Unbound Internet traffic did not use the requested target",
+        );
+      }
       this.saveState({
         formatVersion: 1,
         active: true,
@@ -844,6 +933,12 @@ export class NetworkRoutingManager {
   }
 
   async disable(raw: Record<string, unknown>): Promise<NetworkRoutingResult> {
+    return this.runExclusive(() => this.disableExclusive(raw));
+  }
+
+  private async disableExclusive(
+    raw: Record<string, unknown>,
+  ): Promise<NetworkRoutingResult> {
     const generation = Number(raw.generation);
     if (!Number.isInteger(generation) || generation < 1) {
       return this.failure(
@@ -905,6 +1000,10 @@ export class NetworkRoutingManager {
   }
 
   async restoreOnStartup(): Promise<void> {
+    return this.runExclusive(() => this.restoreOnStartupExclusive());
+  }
+
+  private async restoreOnStartupExclusive(): Promise<void> {
     if (!this.state.active || !this.state.policy) return;
     try {
       const snapshot = await this.inspect();
@@ -915,6 +1014,7 @@ export class NetworkRoutingManager {
       await this.dependencies.runRoot(
         this.buildApplyCommand(this.state.policy, snapshot),
       );
+      this.assertAppliedPolicy(this.state.policy, await this.inspect());
       this.saveState({
         ...this.state,
         status: "ACTIVE",
@@ -930,42 +1030,47 @@ export class NetworkRoutingManager {
   }
 
   async checkDrift(): Promise<void> {
+    return this.runExclusive(() => this.checkDriftExclusive());
+  }
+
+  private async checkDriftExclusive(): Promise<void> {
     if (!this.state.active || !this.state.policy) return;
     try {
-      const snapshot = await this.inspect();
+      let snapshot = await this.inspect();
       await this.assertPrerequisites(
         snapshot,
         this.state.policy.internetTarget === "carrier",
       );
-      const target =
-        this.state.policy.internetTarget === "wifi"
-          ? snapshot.wifi
-          : snapshot.carrier;
-      const expectedDefaultRule = new RegExp(
-        `^${IPV4_DEFAULT_RULE}:.*lookup\\s+${String(target.ipv4Table).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-        "m",
-      );
-      const expectedLanRules = this.state.policy.lanCidrs.every((cidr) =>
-        snapshot.ipv4Rules.includes(`to ${cidr}`),
-      );
-      const expectedBoundRules = [snapshot.wifi, snapshot.carrier].every(
-        (network) =>
-          snapshot.ipv4Rules.includes(`oif ${network.interfaceName}`) &&
-          snapshot.ipv4Rules.includes(`lookup ${network.ipv4Table}`),
-      );
-      const expectedIpv6 = snapshot.ipv6Rules.includes(`${IPV6_DEFAULT_RULE}:`);
-      if (
-        !expectedDefaultRule.test(snapshot.ipv4Rules) ||
-        !expectedLanRules ||
-        !expectedBoundRules ||
-        !expectedIpv6
-      ) {
+      let applied = true;
+      try {
+        this.assertAppliedPolicy(this.state.policy, snapshot);
+      } catch {
+        applied = false;
+      }
+      if (!applied) {
         await this.dependencies.runRoot(
           this.buildApplyCommand(this.state.policy, snapshot),
         );
         await this.dependencies.reconnectManagement();
+        snapshot = await this.inspect();
+        this.assertAppliedPolicy(this.state.policy, snapshot);
       }
-      await this.runProbes(this.state.policy, snapshot, false);
+      const targetPublicIpv4 = await this.runProbes(
+        this.state.policy,
+        snapshot,
+        true,
+      );
+      const actualPublicIpv4 = await this.runProbes(
+        this.state.policy,
+        snapshot,
+        false,
+      );
+      if (actualPublicIpv4 !== targetPublicIpv4) {
+        throw new NetworkRoutingError(
+          "NETWORK_ROUTING_POSTCHECK_FAILED",
+          "Unbound Internet traffic did not use the requested target",
+        );
+      }
       if (this.state.status !== "ACTIVE")
         this.saveState({
           ...this.state,

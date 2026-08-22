@@ -102,11 +102,12 @@ async function probe(input: {
     ) {
       throw new Error("Internet probe did not return a public IPv4");
     }
-    return;
+    return body;
   }
   if (status < 200 || status >= 400) {
     throw new Error("LAN probe returned an unexpected status");
   }
+  return undefined;
 }
 
 function publicExit(interfaceName?: string): string {

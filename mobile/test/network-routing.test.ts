@@ -93,11 +93,16 @@ function createDependencies(
     failPostcheck?: boolean;
     failRollback?: boolean;
     missingManagedRules?: boolean;
+    mismatchPostcheck?: boolean;
+    reconnectDelayMs?: number;
   } = {},
 ) {
   const mutations: string[] = [];
   let probes = 0;
   let reconnects = 0;
+  let currentDefaultNetId = 109;
+  let currentTargetTable = "wlan0";
+  let managedRulesActive = !options.missingManagedRules;
   return {
     mutations,
     get probes() {
@@ -108,16 +113,20 @@ function createDependencies(
     },
     dependencies: {
       readRoot: async (command: string) => {
-        if (command === "dumpsys connectivity") return connectivity;
+        if (command === "dumpsys connectivity")
+          return connectivity.replace(
+            "Active default network: 109",
+            `Active default network: ${currentDefaultNetId}`,
+          );
         if (command === "ip -4 route show table all") return route4;
         if (command === "ip -6 route show table all") return route6;
         if (command === "ip -4 rule show") {
-          if (options.missingManagedRules) return "";
-          return "10400: from all oif wlan0 lookup wlan0\n10401: from all oif rmnet_data2 lookup rmnet_data2\n10500: from all to 192.168.0.0/16 lookup wlan0\n10600: from all lookup rmnet_data2\n";
+          if (!managedRulesActive) return "";
+          return `10400: from all oif wlan0 lookup wlan0\n10401: from all oif rmnet_data2 lookup rmnet_data2\n10500: from all to 192.168.0.0/16 lookup wlan0\n10600: from all lookup ${currentTargetTable}\n`;
         }
         if (command === "ip -6 rule show") {
-          if (options.missingManagedRules) return "";
-          return "10600: from all lookup 16661\n";
+          if (!managedRulesActive) return "";
+          return `10600: from all lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
         }
         if (command.includes("mobile_data_always_on")) return "1\n";
         if (command.includes("mobile_data")) return "1\n";
@@ -130,15 +139,37 @@ function createDependencies(
         if (options.failRollback && mutations.length === 2) {
           throw new Error("rollback failed");
         }
+        const defaultSet = [
+          ...command.matchAll(/ndc network default set (\d+)/g),
+        ].at(-1);
+        if (defaultSet) {
+          currentDefaultNetId = Number(defaultSet[1]);
+          currentTargetTable =
+            currentDefaultNetId === 108 ? "rmnet_data2" : "wlan0";
+        }
+        managedRulesActive = command.includes(" rule add priority ");
       },
       reconnectManagement: async () => {
         reconnects += 1;
+        if (options.reconnectDelayMs) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, options.reconnectDelayMs),
+          );
+        }
       },
-      probe: async () => {
+      probe: async (input: { expectPublicIpv4: boolean }) => {
         probes += 1;
         if (options.failPreflight && probes === 1) throw new Error("offline");
         if (options.failPostcheck && probes === 4)
           throw new Error("offline after switch");
+        if (
+          options.mismatchPostcheck &&
+          !input.interfaceName &&
+          input.expectPublicIpv4
+        ) {
+          return "203.0.113.2";
+        }
+        return input.expectPublicIpv4 ? "203.0.113.1" : undefined;
       },
       now: () => 1_700_000_000_000,
     },
@@ -194,6 +225,22 @@ try {
   );
   await restored.restoreOnStartup();
   assert.equal(restoredContext.mutations.length, 1);
+
+  const serializedRoot = path.join(temporaryRoot, "serialized");
+  const serializedContext = createDependencies({ reconnectDelayMs: 30 });
+  const serializedManager = new NetworkRoutingManager(
+    serializedRoot,
+    serializedContext.dependencies,
+  );
+  const wifiPolicy = { ...policy, internetTarget: "wifi" as const };
+  assert.equal((await serializedManager.apply(wifiPolicy)).status, "SUCCESS");
+  const carrierApply = serializedManager.apply({ ...policy, generation: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const concurrentDrift = serializedManager.checkDrift();
+  assert.equal((await carrierApply).status, "SUCCESS");
+  await concurrentDrift;
+  assert.equal(serializedContext.mutations.length, 2);
+
   const disabled = await restored.disable({ generation: 2 });
   assert.equal(disabled.code, "NETWORK_ROUTING_DISABLED");
   assert.equal(restored.isActive(), false);
@@ -223,6 +270,18 @@ try {
   assert.equal(rollbackContext.mutations.length, 2);
   assert.match(rollbackContext.mutations[1], /ndc network default set 109/);
   assert.equal(rollbackManager.isActive(), false);
+
+  const exitMismatchRoot = path.join(temporaryRoot, "exit-mismatch");
+  const exitMismatchContext = createDependencies({
+    mismatchPostcheck: true,
+  });
+  const exitMismatchManager = new NetworkRoutingManager(
+    exitMismatchRoot,
+    exitMismatchContext.dependencies,
+  );
+  const exitMismatch = await exitMismatchManager.apply({ ...policy });
+  assert.equal(exitMismatch.code, "NETWORK_ROUTING_ROLLED_BACK");
+  assert.equal(exitMismatchContext.mutations.length, 2);
 
   const rollbackFailureRoot = path.join(temporaryRoot, "rollback-failure");
   const rollbackFailureContext = createDependencies({
