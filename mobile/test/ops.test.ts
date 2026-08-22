@@ -117,5 +117,46 @@ const capabilities = (await executor.execute(
 assert.equal(capabilities.arbitraryShell, false);
 assert.equal(capabilities.operations.includes("device.shell.exec"), false);
 
+const android13Executor = new DeviceOpsExecutor({
+  fileRoots: [{ id: "test-root", label: "Test", path: allowedRoot }],
+  sharedStateDirectory: stateRoot,
+  runRootCommand: async (command) => {
+    if (command === "dumpsys activity activities") {
+      return "topResumedActivity=ActivityRecord{abc u0 com.example.app/.MainActivity} t42}";
+    }
+    if (command === "dumpsys window windows") return "mTopFocusedDisplayId=0";
+    if (command === "dumpsys connectivity") {
+      return "NetworkAgentInfo{network{100} ni{WIFI CONNECTED} lp{{DnsAddresses: [ /1.1.1.1,/2606:4700:4700::1111 ]}} nc{[ Transports: WIFI Capabilities: INTERNET&VALIDATED]}}";
+    }
+    if (command === "ip -o addr show") return "1: lo inet 127.0.0.1/8";
+    if (command === "ip route show") return "default via 192.168.1.1 dev wlan0";
+    if (command === "getprop") return "";
+    if (command === "dumpsys wifi") {
+      return 'WifiInfo: SSID: "TEST", BSSID: 00:11:22:33:44:55, IP: /192.168.1.2';
+    }
+    return "";
+  },
+  now: () => now,
+});
+const foreground = (await android13Executor.execute(
+  "device.foreground.get",
+  {},
+)) as { packageName: string; activityClass: string };
+assert.equal(foreground.packageName, "com.example.app");
+assert.equal(foreground.activityClass, ".MainActivity");
+const network = (await android13Executor.execute(
+  "device.network.get",
+  {},
+)) as {
+  activeTransport: string;
+  validated: boolean;
+  dnsServers: string[];
+  wifiSsid: string;
+};
+assert.equal(network.activeTransport, "wifi");
+assert.equal(network.validated, true);
+assert.deepEqual(network.dnsServers, ["1.1.1.1", "2606:4700:4700::1111"]);
+assert.equal(network.wifiSsid, "TEST");
+
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
 console.log("ops tests passed");

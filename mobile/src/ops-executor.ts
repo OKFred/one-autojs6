@@ -387,9 +387,13 @@ export class DeviceOpsExecutor {
         this.runRootCommand("dumpsys activity activities"),
         this.runRootCommand("dumpsys window windows"),
       ]);
-      const resumed = /mResumedActivity:.*?\s([A-Za-z0-9._]+)\/([^\s}]+)/.exec(
-        activity,
-      );
+      const resumed =
+        /(?:topResumedActivity=|ResumedActivity:\s+)ActivityRecord\{[^}]*\su\d+\s+([A-Za-z0-9._]+)\/([^\s}]+)/.exec(
+          activity,
+        ) ||
+        /mResumedActivity:.*?\s([A-Za-z0-9._]+)\/([^\s}]+)/.exec(
+          activity,
+        );
       const focused = /mCurrentFocus=.*?\s([A-Za-z0-9._]+)\/([^\s}]+)/.exec(
         windows,
       );
@@ -409,20 +413,47 @@ export class DeviceOpsExecutor {
         this.runRootCommand("getprop"),
         this.runRootCommand("dumpsys wifi"),
       ]);
+      const activeNetwork = connectivity
+        .split("\n")
+        .find((line) =>
+          /NetworkAgentInfo.*ni\{(?:WIFI|MOBILE|ETHERNET|VPN)[^}]*CONNECTED/.test(
+            line,
+          ),
+        );
+      const transport =
+        /ni\{(WIFI|MOBILE|ETHERNET|VPN)[^}]*CONNECTED/.exec(
+          activeNetwork || "",
+        )?.[1] ||
+        /TRANSPORT_(WIFI|CELLULAR|ETHERNET|VPN)/.exec(connectivity)?.[1];
+      const dnsAddresses = /DnsAddresses:\s*\[([^\]]*)\]/.exec(
+        activeNetwork || "",
+      )?.[1];
+      const dnsServers = dnsAddresses
+        ? dnsAddresses
+            .split(",")
+            .map((value) => value.trim().replace(/^\//, ""))
+            .filter(Boolean)
+        : [
+            ...dns.matchAll(/\[net\.dns\d+\]: \[([^\]]+)\]/g),
+          ].map((match) => match[1]);
+      const wifiSsid = /(?:mWifiInfo|WifiInfo):?.*?SSID:\s*([^,\n]+)/.exec(
+        wifi,
+      )?.[1];
+      const wifiBssid = /(?:mWifiInfo|WifiInfo):?.*?BSSID:\s*([^,\n]+)/.exec(
+        wifi,
+      )?.[1];
       return {
         activeTransport:
-          /TRANSPORT_(WIFI|CELLULAR|ETHERNET|VPN)/
-            .exec(connectivity)?.[1]
-            ?.toLowerCase() || "unknown",
-        validated: /VALIDATED/.test(connectivity),
-        vpn: /TRANSPORT_VPN/.test(connectivity),
+          transport === "MOBILE"
+            ? "cellular"
+            : transport?.toLowerCase() || "unknown",
+        validated: /VALIDATED/.test(activeNetwork || ""),
+        vpn: transport === "VPN",
         interfaces: addresses.split("\n").filter(Boolean).slice(0, 100),
         routes: routes.split("\n").filter(Boolean).slice(0, 100),
-        dnsServers: [...dns.matchAll(/\[net\.dns\d+\]: \[([^\]]+)\]/g)].map(
-          (match) => match[1],
-        ),
-        wifiSsid: /mWifiInfo.*?SSID:\s*([^,\n]+)/.exec(wifi)?.[1] || null,
-        wifiBssid: /mWifiInfo.*?BSSID:\s*([^,\n]+)/.exec(wifi)?.[1] || null,
+        dnsServers,
+        wifiSsid: wifiSsid?.replace(/^"|"$/g, "") || null,
+        wifiBssid: wifiBssid?.replace(/^"|"$/g, "") || null,
       };
     }
     throw new DeviceOpsFailure(
