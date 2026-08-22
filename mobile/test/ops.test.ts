@@ -126,7 +126,11 @@ const android13Executor = new DeviceOpsExecutor({
     }
     if (command === "dumpsys window windows") return "mTopFocusedDisplayId=0";
     if (command === "dumpsys connectivity") {
-      return "NetworkAgentInfo{network{100} ni{WIFI CONNECTED} lp{{DnsAddresses: [ /1.1.1.1,/2606:4700:4700::1111 ]}} nc{[ Transports: WIFI Capabilities: INTERNET&VALIDATED]}}";
+      return [
+        "Active default network: 103",
+        "  NetworkAgentInfo{network{102} ni{MOBILE[LTE] CONNECTED} lp{{DnsAddresses: [ /8.8.8.8 ]}} nc{[ Transports: CELLULAR Capabilities: INTERNET]}}",
+        "  NetworkAgentInfo{network{103} ni{WIFI CONNECTED} lp{{DnsAddresses: [ /1.1.1.1,/2606:4700:4700::1111 ]}} nc{[ Transports: WIFI Capabilities: INTERNET&VALIDATED]}}",
+      ].join("\n");
     }
     if (command === "ip -o addr show") return "1: lo inet 127.0.0.1/8";
     if (command === "ip route show") return "default via 192.168.1.1 dev wlan0";

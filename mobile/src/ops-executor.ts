@@ -93,6 +93,34 @@ export function parseVolumeOutput(output: string): {
   };
 }
 
+/** Select Android's active default NetworkAgentInfo row from connectivity dump. */
+export function findActiveNetworkLine(connectivity: string): string {
+  const lines = connectivity.split("\n");
+  const activeNetworkId = /^Active default network:\s*(\d+)\s*$/m.exec(
+    connectivity,
+  )?.[1];
+  if (activeNetworkId) {
+    const activeLine = lines.find((line) =>
+      line.includes(`NetworkAgentInfo{network{${activeNetworkId}}`),
+    );
+    if (activeLine) return activeLine;
+  }
+  return (
+    lines.find(
+      (line) =>
+        /NetworkAgentInfo.*ni\{(?:WIFI|MOBILE|ETHERNET|VPN)[^}]*CONNECTED/.test(
+          line,
+        ) && /(?:VALIDATED|IS_VALIDATED)/.test(line),
+    ) ||
+    lines.find((line) =>
+      /NetworkAgentInfo.*ni\{(?:WIFI|MOBILE|ETHERNET|VPN)[^}]*CONNECTED/.test(
+        line,
+      ),
+    ) ||
+    ""
+  );
+}
+
 /** Execute the fixed, non-shell maintenance operation catalog. */
 export class DeviceOpsExecutor {
   private readonly roots = new Map<string, DeviceOpsFileRoot>();
@@ -413,13 +441,7 @@ export class DeviceOpsExecutor {
         this.runRootCommand("getprop"),
         this.runRootCommand("dumpsys wifi"),
       ]);
-      const activeNetwork = connectivity
-        .split("\n")
-        .find((line) =>
-          /NetworkAgentInfo.*ni\{(?:WIFI|MOBILE|ETHERNET|VPN)[^}]*CONNECTED/.test(
-            line,
-          ),
-        );
+      const activeNetwork = findActiveNetworkLine(connectivity);
       const transport =
         /ni\{(WIFI|MOBILE|ETHERNET|VPN)[^}]*CONNECTED/.exec(
           activeNetwork || "",
