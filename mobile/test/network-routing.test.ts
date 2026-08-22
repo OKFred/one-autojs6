@@ -129,11 +129,11 @@ function createDependencies(
         if (command === "ip -6 route show table all") return route6;
         if (command === "ip -4 rule show") {
           if (!managedRulesActive) return "";
-          return `10400: from all oif wlan0 lookup wlan0\n10401: from all oif rmnet_data2 lookup rmnet_data2\n10500: from all to 192.168.0.0/16 lookup wlan0\n10600: from all lookup ${currentTargetTable}\n`;
+          return `10400: from all oif wlan0 lookup wlan0\n10401: from all oif rmnet_data2 lookup rmnet_data2\n10450: from all to 192.168.44.0/24 iif lo lookup bt-pan\n10500: from all to 192.168.0.0/16 iif lo lookup wlan0\n10600: from all iif lo lookup ${currentTargetTable}\n`;
         }
         if (command === "ip -6 rule show") {
           if (!managedRulesActive) return "";
-          return `10500: from all to fd00:12::/48 lookup wlan0\n10501: from all to fd00:12::/64 lookup wlan0\n10600: from all lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
+          return `10451: from all to fe80::/64 iif lo lookup bt-pan\n10500: from all to fd00:12::/48 iif lo lookup wlan0\n10501: from all to fd00:12::/64 iif lo lookup wlan0\n10600: from all iif lo lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
         }
         if (command.includes("mobile_data_always_on")) return "1\n";
         if (command.includes("mobile_data")) return "1\n";
@@ -151,8 +151,15 @@ function createDependencies(
         ].at(-1);
         if (defaultSet) {
           currentDefaultNetId = Number(defaultSet[1]);
-          currentTargetTable =
-            currentDefaultNetId === 108 ? "rmnet_data2" : "wlan0";
+          if (
+            command.includes(
+              "priority 10600 from all iif lo lookup rmnet_data2",
+            )
+          ) {
+            currentTargetTable = "rmnet_data2";
+          } else if (command.includes("priority 10600 from all iif lo lookup wlan0")) {
+            currentTargetTable = "wlan0";
+          }
         }
         managedRulesActive = command.includes(" rule add priority ");
       },
@@ -198,7 +205,9 @@ try {
   assert.equal(healthyContext.mutations.length, 1);
   assert.match(healthyContext.mutations[0], /lookup wlan0/);
   assert.match(healthyContext.mutations[0], /lookup rmnet_data2/);
-  assert.match(healthyContext.mutations[0], /fwmark 0x0\/0xffff iif lo/);
+  assert.match(healthyContext.mutations[0], /priority 10450.*lookup bt-pan/);
+  assert.match(healthyContext.mutations[0], /priority 10600 from all iif lo/);
+  assert.doesNotMatch(healthyContext.mutations[0], /fwmark 0x0\/0xffff/);
   assert.doesNotMatch(healthyContext.mutations[0], /-ge 10400/);
   assert.doesNotMatch(healthyContext.mutations[0], /priority 10420/);
   assert.match(healthyContext.mutations[0], /to fd00:12::\/48/);
@@ -206,7 +215,7 @@ try {
     healthyContext.mutations[0],
     /ip -4 rule del priority "\$p"/,
   );
-  assert.match(healthyContext.mutations[0], /ndc network default set 108/);
+  assert.match(healthyContext.mutations[0], /ndc network default set 109/);
   assert.equal(healthyContext.reconnects, 1);
   assert.equal(result.data.wifiInterface, "wlan0");
   assert.equal(result.data.carrierInterface, "rmnet_data2");

@@ -82,6 +82,8 @@ export interface NetworkRoutingDependencies {
 }
 
 const BOUND_INTERFACE_RULE_START = 10_400;
+const MANAGEMENT_RULE_START = 10_450;
+const MAX_MANAGEMENT_RULES = 32;
 const IPV4_LAN_RULE_START = 10_500;
 const IPV4_DEFAULT_RULE = 10_600;
 const IPV6_DEFAULT_RULE = 10_600;
@@ -399,7 +401,10 @@ export function attachRouteTables(
       managementRoutes.push({ family, cidr: match[1], table: match[3] });
     }
   }
-  return { networks: next, managementRoutes };
+  return {
+    networks: next,
+    managementRoutes: managementRoutes.slice(0, MAX_MANAGEMENT_RULES),
+  };
 }
 
 /** 验证默认数据订阅确为中国电信。 */
@@ -722,6 +727,14 @@ export class NetworkRoutingManager {
         `to\\s+${escape(cidr)}\\b.*lookup\\s+${escape(String(snapshot.wifi.ipv4Table))}\\b`,
       ),
     );
+    const managementRulesValid = snapshot.managementRoutes.every(
+      (route, index) =>
+        hasRule(
+          route.family === 4 ? snapshot.ipv4Rules : snapshot.ipv6Rules,
+          MANAGEMENT_RULE_START + index,
+          `to\\s+${escape(route.cidr)}\\b.*lookup\\s+${escape(route.table)}\\b`,
+        ),
+    );
     const ipv4DefaultValid = hasRule(
       snapshot.ipv4Rules,
       IPV4_DEFAULT_RULE,
@@ -747,6 +760,7 @@ export class NetworkRoutingManager {
       );
     if (
       !boundRulesValid ||
+      !managementRulesValid ||
       !lanRulesValid ||
       !ipv6LanRulesValid ||
       !ipv4DefaultValid ||
@@ -763,12 +777,20 @@ export class NetworkRoutingManager {
     const ipv4Priorities = [
       BOUND_INTERFACE_RULE_START,
       BOUND_INTERFACE_RULE_START + 1,
+      ...Array.from(
+        { length: MAX_MANAGEMENT_RULES },
+        (_, index) => MANAGEMENT_RULE_START + index,
+      ),
       ...Array.from({ length: 16 }, (_, index) => IPV4_LAN_RULE_START + index),
       IPV4_DEFAULT_RULE,
     ].join(" ");
     const ipv6Priorities = [
       BOUND_INTERFACE_RULE_START,
       BOUND_INTERFACE_RULE_START + 1,
+      ...Array.from(
+        { length: MAX_MANAGEMENT_RULES },
+        (_, index) => MANAGEMENT_RULE_START + index,
+      ),
       ...Array.from({ length: 16 }, (_, index) => IPV4_LAN_RULE_START + index),
       IPV6_DEFAULT_RULE,
     ].join(" ");
@@ -794,36 +816,44 @@ export class NetworkRoutingManager {
       }
       priority += 1;
     }
+    priority = MANAGEMENT_RULE_START;
+    for (const route of snapshot.managementRoutes) {
+      commands.push(
+        `ip -${route.family} rule add priority ${priority++} from all to ${route.cidr} iif lo lookup ${route.table}`,
+      );
+    }
     priority = IPV4_LAN_RULE_START;
     for (const cidr of policy.lanCidrs) {
       commands.push(
-        `ip -4 rule add priority ${priority++} from all to ${cidr} fwmark 0x0/0xffff iif lo lookup ${snapshot.wifi.ipv4Table}`,
+        `ip -4 rule add priority ${priority++} from all to ${cidr} iif lo lookup ${snapshot.wifi.ipv4Table}`,
       );
     }
     if (snapshot.wifi.ipv6Table) {
       priority = IPV4_LAN_RULE_START;
       for (const cidr of snapshot.wifi.ipv6LocalCidrs) {
         commands.push(
-          `ip -6 rule add priority ${priority++} from all to ${cidr} fwmark 0x0/0xffff iif lo lookup ${snapshot.wifi.ipv6Table}`,
+          `ip -6 rule add priority ${priority++} from all to ${cidr} iif lo lookup ${snapshot.wifi.ipv6Table}`,
         );
       }
     }
     commands.push(
-      `ip -4 rule add priority ${IPV4_DEFAULT_RULE} from all fwmark 0x0/0xffff iif lo lookup ${target.ipv4Table}`,
+      `ip -4 rule add priority ${IPV4_DEFAULT_RULE} from all iif lo lookup ${target.ipv4Table}`,
     );
     if (target.ipv6Table && target.ipv6Default) {
       commands.push(
-        `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all fwmark 0x0/0xffff iif lo lookup ${target.ipv6Table}`,
+        `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all iif lo lookup ${target.ipv6Table}`,
       );
     } else {
       commands.push(
         `ip -6 route replace unreachable default table ${IPV6_BLOCK_TABLE} metric 42760`,
       );
       commands.push(
-        `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all fwmark 0x0/0xffff iif lo lookup ${IPV6_BLOCK_TABLE}`,
+        `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all iif lo lookup ${IPV6_BLOCK_TABLE}`,
       );
     }
-    commands.push(`ndc network default set ${target.netId}`);
+    if (snapshot.defaultNetId !== null) {
+      commands.push(`ndc network default set ${snapshot.defaultNetId}`);
+    }
     return commands.join("; ");
   }
 

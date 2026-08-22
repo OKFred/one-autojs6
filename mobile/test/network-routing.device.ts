@@ -20,9 +20,9 @@ const LAN_CIDRS = ["192.168.0.0/16"];
 const CURL = "/data/data/com.termux/files/usr/bin/curl";
 const HTTP_STATUS_MARKER = "__AUTOJS6_HTTP_STATUS__";
 const MANAGED_PRIORITY_PATTERN =
-  /^(?:10400|10401|105(?:0[0-9]|1[0-5])|10600):/m;
+  /^(?:10400|10401|104(?:5\d|6\d|7\d|8[01])|105(?:0[0-9]|1[0-5])|10600):/m;
 const CLEAN_MANAGED_RULES =
-  'for p in 10400 10401 10500 10501 10502 10503 10504 10505 10506 10507 10508 10509 10510 10511 10512 10513 10514 10515 10600; do ip -4 rule del priority "$p" 2>/dev/null || true; done; for p in 10400 10401 10500 10501 10502 10503 10504 10505 10506 10507 10508 10509 10510 10511 10512 10513 10514 10515 10600; do ip -6 rule del priority "$p" 2>/dev/null || true; done; ip -6 route flush table 16661 2>/dev/null || true';
+  'for family in 4 6; do for p in 10400 10401 10450 10451 10452 10453 10454 10455 10456 10457 10458 10459 10460 10461 10462 10463 10464 10465 10466 10467 10468 10469 10470 10471 10472 10473 10474 10475 10476 10477 10478 10479 10480 10481 10500 10501 10502 10503 10504 10505 10506 10507 10508 10509 10510 10511 10512 10513 10514 10515 10600; do ip -$family rule del priority "$p" 2>/dev/null || true; done; done; ip -6 route flush table 16661 2>/dev/null || true';
 
 function adb(args: string[]): string {
   return execFileSync("adb", args, {
