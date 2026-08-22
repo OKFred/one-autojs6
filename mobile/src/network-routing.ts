@@ -46,6 +46,7 @@ interface AndroidNetwork {
   ipv4Table?: string;
   ipv6Table?: string;
   ipv6Default: boolean;
+  ipv6LocalCidrs: string[];
 }
 
 interface NetworkSnapshot {
@@ -308,6 +309,7 @@ export function parseConnectivityNetworks(output: string): AndroidNetwork[] {
           validated: /\bVALIDATED\b/i.test(chunk),
           connected: /CONNECTED(?:\/CONNECTED)?/i.test(chunk),
           ipv6Default: false,
+          ipv6LocalCidrs: [],
         },
       ];
     });
@@ -347,11 +349,33 @@ export function attachRouteTables(
       candidates[0]
     );
   };
+  const localIpv6CidrsFor = (text: string, iface: string): string[] => {
+    const cidrs: string[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      if (
+        !new RegExp(
+          `(?:^|\\s)dev\\s+${iface.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`,
+        ).test(line)
+      )
+        continue;
+      const cidr = line.trim().split(/\s+/)[0]?.toLowerCase() || "";
+      const address = cidr.split("/")[0] || "";
+      if (
+        !cidr.includes("/") ||
+        net.isIP(address) !== 6 ||
+        !/^(?:f[cd]|fe[89ab])/i.test(address)
+      )
+        continue;
+      if (!cidrs.includes(cidr)) cidrs.push(cidr);
+    }
+    return cidrs.slice(0, 16);
+  };
   const next = networks.map((network) => ({
     ...network,
     ipv4Table: tableFor(route4, network.interfaceName, true),
     ipv6Table: tableFor(route6, network.interfaceName, false),
     ipv6Default: Boolean(tableFor(route6, network.interfaceName, true)),
+    ipv6LocalCidrs: localIpv6CidrsFor(route6, network.interfaceName),
   }));
   const managedInterfaces = new Set(next.map((item) => item.interfaceName));
   const managementRoutes: NetworkSnapshot["managementRoutes"] = [];
@@ -712,9 +736,19 @@ export class NetworkRoutingManager {
       IPV6_DEFAULT_RULE,
       `lookup\\s+${escape(expectedIpv6Table)}\\b`,
     );
+    const ipv6LanRulesValid =
+      !snapshot.wifi.ipv6Table ||
+      snapshot.wifi.ipv6LocalCidrs.every((cidr, index) =>
+        hasRule(
+          snapshot.ipv6Rules,
+          IPV4_LAN_RULE_START + index,
+          `to\\s+${escape(cidr)}\\b.*lookup\\s+${escape(String(snapshot.wifi.ipv6Table))}\\b`,
+        ),
+      );
     if (
       !boundRulesValid ||
       !lanRulesValid ||
+      !ipv6LanRulesValid ||
       !ipv4DefaultValid ||
       !ipv6DefaultValid
     ) {
@@ -735,6 +769,7 @@ export class NetworkRoutingManager {
     const ipv6Priorities = [
       BOUND_INTERFACE_RULE_START,
       BOUND_INTERFACE_RULE_START + 1,
+      ...Array.from({ length: 16 }, (_, index) => IPV4_LAN_RULE_START + index),
       IPV6_DEFAULT_RULE,
     ].join(" ");
     return `for p in ${ipv4Priorities}; do ip -4 rule del priority "$p" 2>/dev/null || true; done; for p in ${ipv6Priorities}; do ip -6 rule del priority "$p" 2>/dev/null || true; done; ip -6 route flush table ${IPV6_BLOCK_TABLE} 2>/dev/null || true`;
@@ -764,6 +799,14 @@ export class NetworkRoutingManager {
       commands.push(
         `ip -4 rule add priority ${priority++} from all to ${cidr} fwmark 0x0/0xffff iif lo lookup ${snapshot.wifi.ipv4Table}`,
       );
+    }
+    if (snapshot.wifi.ipv6Table) {
+      priority = IPV4_LAN_RULE_START;
+      for (const cidr of snapshot.wifi.ipv6LocalCidrs) {
+        commands.push(
+          `ip -6 rule add priority ${priority++} from all to ${cidr} fwmark 0x0/0xffff iif lo lookup ${snapshot.wifi.ipv6Table}`,
+        );
+      }
     }
     commands.push(
       `ip -4 rule add priority ${IPV4_DEFAULT_RULE} from all fwmark 0x0/0xffff iif lo lookup ${target.ipv4Table}`,

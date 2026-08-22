@@ -27,6 +27,8 @@ default via 10.63.113.177 dev rmnet_data2 table rmnet_data2 proto static
 `;
 const route6 = `
 default via fe80::1 dev wlan0 table wlan0 proto ra
+fd00:12::/48 via fe80::1 dev wlan0 table wlan0 proto ra
+fd00:12::/64 dev wlan0 table wlan0 proto kernel
 2001:db8:1::/64 dev wlan0 table wlan0 proto ra
 fe80::/64 dev bt-pan table bt-pan proto kernel
 `;
@@ -60,6 +62,11 @@ assert.equal(
     "fd00::/64 dev wlan0 table wlan0_local\nfd00::/48 dev wlan0 table wlan0\n",
   ).networks.find((network) => network.transport === "wifi")?.ipv6Table,
   "wlan0",
+);
+assert.deepEqual(
+  attachRouteTables(parseConnectivityNetworks(connectivity), route4, route6)
+    .networks.find((network) => network.transport === "wifi")?.ipv6LocalCidrs,
+  ["fd00:12::/48", "fd00:12::/64"],
 );
 assert.equal(
   buildCurlProbeInvocation({
@@ -126,7 +133,7 @@ function createDependencies(
         }
         if (command === "ip -6 rule show") {
           if (!managedRulesActive) return "";
-          return `10600: from all lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
+          return `10500: from all to fd00:12::/48 lookup wlan0\n10501: from all to fd00:12::/64 lookup wlan0\n10600: from all lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
         }
         if (command.includes("mobile_data_always_on")) return "1\n";
         if (command.includes("mobile_data")) return "1\n";
@@ -194,6 +201,7 @@ try {
   assert.match(healthyContext.mutations[0], /fwmark 0x0\/0xffff iif lo/);
   assert.doesNotMatch(healthyContext.mutations[0], /-ge 10400/);
   assert.doesNotMatch(healthyContext.mutations[0], /priority 10420/);
+  assert.match(healthyContext.mutations[0], /to fd00:12::\/48/);
   assert.match(
     healthyContext.mutations[0],
     /ip -4 rule del priority "\$p"/,

@@ -22,7 +22,7 @@ const HTTP_STATUS_MARKER = "__AUTOJS6_HTTP_STATUS__";
 const MANAGED_PRIORITY_PATTERN =
   /^(?:10400|10401|105(?:0[0-9]|1[0-5])|10600):/m;
 const CLEAN_MANAGED_RULES =
-  'for p in 10400 10401 10500 10501 10502 10503 10504 10505 10506 10507 10508 10509 10510 10511 10512 10513 10514 10515 10600; do ip -4 rule del priority "$p" 2>/dev/null || true; done; for p in 10400 10401 10600; do ip -6 rule del priority "$p" 2>/dev/null || true; done; ip -6 route flush table 16661 2>/dev/null || true';
+  'for p in 10400 10401 10500 10501 10502 10503 10504 10505 10506 10507 10508 10509 10510 10511 10512 10513 10514 10515 10600; do ip -4 rule del priority "$p" 2>/dev/null || true; done; for p in 10400 10401 10500 10501 10502 10503 10504 10505 10506 10507 10508 10509 10510 10511 10512 10513 10514 10515 10600; do ip -6 rule del priority "$p" 2>/dev/null || true; done; ip -6 route flush table 16661 2>/dev/null || true';
 
 function adb(args: string[]): string {
   return execFileSync("adb", args, {
