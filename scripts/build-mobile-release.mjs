@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const mobileRoot = path.join(repositoryRoot, "mobile");
@@ -57,10 +58,19 @@ function runWorkspaceBinary(packageRoot, command, args) {
     ".bin",
     process.platform === "win32" ? `${command}.CMD` : command,
   );
-  execFileSync(executable, args, {
+  const options = {
     cwd: packageRoot,
     stdio: "inherit",
-  });
+  };
+  if (process.platform === "win32") {
+    execFileSync(
+      process.env.ComSpec || "cmd.exe",
+      ["/d", "/s", "/c", executable, ...args],
+      options,
+    );
+    return;
+  }
+  execFileSync(executable, args, options);
 }
 
 /** 递归收集普通文件。 */
@@ -234,14 +244,38 @@ try {
   const archivePath = path.join(outputDirectory, `${releaseVersion}.tar.gz`);
   if (process.platform === "win32") {
     const fileListPath = path.join(temporaryRoot, "archive-files.txt");
+    const tarPath = path.join(temporaryRoot, `${releaseVersion}.tar`);
     fs.writeFileSync(
       fileListPath,
       `${listArchiveEntries(releaseRoot).join("\n")}\n`,
     );
     execFileSync(
       "tar",
-      ["-czf", archivePath, "-C", releaseRoot, "-T", fileListPath],
+      [
+        "--format",
+        "ustar",
+        "--uid",
+        "0",
+        "--gid",
+        "0",
+        "--uname",
+        "root",
+        "--gname",
+        "root",
+        "--mtime",
+        "@0",
+        "-cf",
+        tarPath,
+        "-C",
+        releaseRoot,
+        "-T",
+        fileListPath,
+      ],
       { stdio: "inherit" },
+    );
+    fs.writeFileSync(
+      archivePath,
+      zlib.gzipSync(fs.readFileSync(tarPath), { level: 9, mtime: 0 }),
     );
   } else {
     execFileSync(
