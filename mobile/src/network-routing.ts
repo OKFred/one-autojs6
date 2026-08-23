@@ -316,16 +316,39 @@ export function parseConnectivityNetworks(output: string): AndroidNetwork[] {
       const interfaceName =
         chunk.match(/InterfaceName:\s*([^\s,}]+)/)?.[1] || "";
       const upper = chunk.toUpperCase();
-      const transport =
-        upper.includes("TRANSPORTS: WIFI") || /\bTYPE:\s*WIFI\b/i.test(chunk)
-          ? "wifi"
-          : upper.includes("TRANSPORTS: CELLULAR") ||
-              /\bTYPE:\s*MOBILE\b/i.test(chunk)
-            ? "carrier"
-            : upper.includes("TRANSPORTS: VPN") ||
-                /\bTYPE:\s*VPN\b/i.test(chunk)
-              ? "vpn"
-              : null;
+      const transportMarkers = [
+        {
+          transport: "wifi" as const,
+          positions: [
+            upper.indexOf("TRANSPORTS: WIFI"),
+            upper.search(/\bTYPE:\s*WIFI\b/),
+          ],
+        },
+        {
+          transport: "carrier" as const,
+          positions: [
+            upper.indexOf("TRANSPORTS: CELLULAR"),
+            upper.search(/\bTYPE:\s*MOBILE\b/),
+          ],
+        },
+        {
+          transport: "vpn" as const,
+          positions: [
+            upper.indexOf("TRANSPORTS: VPN"),
+            upper.search(/\bTYPE:\s*VPN\b/),
+          ],
+        },
+      ]
+        .flatMap(({ transport, positions }) =>
+          positions
+            .filter((position) => position >= 0)
+            .map((position) => ({ transport, position })),
+        )
+        .sort((left, right) => left.position - right.position);
+      // Android 13 appends connectivity diagnostics after the final
+      // NetworkAgentInfo block. Those diagnostics can mention every transport,
+      // so classify from the first marker that belongs to the current block.
+      const transport = transportMarkers[0]?.transport ?? null;
       if (
         !Number.isInteger(netId) ||
         !transport ||

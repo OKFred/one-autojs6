@@ -1,6 +1,6 @@
 {
   "name": "one-autojs6-mobile",
-  "version": "2.1.18",
+  "version": "2.1.19",
   "type": "module",
   "main": "src/client.ts",
   "scripts": {

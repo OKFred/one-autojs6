@@ -57,6 +57,23 @@ assert.throws(
   /inside lanCidrs/,
 );
 assert.equal(parseConnectivityNetworks(connectivity).length, 2);
+const connectivityWithDiagnosticTail = `${connectivity}
+NetworkRequest [ LISTEN id=42, [ Transports: WIFI Capabilities: INTERNET ] ]
+NetworkRequest [ LISTEN id=43, [ Transports: CELLULAR|WIFI Capabilities: INTERNET ] ]
+`;
+assert.deepEqual(
+  parseConnectivityNetworks(connectivityWithDiagnosticTail).map(
+    ({ netId, transport, interfaceName }) => ({
+      netId,
+      transport,
+      interfaceName,
+    }),
+  ),
+  [
+    { netId: 109, transport: "wifi", interfaceName: "wlan0" },
+    { netId: 108, transport: "carrier", interfaceName: "rmnet_data2" },
+  ],
+);
 assert.equal(
   attachRouteTables(
     parseConnectivityNetworks(connectivity),
