@@ -68,6 +68,8 @@ import {
 } from "./ops-session.js";
 import { curlProbe, NetworkRoutingManager } from "./network-routing.js";
 import { forceReconnectMqtt } from "./mqtt-reconnect.js";
+import { AndroidNetworkChangeMonitor } from "./network-change-monitor.js";
+import type { NetworkRoutingStatus } from "./network-routing.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
@@ -162,6 +164,7 @@ const resultsTopic = `autojs6/v2/devices/${deviceId}/results`;
 const eventsTopic = `autojs6/v2/devices/${deviceId}/events`;
 const presenceTopic = `autojs6/v2/devices/${deviceId}/presence`;
 const infoTopic = `autojs6/v2/devices/${deviceId}/info`;
+const networkRoutingStatusTopic = `autojs6/v2/devices/${deviceId}/network-routing/status`;
 const deploymentCommandsTopic = `autojs6/deploy/v1/devices/${deviceId}/commands`;
 const deploymentEventsTopic = `autojs6/deploy/v1/devices/${deviceId}/events`;
 const opsCommandsTopic = `autojs6/ops/v1/devices/${deviceId}/commands`;
@@ -340,19 +343,44 @@ function reconnectManagementMqtt(): Promise<void> {
   return forceReconnectMqtt(mqttClient);
 }
 
+/** 上报不含公网 IP 的最新分流运行状态，并用 retained 消息覆盖旧状态。 */
+function publishNetworkRoutingStatus(status: NetworkRoutingStatus): void {
+  const payload = { protocolVersion: 1 as const, deviceId, ...status };
+  if (mqttClient.connected) {
+    mqttClient.publish(networkRoutingStatusTopic, JSON.stringify(payload), {
+      qos: config.mqtt.qos,
+      retain: true,
+    });
+  }
+  void postReport("network-routing", payload).catch((error) =>
+    console.warn("[NETWORK_ROUTING] HTTPS status upload failed", error),
+  );
+}
+
 const networkRoutingManager = new NetworkRoutingManager(sharedStateDirectory, {
   readRoot: readRootCommand,
   runRoot: runRootCommand,
   reconnectManagement: reconnectManagementMqtt,
   probe: curlProbe,
   now: () => Date.now(),
+  reportStatus: publishNetworkRoutingStatus,
 });
+
+const networkChangeMonitor = new AndroidNetworkChangeMonitor(
+  () => networkRoutingManager.checkDrift("NETWORK_CHANGE"),
+  {
+    onWarning: (message, error) =>
+      console.warn(`[NETWORK_ROUTING] ${message}`, error || ""),
+  },
+);
 
 try {
   await networkRoutingManager.restoreOnStartup();
 } catch (error) {
   console.error("[NETWORK_ROUTING] Startup restore is degraded", error);
 }
+networkChangeMonitor.start();
+process.once("exit", () => networkChangeMonitor.stop());
 setInterval(
   () =>
     void networkRoutingManager
@@ -365,12 +393,18 @@ setInterval(
 
 /** 将设备上报发送到配置的 HTTPS 接口。 */
 async function postReport(
-  kind: "presence" | "info" | "event" | "deployment",
+  kind:
+    | "presence"
+    | "info"
+    | "event"
+    | "deployment"
+    | "network-routing",
   payload:
     | DevicePresencePayload
     | DeviceInfoPayload
     | DeviceEventPayload
-    | DeviceDeploymentEvent,
+    | DeviceDeploymentEvent
+    | (NetworkRoutingStatus & { protocolVersion: 1; deviceId: string }),
 ): Promise<void> {
   if (!usesHttpReporting || !config.report.httpBaseUrl || !reportToken) return;
   const response = await fetch(`${config.report.httpBaseUrl}/report/${kind}`, {
@@ -2007,6 +2041,7 @@ function handleMqttConnect(): void {
     },
   );
   publishReport("presence", presenceTopic, presence("ONLINE"), true);
+  networkRoutingManager.reportCurrentStatus();
   void deviceInfoPromise
     .then((info) => publishReport("info", infoTopic, info, true))
     .catch((error) =>

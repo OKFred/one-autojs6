@@ -1,13 +1,13 @@
 {
   "name": "one-autojs6-mobile",
-  "version": "2.1.17",
+  "version": "2.1.18",
   "type": "module",
   "main": "src/client.ts",
   "scripts": {
     "dev": "tsx --no-cache src/client.ts",
     "start": "tsx --no-cache src/client.ts",
     "network:check": "tsx --no-cache src/tiktok-network-check.ts",
-    "test": "tsx test/config.test.ts && tsx test/task-queue.test.ts && tsx test/network-routing.test.ts && tsx test/mqtt-reconnect.test.ts && tsx test/tiktok-policy.test.ts && tsx test/adb-keyboard.test.ts && tsx test/tiktok-network-policy.test.ts && tsx test/autojs-engine.test.ts && tsx test/deployment.test.ts && tsx test/ops.test.ts && tsx test/supervisor.test.ts && node test/supervisor-rollback.integration.mjs",
+    "test": "tsx test/config.test.ts && tsx test/task-queue.test.ts && tsx test/network-routing.test.ts && tsx test/network-change-monitor.test.ts && tsx test/mqtt-reconnect.test.ts && tsx test/tiktok-policy.test.ts && tsx test/adb-keyboard.test.ts && tsx test/tiktok-network-policy.test.ts && tsx test/autojs-engine.test.ts && tsx test/deployment.test.ts && tsx test/ops.test.ts && tsx test/supervisor.test.ts && node test/supervisor-rollback.integration.mjs",
     "test:network-routing:device": "tsx test/network-routing.device.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit"

@@ -11,6 +11,24 @@ export const NETWORK_ROUTING_SCRIPT_IDS = [
 export type NetworkRoutingScriptId =
   (typeof NETWORK_ROUTING_SCRIPT_IDS)[number];
 export type InternetTarget = "wifi" | "carrier";
+export type NetworkRoutingRuntimeState =
+  | "DISABLED"
+  | "RECOVERING"
+  | "ACTIVE"
+  | "DEGRADED";
+
+export interface NetworkRoutingStatus {
+  generation: number;
+  policyRevision: number | null;
+  target: InternetTarget | null;
+  state: NetworkRoutingRuntimeState;
+  code: string;
+  message: string;
+  timestamp: number;
+  verifiedAt: number | null;
+  wifiInterface: string | null;
+  carrierInterface: string | null;
+}
 
 export interface NetworkRoutingPolicy {
   generation: number;
@@ -71,7 +89,11 @@ interface PersistedRoutingState {
   policy?: NetworkRoutingPolicy;
   baselineDefaultNetId?: number | null;
   verifiedAt?: number;
-  status: "DISABLED" | "ACTIVE" | "DEGRADED";
+  status: NetworkRoutingRuntimeState;
+  lastErrorCode?: string;
+  lastMessage?: string;
+  wifiInterface?: string;
+  carrierInterface?: string;
 }
 
 export interface NetworkRoutingDependencies {
@@ -85,6 +107,7 @@ export interface NetworkRoutingDependencies {
     expectPublicIpv4: boolean;
   }): Promise<string | void>;
   now(): number;
+  reportStatus?(status: NetworkRoutingStatus): void;
 }
 
 const BOUND_INTERFACE_RULE_START = 10_400;
@@ -539,6 +562,41 @@ export class NetworkRoutingManager {
     return this.state.generation;
   }
 
+  currentStatus(): NetworkRoutingStatus {
+    const defaultCode =
+      this.state.status === "ACTIVE"
+        ? "OK"
+        : this.state.status === "DISABLED"
+          ? "NETWORK_ROUTING_DISABLED"
+          : this.state.status === "RECOVERING"
+            ? "NETWORK_CHANGE_DETECTED"
+            : "NETWORK_ROUTING_DEGRADED";
+    return {
+      generation: this.state.generation,
+      policyRevision: this.state.policy?.policyRevision ?? null,
+      target: this.state.policy?.internetTarget ?? null,
+      state: this.state.status,
+      code: this.state.lastErrorCode || defaultCode,
+      message:
+        this.state.lastMessage ||
+        (this.state.status === "ACTIVE"
+          ? "Network routing policy is healthy"
+          : this.state.status === "DISABLED"
+            ? "Managed network routing is disabled"
+            : this.state.status === "RECOVERING"
+              ? "Network routing is reconciling after a network change"
+              : "Network routing is degraded"),
+      timestamp: this.dependencies.now(),
+      verifiedAt: this.state.verifiedAt ?? null,
+      wifiInterface: this.state.wifiInterface ?? null,
+      carrierInterface: this.state.carrierInterface ?? null,
+    };
+  }
+
+  reportCurrentStatus(): void {
+    this.emitStatus();
+  }
+
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.operationTail;
     let release: () => void = () => undefined;
@@ -580,6 +638,35 @@ export class NetworkRoutingManager {
     });
     fs.renameSync(temporary, this.statePath);
     this.state = state;
+  }
+
+  private emitStatus(): void {
+    try {
+      this.dependencies.reportStatus?.(this.currentStatus());
+    } catch {
+      // Status reporting must never make routing reconciliation fail.
+    }
+  }
+
+  private saveRuntimeStatus(input: {
+    state: NetworkRoutingRuntimeState;
+    code: string;
+    message: string;
+    snapshot?: NetworkSnapshot;
+    verifiedAt?: number;
+  }): void {
+    this.saveState({
+      ...this.state,
+      status: input.state,
+      lastErrorCode: input.code,
+      lastMessage: input.message,
+      verifiedAt: input.verifiedAt ?? this.state.verifiedAt,
+      wifiInterface:
+        input.snapshot?.wifi.interfaceName ?? this.state.wifiInterface,
+      carrierInterface:
+        input.snapshot?.carrier.interfaceName ?? this.state.carrierInterface,
+    });
+    this.emitStatus();
   }
 
   private async inspect(): Promise<NetworkSnapshot> {
@@ -958,7 +1045,12 @@ export class NetworkRoutingManager {
           : snapshot.defaultNetId,
         verifiedAt: this.dependencies.now(),
         status: "ACTIVE",
+        lastErrorCode: "OK",
+        lastMessage: "Network routing policy is active",
+        wifiInterface: postSnapshot.wifi.interfaceName,
+        carrierInterface: postSnapshot.carrier.interfaceName,
       });
+      this.emitStatus();
       return this.success(
         policy,
         postSnapshot,
@@ -978,6 +1070,7 @@ export class NetworkRoutingManager {
         await this.dependencies.reconnectManagement();
         rollbackSucceeded = true;
         this.state = previous;
+        this.emitStatus();
       } catch {
         this.saveState({
           formatVersion: 1,
@@ -987,7 +1080,13 @@ export class NetworkRoutingManager {
           baselineDefaultNetId:
             previous.baselineDefaultNetId ?? snapshot.defaultNetId,
           status: "DEGRADED",
+          lastErrorCode: "NETWORK_ROUTING_ROLLBACK_FAILED",
+          lastMessage:
+            "Network routing failed and rollback could not be completed",
+          wifiInterface: snapshot.wifi.interfaceName,
+          carrierInterface: snapshot.carrier.interfaceName,
         });
+        this.emitStatus();
         return {
           status: "FAILURE",
           code: "NETWORK_ROUTING_ROLLBACK_FAILED",
@@ -1067,7 +1166,10 @@ export class NetworkRoutingManager {
         active: false,
         generation,
         status: "DISABLED",
+        lastErrorCode: "NETWORK_ROUTING_DISABLED",
+        lastMessage: "Managed network routing was disabled",
       });
+      this.emitStatus();
       return {
         status: "SUCCESS",
         code: "NETWORK_ROUTING_DISABLED",
@@ -1092,6 +1194,11 @@ export class NetworkRoutingManager {
 
   private async restoreOnStartupExclusive(): Promise<void> {
     if (!this.state.active || !this.state.policy) return;
+    this.saveRuntimeStatus({
+      state: "RECOVERING",
+      code: "NETWORK_ROUTING_STARTUP_RESTORE",
+      message: "Restoring persisted network routing",
+    });
     try {
       const snapshot = await this.inspect();
       await this.assertPrerequisites(
@@ -1101,14 +1208,24 @@ export class NetworkRoutingManager {
       await this.dependencies.runRoot(
         this.buildApplyCommand(this.state.policy, snapshot),
       );
-      this.assertAppliedPolicy(this.state.policy, await this.inspect());
-      this.saveState({
-        ...this.state,
-        status: "ACTIVE",
+      const verifiedSnapshot = await this.inspect();
+      this.assertAppliedPolicy(this.state.policy, verifiedSnapshot);
+      this.saveRuntimeStatus({
+        state: "ACTIVE",
+        code: "OK",
+        message: "Persisted network routing was restored",
+        snapshot: verifiedSnapshot,
         verifiedAt: this.dependencies.now(),
       });
-    } catch {
-      this.saveState({ ...this.state, status: "DEGRADED" });
+    } catch (error) {
+      this.saveRuntimeStatus({
+        state: "DEGRADED",
+        code:
+          error instanceof NetworkRoutingError
+            ? error.code
+            : "NETWORK_ROUTING_RESTORE_FAILED",
+        message: "Persisted network routing could not be restored",
+      });
       throw new NetworkRoutingError(
         "NETWORK_ROUTING_RESTORE_FAILED",
         "Persisted network routing could not be restored",
@@ -1116,12 +1233,29 @@ export class NetworkRoutingManager {
     }
   }
 
-  async checkDrift(): Promise<void> {
-    return this.runExclusive(() => this.checkDriftExclusive());
+  async checkDrift(
+    trigger: "PERIODIC" | "NETWORK_CHANGE" = "PERIODIC",
+  ): Promise<void> {
+    return this.runExclusive(() => this.checkDriftExclusive(trigger));
   }
 
-  private async checkDriftExclusive(): Promise<void> {
+  private async checkDriftExclusive(
+    trigger: "PERIODIC" | "NETWORK_CHANGE",
+  ): Promise<void> {
     if (!this.state.active || !this.state.policy) return;
+    if (trigger === "NETWORK_CHANGE" || this.state.status === "DEGRADED") {
+      this.saveRuntimeStatus({
+        state: "RECOVERING",
+        code:
+          trigger === "NETWORK_CHANGE"
+            ? "NETWORK_CHANGE_DETECTED"
+            : "NETWORK_ROUTING_RETRYING",
+        message:
+          trigger === "NETWORK_CHANGE"
+            ? "Reconciling routing after a network change"
+            : "Retrying degraded network routing",
+      });
+    }
     try {
       let snapshot = await this.inspect();
       await this.assertPrerequisites(
@@ -1134,13 +1268,18 @@ export class NetworkRoutingManager {
       } catch {
         applied = false;
       }
+      let reconnected = false;
       if (!applied) {
         await this.dependencies.runRoot(
           this.buildApplyCommand(this.state.policy, snapshot),
         );
         await this.dependencies.reconnectManagement();
+        reconnected = true;
         snapshot = await this.inspect();
         this.assertAppliedPolicy(this.state.policy, snapshot);
+      }
+      if (trigger === "NETWORK_CHANGE" && !reconnected) {
+        await this.dependencies.reconnectManagement();
       }
       const targetPublicIpv4 = await this.runProbes(
         this.state.policy,
@@ -1158,15 +1297,26 @@ export class NetworkRoutingManager {
           "Unbound Internet traffic did not use the requested target",
         );
       }
-      if (this.state.status !== "ACTIVE")
-        this.saveState({
-          ...this.state,
-          status: "ACTIVE",
-          verifiedAt: this.dependencies.now(),
-        });
-    } catch {
-      if (this.state.status !== "DEGRADED")
-        this.saveState({ ...this.state, status: "DEGRADED" });
+      this.saveRuntimeStatus({
+        state: "ACTIVE",
+        code: "OK",
+        message: "Network routing policy is healthy",
+        snapshot,
+        verifiedAt: this.dependencies.now(),
+      });
+    } catch (error) {
+      const routingError =
+        error instanceof NetworkRoutingError
+          ? error
+          : new NetworkRoutingError(
+              "NETWORK_ROUTING_DRIFT_CHECK_FAILED",
+              "Network routing drift check failed",
+            );
+      this.saveRuntimeStatus({
+        state: "DEGRADED",
+        code: routingError.code,
+        message: routingError.message,
+      });
     }
   }
 

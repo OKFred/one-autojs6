@@ -12,6 +12,7 @@ import {
   normalizePrivateIpv4Cidr,
   parseConnectivityNetworks,
   parseNetworkRoutingPolicy,
+  type NetworkRoutingStatus,
 } from "../src/network-routing.js";
 
 const connectivity = `
@@ -106,6 +107,7 @@ function createDependencies(
   } = {},
 ) {
   const mutations: string[] = [];
+  const statuses: NetworkRoutingStatus[] = [];
   let probes = 0;
   let reconnects = 0;
   let currentDefaultNetId = 109;
@@ -113,6 +115,7 @@ function createDependencies(
   let managedRulesActive = !options.missingManagedRules;
   return {
     mutations,
+    statuses,
     get probes() {
       return probes;
     },
@@ -187,6 +190,7 @@ function createDependencies(
         return input.expectPublicIpv4 ? "203.0.113.1" : undefined;
       },
       now: () => 1_700_000_000_000,
+      reportStatus: (status: NetworkRoutingStatus) => statuses.push(status),
     },
   };
 }
@@ -220,9 +224,24 @@ try {
   assert.equal(healthyContext.reconnects, 1);
   assert.equal(result.data.wifiInterface, "wlan0");
   assert.equal(result.data.carrierInterface, "rmnet_data2");
+  assert.equal(healthyContext.statuses.at(-1)?.state, "ACTIVE");
+  assert.equal(healthyContext.statuses.at(-1)?.code, "OK");
+  assert.equal("publicIpv4" in healthyContext.statuses.at(-1)!, false);
   await manager.checkDrift();
   assert.equal(healthyContext.mutations.length, 1);
   assert.equal(healthyContext.reconnects, 1);
+  await manager.checkDrift("NETWORK_CHANGE");
+  assert.equal(healthyContext.mutations.length, 1);
+  assert.equal(healthyContext.reconnects, 2);
+  assert.deepEqual(
+    healthyContext.statuses.slice(-2).map((status) => status.state),
+    ["RECOVERING", "ACTIVE"],
+  );
+  assert.equal(healthyContext.statuses.at(-1)?.wifiInterface, "wlan0");
+  assert.equal(
+    healthyContext.statuses.at(-1)?.carrierInterface,
+    "rmnet_data2",
+  );
 
   const driftContext = createDependencies({ missingManagedRules: true });
   const driftManager = new NetworkRoutingManager(
