@@ -55,8 +55,8 @@ export interface NetworkRoutingView {
   lanProbeUrls: string[];
   internetProbeUrl: string;
   probeTimeoutMs: number;
-  desiredTarget: "wifi" | "carrier" | null;
-  actualTarget: "wifi" | "carrier" | null;
+  desiredTarget: "default" | "wifi" | "carrier" | null;
+  actualTarget: "default" | "wifi" | "carrier" | null;
   state: string;
   lastTaskId: string | null;
   lastErrorCode: string | null;
@@ -550,7 +550,7 @@ export class NodeServerService {
   /** 仅通过 Node Server 控制面应用持久网络分流。 */
   public applyNetworkRouting(input: {
     clientId: string;
-    internetTarget: "wifi" | "carrier";
+    internetTarget: "default" | "wifi" | "carrier";
   }): Promise<NetworkRoutingTask> {
     return this.request<NetworkRoutingTask>(
       "/admin/mobile/network-routing/apply",

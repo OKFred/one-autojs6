@@ -10,7 +10,7 @@ export const NETWORK_ROUTING_SCRIPT_IDS = [
 
 export type NetworkRoutingScriptId =
   (typeof NETWORK_ROUTING_SCRIPT_IDS)[number];
-export type InternetTarget = "wifi" | "carrier";
+export type InternetTarget = "default" | "wifi" | "carrier";
 export type NetworkRoutingRuntimeState =
   | "DISABLED"
   | "RECOVERING"
@@ -211,10 +211,14 @@ export function parseNetworkRoutingPolicy(
       "policyRevision must be a positive integer",
     );
   }
-  if (internetTarget !== "wifi" && internetTarget !== "carrier") {
+  if (
+    internetTarget !== "default" &&
+    internetTarget !== "wifi" &&
+    internetTarget !== "carrier"
+  ) {
     throw new NetworkRoutingError(
       "INVALID_PARAMS",
-      "internetTarget must be wifi or carrier",
+      "internetTarget must be default, wifi or carrier",
     );
   }
   if (
@@ -798,11 +802,15 @@ export class NetworkRoutingManager {
       }
     }
     const target =
-      policy.internetTarget === "wifi" ? snapshot.wifi : snapshot.carrier;
+      policy.internetTarget === "default"
+        ? undefined
+        : policy.internetTarget === "wifi"
+          ? snapshot.wifi
+          : snapshot.carrier;
     try {
       const publicIpv4 = await this.dependencies.probe({
         url: policy.internetProbeUrl,
-        interfaceName: bound ? target.interfaceName : undefined,
+        interfaceName: bound ? target?.interfaceName : undefined,
         timeoutMs: policy.probeTimeoutMs,
         expectPublicIpv4: true,
       });
@@ -823,7 +831,11 @@ export class NetworkRoutingManager {
     snapshot: NetworkSnapshot,
   ): void {
     const target =
-      policy.internetTarget === "wifi" ? snapshot.wifi : snapshot.carrier;
+      policy.internetTarget === "default"
+        ? undefined
+        : policy.internetTarget === "wifi"
+          ? snapshot.wifi
+          : snapshot.carrier;
     const escape = (value: string) =>
       value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const hasRule = (rules: string, priority: number, expression: string) =>
@@ -851,20 +863,24 @@ export class NetworkRoutingManager {
           `to\\s+${escape(route.cidr)}(?=\\s|$).*lookup\\s+${escape(route.table)}\\b`,
         ),
     );
-    const ipv4DefaultValid = hasRule(
-      snapshot.ipv4Rules,
-      IPV4_DEFAULT_RULE,
-      `lookup\\s+${escape(String(target.ipv4Table))}\\b`,
-    );
+    const ipv4DefaultValid = target
+      ? hasRule(
+          snapshot.ipv4Rules,
+          IPV4_DEFAULT_RULE,
+          `lookup\\s+${escape(String(target.ipv4Table))}\\b`,
+        )
+      : !hasRule(snapshot.ipv4Rules, IPV4_DEFAULT_RULE, ".*");
     const expectedIpv6Table =
-      target.ipv6Table && target.ipv6Default
+      target?.ipv6Table && target.ipv6Default
         ? target.ipv6Table
         : String(IPV6_BLOCK_TABLE);
-    const ipv6DefaultValid = hasRule(
-      snapshot.ipv6Rules,
-      IPV6_DEFAULT_RULE,
-      `lookup\\s+${escape(expectedIpv6Table)}\\b`,
-    );
+    const ipv6DefaultValid = target
+      ? hasRule(
+          snapshot.ipv6Rules,
+          IPV6_DEFAULT_RULE,
+          `lookup\\s+${escape(expectedIpv6Table)}\\b`,
+        )
+      : !hasRule(snapshot.ipv6Rules, IPV6_DEFAULT_RULE, ".*");
     const ipv6LanRulesValid =
       !snapshot.wifi.ipv6Table ||
       snapshot.wifi.ipv6LocalCidrs.every((cidr, index) =>
@@ -918,7 +934,11 @@ export class NetworkRoutingManager {
     snapshot: NetworkSnapshot,
   ): string {
     const target =
-      policy.internetTarget === "wifi" ? snapshot.wifi : snapshot.carrier;
+      policy.internetTarget === "default"
+        ? undefined
+        : policy.internetTarget === "wifi"
+          ? snapshot.wifi
+          : snapshot.carrier;
     const commands = ["set -e", this.clearManagedRulesCommand()];
     let priority = BOUND_INTERFACE_RULE_START;
     for (const network of [snapshot.wifi, snapshot.carrier]) {
@@ -952,23 +972,25 @@ export class NetworkRoutingManager {
         );
       }
     }
-    commands.push(
-      `ip -4 rule add priority ${IPV4_DEFAULT_RULE} from all iif lo lookup ${target.ipv4Table}`,
-    );
-    if (target.ipv6Table && target.ipv6Default) {
+    if (target) {
       commands.push(
-        `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all iif lo lookup ${target.ipv6Table}`,
+        `ip -4 rule add priority ${IPV4_DEFAULT_RULE} from all iif lo lookup ${target.ipv4Table}`,
       );
-    } else {
-      commands.push(
-        `ip -6 route replace unreachable default table ${IPV6_BLOCK_TABLE} metric 42760`,
-      );
-      commands.push(
-        `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all iif lo lookup ${IPV6_BLOCK_TABLE}`,
-      );
-    }
-    if (snapshot.defaultNetId !== null) {
-      commands.push(`ndc network default set ${snapshot.defaultNetId}`);
+      if (target.ipv6Table && target.ipv6Default) {
+        commands.push(
+          `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all iif lo lookup ${target.ipv6Table}`,
+        );
+      } else {
+        commands.push(
+          `ip -6 route replace unreachable default table ${IPV6_BLOCK_TABLE} metric 42760`,
+        );
+        commands.push(
+          `ip -6 rule add priority ${IPV6_DEFAULT_RULE} from all iif lo lookup ${IPV6_BLOCK_TABLE}`,
+        );
+      }
+      if (snapshot.defaultNetId !== null) {
+        commands.push(`ndc network default set ${snapshot.defaultNetId}`);
+      }
     }
     return commands.join("; ");
   }
@@ -1052,7 +1074,10 @@ export class NetworkRoutingManager {
         false,
       );
       failureStage = "VERIFY_EXIT_IDENTITY";
-      if (actualPublicIpv4 !== targetPublicIpv4) {
+      if (
+        policy.internetTarget !== "default" &&
+        actualPublicIpv4 !== targetPublicIpv4
+      ) {
         throw new NetworkRoutingError(
           "NETWORK_ROUTING_POSTCHECK_FAILED",
           "Unbound Internet traffic did not use the requested target",
@@ -1314,7 +1339,10 @@ export class NetworkRoutingManager {
         snapshot,
         false,
       );
-      if (actualPublicIpv4 !== targetPublicIpv4) {
+      if (
+        this.state.policy.internetTarget !== "default" &&
+        actualPublicIpv4 !== targetPublicIpv4
+      ) {
         throw new NetworkRoutingError(
           "NETWORK_ROUTING_POSTCHECK_FAILED",
           "Unbound Internet traffic did not use the requested target",

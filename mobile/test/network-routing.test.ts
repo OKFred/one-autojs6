@@ -106,6 +106,15 @@ assert.notEqual(
 );
 assert.equal(isChinaTelecomDefaultData("4", subscriptions), true);
 assert.equal(
+  parseNetworkRoutingPolicy({ ...policy, internetTarget: "default" })
+    .internetTarget,
+  "default",
+);
+assert.throws(
+  () => parseNetworkRoutingPolicy({ ...policy, internetTarget: "automatic" }),
+  /default, wifi or carrier/,
+);
+assert.equal(
   isChinaTelecomDefaultData(
     "3",
     "[{id=3 mcc=234 mnc=10}, {id=4 mcc=460 mnc=11}]",
@@ -125,14 +134,17 @@ function createDependencies(
 ) {
   const mutations: string[] = [];
   const statuses: NetworkRoutingStatus[] = [];
+  const probeInterfaces: Array<string | undefined> = [];
   let probes = 0;
   let reconnects = 0;
   let currentDefaultNetId = 109;
   let currentTargetTable = "wlan0";
   let managedRulesActive = !options.missingManagedRules;
+  let defaultRuleActive = !options.missingManagedRules;
   return {
     mutations,
     statuses,
+    probeInterfaces,
     get probes() {
       return probes;
     },
@@ -150,11 +162,11 @@ function createDependencies(
         if (command === "ip -6 route show table all") return route6;
         if (command === "ip -4 rule show") {
           if (!managedRulesActive) return "";
-          return `10400: from all oif wlan0 lookup wlan0\n10401: from all oif rmnet_data2 lookup rmnet_data2\n10450: from all to 192.168.44.0/24 iif lo lookup bt-pan\n10500: from all to 192.168.0.0/16 iif lo lookup wlan0\n10600: from all iif lo lookup ${currentTargetTable}\n`;
+          return `10400: from all oif wlan0 lookup wlan0\n10401: from all oif rmnet_data2 lookup rmnet_data2\n10450: from all to 192.168.44.0/24 iif lo lookup bt-pan\n10500: from all to 192.168.0.0/16 iif lo lookup wlan0\n${defaultRuleActive ? `10600: from all iif lo lookup ${currentTargetTable}\n` : ""}`;
         }
         if (command === "ip -6 rule show") {
           if (!managedRulesActive) return "";
-          return `10451: from all to fe80::/64 iif lo lookup bt-pan\n10452: from all to fd95:d1e:12:: iif lo lookup bt-pan\n10500: from all to fd00:12::/48 iif lo lookup wlan0\n10501: from all to fd00:12::/64 iif lo lookup wlan0\n10600: from all iif lo lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n`;
+          return `10451: from all to fe80::/64 iif lo lookup bt-pan\n10452: from all to fd95:d1e:12:: iif lo lookup bt-pan\n10500: from all to fd00:12::/48 iif lo lookup wlan0\n10501: from all to fd00:12::/64 iif lo lookup wlan0\n${defaultRuleActive ? `10600: from all iif lo lookup ${currentTargetTable === "wlan0" ? "wlan0" : "16661"}\n` : ""}`;
         }
         if (command.includes("mobile_data_always_on")) return "1\n";
         if (command.includes("mobile_data")) return "1\n";
@@ -183,6 +195,7 @@ function createDependencies(
           }
         }
         managedRulesActive = command.includes(" rule add priority ");
+        defaultRuleActive = command.includes("priority 10600");
       },
       reconnectManagement: async () => {
         reconnects += 1;
@@ -192,8 +205,12 @@ function createDependencies(
           );
         }
       },
-      probe: async (input: { expectPublicIpv4: boolean }) => {
+      probe: async (input: {
+        interfaceName?: string;
+        expectPublicIpv4: boolean;
+      }) => {
         probes += 1;
+        if (input.expectPublicIpv4) probeInterfaces.push(input.interfaceName);
         if (options.failPreflight && probes === 1) throw new Error("offline");
         if (options.failPostcheck && probes === 4)
           throw new Error("offline after switch");
@@ -244,6 +261,27 @@ try {
   assert.equal(healthyContext.statuses.at(-1)?.state, "ACTIVE");
   assert.equal(healthyContext.statuses.at(-1)?.code, "OK");
   assert.equal("publicIpv4" in healthyContext.statuses.at(-1)!, false);
+
+  const defaultRoot = path.join(temporaryRoot, "default-target");
+  const defaultContext = createDependencies();
+  const defaultManager = new NetworkRoutingManager(
+    defaultRoot,
+    defaultContext.dependencies,
+  );
+  const defaultResult = await defaultManager.apply({
+    ...policy,
+    internetTarget: "default",
+  });
+  assert.equal(defaultResult.status, "SUCCESS");
+  assert.equal(defaultResult.data.target, "default");
+  assert.match(defaultContext.mutations[0], /priority 10500.*lookup wlan0/);
+  assert.doesNotMatch(defaultContext.mutations[0], /priority 10600/);
+  assert.doesNotMatch(defaultContext.mutations[0], /ndc network default set/);
+  assert.deepEqual(defaultContext.probeInterfaces, [undefined, undefined]);
+  assert.equal(defaultContext.statuses.at(-1)?.target, "default");
+  await defaultManager.checkDrift();
+  assert.equal(defaultContext.mutations.length, 1);
+
   await manager.checkDrift();
   assert.equal(healthyContext.mutations.length, 1);
   assert.equal(healthyContext.reconnects, 1);

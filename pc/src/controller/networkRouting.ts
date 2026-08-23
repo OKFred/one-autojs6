@@ -58,7 +58,7 @@ export async function getNetworkRouting(c: Context) {
  * /api/network-routing/apply:
  *   post:
  *     tags: [网络分流]
- *     summary: 通过 Node Server 异步切换 Wi-Fi/中国电信 Internet 出口
+ *     summary: 通过 Node Server 异步应用 Android 默认/Wi-Fi/中国电信 Internet 出口
  *     requestBody:
  *       required: true
  *       content:
@@ -68,7 +68,7 @@ export async function getNetworkRouting(c: Context) {
  *             required: [clientId, internetTarget]
  *             properties:
  *               clientId: { type: string }
- *               internetTarget: { type: string, enum: [wifi, carrier] }
+ *               internetTarget: { type: string, enum: [default, wifi, carrier] }
  *     responses:
  *       200: { description: 返回异步 taskId 与 generation }
  */
@@ -79,7 +79,9 @@ export async function applyNetworkRouting(c: Context) {
     const internetTarget = input.internetTarget;
     if (
       !clientId ||
-      (internetTarget !== "wifi" && internetTarget !== "carrier")
+      (internetTarget !== "default" &&
+        internetTarget !== "wifi" &&
+        internetTarget !== "carrier")
     ) {
       return c.json(
         { ok: false, message: "Invalid network routing request", data: {} },
