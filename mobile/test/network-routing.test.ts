@@ -287,7 +287,7 @@ try {
   assert.equal(healthyContext.reconnects, 1);
   await manager.checkDrift("NETWORK_CHANGE");
   assert.equal(healthyContext.mutations.length, 1);
-  assert.equal(healthyContext.reconnects, 2);
+  assert.equal(healthyContext.reconnects, 1);
   assert.deepEqual(
     healthyContext.statuses.slice(-2).map((status) => status.state),
     ["RECOVERING", "ACTIVE"],

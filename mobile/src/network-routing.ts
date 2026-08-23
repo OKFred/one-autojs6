@@ -1316,19 +1316,19 @@ export class NetworkRoutingManager {
       } catch {
         applied = false;
       }
-      let reconnected = false;
       if (!applied) {
         await this.dependencies.runRoot(
           this.buildApplyCommand(this.state.policy, snapshot),
         );
         await this.dependencies.reconnectManagement();
-        reconnected = true;
         snapshot = await this.inspect();
         this.assertAppliedPolicy(this.state.policy, snapshot);
       }
-      if (trigger === "NETWORK_CHANGE" && !reconnected) {
-        await this.dependencies.reconnectManagement();
-      }
+      // A network-change notification is only a hint that Android's interface
+      // inventory changed. Reconnecting an already healthy management socket
+      // for every address/route event can leave MQTT.js in `disconnecting`
+      // while Android is still converging. A reconnect is required only after
+      // this reconciler actually rewrites the managed routing policy.
       const targetPublicIpv4 = await this.runProbes(
         this.state.policy,
         snapshot,
