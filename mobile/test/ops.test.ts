@@ -3,15 +3,33 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { WebSocketServer } from "ws";
+
 import { DeviceOpsExecutor, parseVolumeOutput } from "../src/ops-executor.js";
 import {
   DeviceOpsFailure,
+  OPS_MAX_ARTIFACT_BYTES,
+  encodeDeviceOpsArtifactFrame,
+  isDeviceOpsArtifact,
   parseDeviceOpsOpenSessionCommand,
   parseDeviceOpsRequest,
 } from "../src/ops-protocol.js";
+import { DeviceOpsSessionManager } from "../src/ops-session.js";
 import { rejectedSubscriptionTopics } from "../src/utils/mqtt.js";
 
 const now = Date.now();
+
+/** Build the minimum PNG header needed by the screenshot validator. */
+function screenshotPng(width = 1080, height = 2340): Buffer {
+  const value = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(value);
+  value.writeUInt32BE(13, 8);
+  value.write("IHDR", 12, "ascii");
+  value.writeUInt32BE(width, 16);
+  value.writeUInt32BE(height, 20);
+  return value;
+}
+
 const openCommand = parseDeviceOpsOpenSessionCommand({
   protocolVersion: 1,
   type: "OPEN_SESSION",
@@ -69,6 +87,7 @@ fs.writeFileSync(path.join(outsideRoot, "secret.txt"), "secret");
 
 let volume = 7;
 const commands: string[] = [];
+const binaryCommands: string[] = [];
 const executor = new DeviceOpsExecutor({
   fileRoots: [{ id: "test-root", label: "Test", path: allowedRoot }],
   sharedStateDirectory: stateRoot,
@@ -79,6 +98,10 @@ const executor = new DeviceOpsExecutor({
     const next = /--set (\d+)$/.exec(command)?.[1];
     if (next) volume = Number(next);
     return "";
+  },
+  runRootBinaryCommand: async (command) => {
+    binaryCommands.push(command);
+    return screenshotPng();
   },
   now: () => now,
 });
@@ -114,9 +137,60 @@ assert.equal(
 const capabilities = (await executor.execute(
   "device.ops.capabilities",
   {},
-)) as { arbitraryShell: boolean; operations: string[] };
+)) as {
+  arbitraryShell: boolean;
+  operations: string[];
+  artifacts: { screenshot: { maxBytes: number; mimeTypes: string[] } };
+};
 assert.equal(capabilities.arbitraryShell, false);
 assert.equal(capabilities.operations.includes("device.shell.exec"), false);
+assert.equal(capabilities.operations.includes("device.screen.capture"), true);
+assert.deepEqual(capabilities.artifacts.screenshot, {
+  maxBytes: OPS_MAX_ARTIFACT_BYTES,
+  mimeTypes: ["image/png"],
+});
+
+const screenshot = await executor.execute("device.screen.capture", {});
+assert.equal(isDeviceOpsArtifact(screenshot), true);
+if (!isDeviceOpsArtifact(screenshot)) throw new Error("Expected artifact");
+assert.equal(binaryCommands[0], "nice -n 10 screencap -p");
+assert.equal(screenshot.width, 1080);
+assert.equal(screenshot.height, 2340);
+assert.match(screenshot.sha256, /^[0-9a-f]{64}$/);
+const artifactFrame = encodeDeviceOpsArtifactFrame(
+  { sessionId: openCommand.sessionId, requestId: "request_12345678" },
+  screenshot,
+);
+const headerLength = artifactFrame.readUInt32BE(0);
+const artifactHeader = JSON.parse(
+  artifactFrame.toString("utf8", 4, 4 + headerLength),
+) as { requestId: string; sizeBytes: number; sha256: string };
+assert.equal(artifactHeader.requestId, "request_12345678");
+assert.equal(artifactHeader.sizeBytes, screenshot.content.byteLength);
+assert.equal(artifactHeader.sha256, screenshot.sha256);
+assert.deepEqual(artifactFrame.subarray(4 + headerLength), screenshot.content);
+
+const oversizedExecutor = new DeviceOpsExecutor({
+  fileRoots: [],
+  sharedStateDirectory: stateRoot,
+  runRootBinaryCommand: async () => Buffer.alloc(OPS_MAX_ARTIFACT_BYTES + 1),
+});
+await assert.rejects(
+  () => oversizedExecutor.execute("device.screen.capture", {}),
+  (error) =>
+    error instanceof DeviceOpsFailure && error.code === "SCREENSHOT_TOO_LARGE",
+);
+const invalidScreenshotExecutor = new DeviceOpsExecutor({
+  fileRoots: [],
+  sharedStateDirectory: stateRoot,
+  runRootBinaryCommand: async () => Buffer.from("not-a-png"),
+});
+await assert.rejects(
+  () => invalidScreenshotExecutor.execute("device.screen.capture", {}),
+  (error) =>
+    error instanceof DeviceOpsFailure &&
+    error.code === "SCREENSHOT_FORMAT_INVALID",
+);
 assert.deepEqual(
   rejectedSubscriptionTopics([
     { topic: "tasks", qos: 1 },
@@ -160,10 +234,7 @@ const foreground = (await android13Executor.execute(
 )) as { packageName: string; activityClass: string };
 assert.equal(foreground.packageName, "com.example.app");
 assert.equal(foreground.activityClass, ".MainActivity");
-const network = (await android13Executor.execute(
-  "device.network.get",
-  {},
-)) as {
+const network = (await android13Executor.execute("device.network.get", {})) as {
   activeTransport: string;
   validated: boolean;
   dnsServers: string[];
@@ -175,6 +246,104 @@ assert.deepEqual(network.dnsServers, ["1.1.1.1", "2606:4700:4700::1111"]);
 assert.equal(network.wifiSsid, "TEST");
 assert.equal(android13Commands.includes("cmd wifi status"), true);
 assert.equal(android13Commands.includes("dumpsys wifi"), false);
+
+const websocketServer = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+await new Promise<void>((resolve, reject) => {
+  websocketServer.once("listening", resolve);
+  websocketServer.once("error", reject);
+});
+const websocketAddress = websocketServer.address();
+if (!websocketAddress || typeof websocketAddress === "string") {
+  throw new Error("Expected a TCP WebSocket test address");
+}
+const sessionNow = Date.now();
+const sessionId = "session_screenshot12345678";
+const responses: Array<Record<string, unknown>> = [];
+let artifacts = 0;
+const concurrentResult = new Promise<void>((resolve, reject) => {
+  const timer = setTimeout(
+    () => reject(new Error("Screenshot concurrency test timed out")),
+    2_000,
+  );
+  websocketServer.once("connection", (socket) => {
+    socket.on("message", (data, isBinary) => {
+      if (isBinary) {
+        artifacts += 1;
+      } else {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (frame.type === "hello") {
+          for (const suffix of ["first", "second"]) {
+            socket.send(
+              JSON.stringify({
+                protocolVersion: 1,
+                type: "request",
+                sessionId,
+                requestId: `request_${suffix}12345678`,
+                operation: "device.screen.capture",
+                params: {},
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 15_000,
+              }),
+            );
+          }
+        } else if (frame.type === "response") {
+          responses.push(frame);
+        }
+      }
+      if (artifacts === 1 && responses.length === 2) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
+});
+const sessionExecutor = new DeviceOpsExecutor({
+  fileRoots: [],
+  sharedStateDirectory: stateRoot,
+  runRootBinaryCommand: async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return screenshotPng();
+  },
+});
+const sessionManager = new DeviceOpsSessionManager({
+  deviceId: "phone-001",
+  reportToken: "device-report-token",
+  allowedWsOrigins: [`ws://127.0.0.1:${websocketAddress.port}`],
+  executor: sessionExecutor,
+  isDeploymentBlocked: () => false,
+  publishEvent: async () => undefined,
+});
+await sessionManager.handleOpenCommand({
+  protocolVersion: 1,
+  type: "OPEN_SESSION",
+  sessionId,
+  deviceId: "phone-001",
+  wsUrl: `ws://127.0.0.1:${websocketAddress.port}/ops`,
+  nonce: "nonce_screenshot12345678",
+  issuedAt: sessionNow,
+  expiresAt: sessionNow + 60_000,
+});
+await concurrentResult;
+assert.equal(artifacts, 1);
+assert.equal(
+  responses.filter((response) => response.status === "SUCCESS").length,
+  1,
+);
+assert.equal(
+  responses.some(
+    (response) =>
+      response.status === "REJECTED" &&
+      response.code === "OPS_CONCURRENCY_LIMIT",
+  ),
+  true,
+);
+await sessionManager.close(
+  "TEST_COMPLETE",
+  "Screenshot concurrency test complete",
+);
+await new Promise<void>((resolve, reject) => {
+  websocketServer.close((error) => (error ? reject(error) : resolve()));
+});
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
 console.log("ops tests passed");

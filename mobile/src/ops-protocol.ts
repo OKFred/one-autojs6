@@ -6,6 +6,12 @@ export const OPS_PROTOCOL_VERSION = 1 as const;
 /** Maximum accepted application frame size. */
 export const OPS_MAX_FRAME_BYTES = 64 * 1024;
 
+/** Maximum screenshot payload relayed through the temporary operations WSS. */
+export const OPS_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+
+/** Maximum JSON header embedded in a binary artifact frame. */
+export const OPS_MAX_ARTIFACT_HEADER_BYTES = 4 * 1024;
+
 /** Operations exposed by the short-lived maintenance channel. */
 export const DEVICE_OPS = [
   "device.ops.capabilities",
@@ -17,6 +23,7 @@ export const DEVICE_OPS = [
   "device.files.list",
   "device.foreground.get",
   "device.network.get",
+  "device.screen.capture",
 ] as const;
 
 /** A supported maintenance operation. */
@@ -68,6 +75,100 @@ export interface DeviceOpsResponse {
   startedAt: number;
   finishedAt: number;
   durationMs: number;
+}
+
+/** Metadata prepended to a binary artifact frame. */
+export interface DeviceOpsArtifactHeader {
+  protocolVersion: 1;
+  type: "artifact";
+  sessionId: string;
+  requestId: string;
+  operation: "device.screen.capture";
+  artifactId: string;
+  mimeType: "image/png";
+  sizeBytes: number;
+  sha256: string;
+  width: number;
+  height: number;
+  capturedAt: number;
+}
+
+/** Ephemeral screenshot returned by the trusted operation executor. */
+export interface DeviceOpsArtifact {
+  kind: "artifact";
+  artifactId: string;
+  operation: "device.screen.capture";
+  mimeType: "image/png";
+  content: Buffer;
+  sizeBytes: number;
+  sha256: string;
+  width: number;
+  height: number;
+  capturedAt: number;
+}
+
+/** Return true when an executor result contains a binary artifact. */
+export function isDeviceOpsArtifact(
+  value: unknown,
+): value is DeviceOpsArtifact {
+  if (!isRecord(value)) return false;
+  return (
+    value.kind === "artifact" &&
+    value.operation === "device.screen.capture" &&
+    value.mimeType === "image/png" &&
+    Buffer.isBuffer(value.content) &&
+    typeof value.artifactId === "string" &&
+    typeof value.sizeBytes === "number" &&
+    typeof value.sha256 === "string" &&
+    typeof value.width === "number" &&
+    typeof value.height === "number" &&
+    typeof value.capturedAt === "number"
+  );
+}
+
+/** Encode one artifact as a bounded binary WSS frame. */
+export function encodeDeviceOpsArtifactFrame(
+  request: Pick<DeviceOpsRequest, "sessionId" | "requestId">,
+  artifact: DeviceOpsArtifact,
+): Buffer {
+  if (
+    artifact.content.byteLength !== artifact.sizeBytes ||
+    artifact.sizeBytes <= 0 ||
+    artifact.sizeBytes > OPS_MAX_ARTIFACT_BYTES
+  ) {
+    throw new DeviceOpsFailure(
+      "SCREENSHOT_TOO_LARGE",
+      "Screenshot exceeded the operations artifact limit",
+    );
+  }
+  const header: DeviceOpsArtifactHeader = {
+    protocolVersion: OPS_PROTOCOL_VERSION,
+    type: "artifact",
+    sessionId: request.sessionId,
+    requestId: request.requestId,
+    operation: artifact.operation,
+    artifactId: artifact.artifactId,
+    mimeType: artifact.mimeType,
+    sizeBytes: artifact.sizeBytes,
+    sha256: artifact.sha256,
+    width: artifact.width,
+    height: artifact.height,
+    capturedAt: artifact.capturedAt,
+  };
+  const headerBytes = Buffer.from(JSON.stringify(header), "utf8");
+  if (headerBytes.byteLength > OPS_MAX_ARTIFACT_HEADER_BYTES) {
+    throw new DeviceOpsFailure(
+      "SCREENSHOT_FORMAT_INVALID",
+      "Screenshot artifact header exceeded the operations limit",
+    );
+  }
+  const frame = Buffer.allocUnsafe(
+    4 + headerBytes.byteLength + artifact.sizeBytes,
+  );
+  frame.writeUInt32BE(headerBytes.byteLength, 0);
+  headerBytes.copy(frame, 4);
+  artifact.content.copy(frame, 4 + headerBytes.byteLength);
+  return frame;
 }
 
 /** Stable application failure returned by an operation handler. */

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -6,6 +7,8 @@ import { promisify } from "node:util";
 import {
   DEVICE_OPS,
   DeviceOpsFailure,
+  OPS_MAX_ARTIFACT_BYTES,
+  type DeviceOpsArtifact,
   type DeviceOpsOperation,
 } from "./ops-protocol.js";
 import { isRecord } from "./protocol.js";
@@ -40,6 +43,7 @@ export interface DeviceOpsExecutorOptions {
   fileRoots: DeviceOpsFileRoot[];
   sharedStateDirectory: string;
   runRootCommand?: (command: string) => Promise<string>;
+  runRootBinaryCommand?: (command: string) => Promise<Buffer>;
   now?: () => number;
 }
 
@@ -51,6 +55,54 @@ async function defaultRootCommand(command: string): Promise<string> {
     maxBuffer: 1024 * 1024,
   });
   return String(stdout).trim();
+}
+
+/** Execute one fixed root command and capture bounded binary output. */
+async function defaultRootBinaryCommand(command: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "su",
+      ["-c", command],
+      {
+        encoding: null,
+        timeout: 10_000,
+        maxBuffer: OPS_MAX_ARTIFACT_BYTES + 1,
+      },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(Buffer.from(stdout));
+      },
+    );
+  });
+}
+
+/** Read and validate the fixed PNG metadata needed by the artifact envelope. */
+export function parseScreenshotPng(content: Buffer): {
+  width: number;
+  height: number;
+} {
+  const signature = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]);
+  if (
+    content.byteLength < 24 ||
+    !content.subarray(0, signature.byteLength).equals(signature) ||
+    content.toString("ascii", 12, 16) !== "IHDR"
+  ) {
+    throw new DeviceOpsFailure(
+      "SCREENSHOT_FORMAT_INVALID",
+      "Android returned an invalid PNG screenshot",
+    );
+  }
+  const width = content.readUInt32BE(16);
+  const height = content.readUInt32BE(20);
+  if (width <= 0 || height <= 0 || width > 16_384 || height > 16_384) {
+    throw new DeviceOpsFailure(
+      "SCREENSHOT_FORMAT_INVALID",
+      "Android returned invalid screenshot dimensions",
+    );
+  }
+  return { width, height };
 }
 
 /** Return true when a candidate path is inside a root path. */
@@ -125,6 +177,7 @@ export function findActiveNetworkLine(connectivity: string): string {
 export class DeviceOpsExecutor {
   private readonly roots = new Map<string, DeviceOpsFileRoot>();
   private readonly runRootCommand: (command: string) => Promise<string>;
+  private readonly runRootBinaryCommand: (command: string) => Promise<Buffer>;
   private readonly now: () => number;
   private readonly audioStatePath: string;
 
@@ -137,6 +190,8 @@ export class DeviceOpsExecutor {
       this.roots.set(root.id, { ...root, path: path.resolve(root.path) });
     }
     this.runRootCommand = options.runRootCommand || defaultRootCommand;
+    this.runRootBinaryCommand =
+      options.runRootBinaryCommand || defaultRootBinaryCommand;
     this.now = options.now || Date.now;
     this.audioStatePath = path.join(
       options.sharedStateDirectory,
@@ -145,7 +200,7 @@ export class DeviceOpsExecutor {
   }
 
   /** Return the fixed capability catalog and configured roots. */
-  private capabilities(): Record<string, unknown> {
+  getCapabilities(): Record<string, unknown> {
     return {
       protocolVersion: 1,
       operations: [...DEVICE_OPS],
@@ -154,7 +209,54 @@ export class DeviceOpsExecutor {
         id,
         label,
       })),
+      artifacts: {
+        screenshot: {
+          mimeTypes: ["image/png"],
+          maxBytes: OPS_MAX_ARTIFACT_BYTES,
+        },
+      },
       arbitraryShell: false,
+    };
+  }
+
+  /** Capture one bounded PNG without starting an AutoJS engine. */
+  private async captureScreenshot(): Promise<DeviceOpsArtifact> {
+    let content: Buffer;
+    try {
+      content = await this.runRootBinaryCommand("nice -n 10 screencap -p");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/maxBuffer|stdout maxBuffer/i.test(message)) {
+        throw new DeviceOpsFailure(
+          "SCREENSHOT_TOO_LARGE",
+          "Screenshot exceeded the operations artifact limit",
+        );
+      }
+      throw new DeviceOpsFailure(
+        "SCREENSHOT_CAPTURE_FAILED",
+        "Android screenshot capture failed",
+      );
+    }
+    if (
+      content.byteLength <= 0 ||
+      content.byteLength > OPS_MAX_ARTIFACT_BYTES
+    ) {
+      throw new DeviceOpsFailure(
+        "SCREENSHOT_TOO_LARGE",
+        "Screenshot exceeded the operations artifact limit",
+      );
+    }
+    const dimensions = parseScreenshotPng(content);
+    return {
+      kind: "artifact",
+      artifactId: `artifact_${randomUUID().replaceAll("-", "")}`,
+      operation: "device.screen.capture",
+      mimeType: "image/png",
+      content,
+      sizeBytes: content.byteLength,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      ...dimensions,
+      capturedAt: this.now(),
     };
   }
 
@@ -287,7 +389,8 @@ export class DeviceOpsExecutor {
     operation: DeviceOpsOperation,
     params: Record<string, unknown>,
   ): Promise<unknown> {
-    if (operation === "device.ops.capabilities") return this.capabilities();
+    if (operation === "device.ops.capabilities") return this.getCapabilities();
+    if (operation === "device.screen.capture") return this.captureScreenshot();
     if (operation === "device.audio.get") {
       if (typeof params.stream === "string" && params.stream !== "all") {
         return this.getAudioStream(audioStream(params));
@@ -418,10 +521,7 @@ export class DeviceOpsExecutor {
       const resumed =
         /(?:topResumedActivity=|ResumedActivity:\s+)ActivityRecord\{[^}]*\su\d+\s+([A-Za-z0-9._]+)\/([^\s}]+)/.exec(
           activity,
-        ) ||
-        /mResumedActivity:.*?\s([A-Za-z0-9._]+)\/([^\s}]+)/.exec(
-          activity,
-        );
+        ) || /mResumedActivity:.*?\s([A-Za-z0-9._]+)\/([^\s}]+)/.exec(activity);
       const focused = /mCurrentFocus=.*?\s([A-Za-z0-9._]+)\/([^\s}]+)/.exec(
         windows,
       );
@@ -455,9 +555,9 @@ export class DeviceOpsExecutor {
             .split(",")
             .map((value) => value.trim().replace(/^\//, ""))
             .filter(Boolean)
-        : [
-            ...dns.matchAll(/\[net\.dns\d+\]: \[([^\]]+)\]/g),
-          ].map((match) => match[1]);
+        : [...dns.matchAll(/\[net\.dns\d+\]: \[([^\]]+)\]/g)].map(
+            (match) => match[1],
+          );
       const wifiSsid = /(?:mWifiInfo|WifiInfo):?.*?SSID:\s*([^,\n]+)/.exec(
         wifi,
       )?.[1];

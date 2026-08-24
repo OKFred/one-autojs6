@@ -146,10 +146,15 @@ AUTOJS6_REPORT_URL=https://example.com/api/v1/admin/mobile/device
 WSS Origin，会话默认由服务端限制为 10 分钟且最长 30 分钟。
 
 运维通道只接受固定的结构化操作：音量读取/设置/静音恢复、存储统计、白名单目录分页、前台
-应用/Activity/窗口、网络信息和能力查询。它不支持任意 JavaScript、Shell、PTY、ttyd 或文件内容
-下载。文件根目录通过 `ops.fileRoots` 配置；客户端日志和部署运行目录由进程自动加入，密钥和业务
-状态目录默认不开放。启用运维前必须设置 `AUTOJS6_REPORT_TOKEN`，该设备凭据只用于 WSS 请求头，
-不会出现在 MQTT 命令或 URL 中。
+应用/Activity/窗口、网络信息、屏幕截图和能力查询。它不支持任意 JavaScript、Shell、PTY、ttyd
+或文件内容下载。文件根目录通过 `ops.fileRoots` 配置；客户端日志和部署运行目录由进程自动加入，
+密钥和业务状态目录默认不开放。启用运维前必须设置 `AUTOJS6_REPORT_TOKEN`，该设备凭据只用于
+WSS 请求头，不会出现在 MQTT 命令或 URL 中。
+
+`device.screen.capture` 由 Termux Node 进程以低优先级执行固定的 `screencap -p`，不会启动 AutoJS、
+进入业务任务队列或抢占前台任务。PNG 最大 16 MiB，以单个 WSS 二进制帧临时转发；同一设备同一
+时间最多一个截图请求，发送完成后立即释放内存，不写入日志、状态目录或对象存储。Android
+`FLAG_SECURE` 页面按系统规则可能显示为黑色，不尝试绕过。
 
 ## Node 与 Worker 结果回传
 

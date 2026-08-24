@@ -5,12 +5,17 @@ import {
   DeviceOpsFailure,
   OPS_MAX_FRAME_BYTES,
   OPS_PROTOCOL_VERSION,
+  encodeDeviceOpsArtifactFrame,
+  isDeviceOpsArtifact,
   parseDeviceOpsOpenSessionCommand,
   parseDeviceOpsRequest,
   type DeviceOpsOpenSessionCommand,
   type DeviceOpsRequest,
   type DeviceOpsResponse,
 } from "./ops-protocol.js";
+
+/** Refuse a screenshot when prior WSS output is already queued. */
+const OPS_SCREENSHOT_MAX_BUFFERED_BYTES = 1024 * 1024;
 
 /** Status event emitted over the non-secret MQTT management channel. */
 export interface DeviceOpsSessionEvent {
@@ -43,6 +48,7 @@ interface ActiveSession {
   lastActivityAt: number;
   readInFlight: number;
   writeInFlight: number;
+  screenshotInFlight: boolean;
   responses: Map<string, DeviceOpsResponse>;
   idleTimer: NodeJS.Timeout | null;
   expiryTimer: NodeJS.Timeout | null;
@@ -157,6 +163,70 @@ export class DeviceOpsSessionManager {
     session.socket.send(payload);
   }
 
+  /** Send one ephemeral screenshot before its terminal JSON response. */
+  private async executeAndTransfer(
+    session: ActiveSession,
+    request: DeviceOpsRequest,
+  ): Promise<unknown> {
+    const socket = session.socket;
+    if (
+      request.operation === "device.screen.capture" &&
+      (socket?.readyState !== WebSocket.OPEN ||
+        socket.bufferedAmount > OPS_SCREENSHOT_MAX_BUFFERED_BYTES)
+    ) {
+      throw new DeviceOpsFailure(
+        "SCREENSHOT_TRANSFER_BUSY",
+        "Operations channel is busy",
+      );
+    }
+    const data = await this.options.executor.execute(
+      request.operation,
+      request.params,
+    );
+    if (!isDeviceOpsArtifact(data)) return data;
+    if (
+      request.operation !== "device.screen.capture" ||
+      session.closed ||
+      this.active !== session ||
+      request.expiresAt <= this.now()
+    ) {
+      throw new DeviceOpsFailure(
+        "SCREENSHOT_TRANSFER_FAILED",
+        "Screenshot transfer could not be completed",
+      );
+    }
+    if (
+      socket?.readyState !== WebSocket.OPEN ||
+      socket.bufferedAmount > OPS_SCREENSHOT_MAX_BUFFERED_BYTES
+    ) {
+      throw new DeviceOpsFailure(
+        "SCREENSHOT_TRANSFER_BUSY",
+        "Operations channel is busy",
+      );
+    }
+    const frame = encodeDeviceOpsArtifactFrame(request, data);
+    await new Promise<void>((resolve, reject) => {
+      socket.send(frame, { binary: true }, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    }).catch(() => {
+      throw new DeviceOpsFailure(
+        "SCREENSHOT_TRANSFER_FAILED",
+        "Screenshot transfer failed",
+      );
+    });
+    return {
+      artifactId: data.artifactId,
+      mimeType: data.mimeType,
+      sizeBytes: data.sizeBytes,
+      sha256: data.sha256,
+      width: data.width,
+      height: data.height,
+      capturedAt: data.capturedAt,
+    };
+  }
+
   /** Execute one validated request with timeout, concurrency and idempotency. */
   private async handleRequest(
     session: ActiveSession,
@@ -197,6 +267,8 @@ export class DeviceOpsSessionManager {
         {},
       );
     } else if (
+      (request.operation === "device.screen.capture" &&
+        session.screenshotInFlight) ||
       (isWrite && session.writeInFlight >= 1) ||
       (!isWrite && session.readInFlight >= 4)
     ) {
@@ -211,6 +283,9 @@ export class DeviceOpsSessionManager {
     } else {
       if (isWrite) session.writeInFlight += 1;
       else session.readInFlight += 1;
+      if (request.operation === "device.screen.capture") {
+        session.screenshotInFlight = true;
+      }
       try {
         const timeoutMs = Math.max(
           1,
@@ -231,7 +306,7 @@ export class DeviceOpsSessionManager {
           );
         });
         const data = await Promise.race([
-          this.options.executor.execute(request.operation, request.params),
+          this.executeAndTransfer(session, request),
           timeoutPromise,
         ]).finally(() => {
           if (timeout) clearTimeout(timeout);
@@ -263,6 +338,9 @@ export class DeviceOpsSessionManager {
       } finally {
         if (isWrite) session.writeInFlight -= 1;
         else session.readInFlight -= 1;
+        if (request.operation === "device.screen.capture") {
+          session.screenshotInFlight = false;
+        }
       }
     }
     session.responses.set(request.requestId, response);
@@ -323,7 +401,7 @@ export class DeviceOpsSessionManager {
           sessionId: session.command.sessionId,
           deviceId: this.options.deviceId,
           nonce: session.command.nonce,
-          capabilities: { protocolVersion: 1, arbitraryShell: false },
+          capabilities: this.options.executor.getCapabilities(),
           timestamp: this.now(),
         }),
       );
@@ -428,6 +506,7 @@ export class DeviceOpsSessionManager {
       lastActivityAt: this.now(),
       readInFlight: 0,
       writeInFlight: 0,
+      screenshotInFlight: false,
       responses: new Map(),
       idleTimer: null,
       expiryTimer: null,
