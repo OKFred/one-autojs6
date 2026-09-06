@@ -2,6 +2,11 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { isRecord } from "./protocol.js";
+import {
+  DEFAULT_LOCAL_SCRCPY_URL,
+  parseLocalScrcpyUrl,
+  parseRemoteRelayOrigin,
+} from "./remote-session-protocol.js";
 
 /** 单个手机事件监听器配置。 */
 export interface EventObserverConfig {
@@ -38,6 +43,13 @@ export interface DeviceOpsConfig {
   fileRoots: Array<{ id: string; label: string; path: string }>;
 }
 
+/** Device-initiated ws-scrcpy relay configuration. */
+export interface RemoteControlConfig {
+  enabled: boolean;
+  allowedRelayOrigins: string[];
+  localScrcpyUrl: string;
+}
+
 /** 手机守护进程配置。 */
 export interface Autojs6Config {
   deviceId?: string;
@@ -62,6 +74,7 @@ export interface Autojs6Config {
     resultPollIntervalMs: number;
   };
   ops: DeviceOpsConfig;
+  remoteControl: RemoteControlConfig;
   tiktok: TikTokConfig;
   events: Record<
     "battery" | "network" | "sms" | "notification",
@@ -115,6 +128,11 @@ export const DEFAULT_CONFIG: Autojs6Config = {
       { id: "shared-download", label: "Downloads", path: "/sdcard/Download" },
       { id: "camera", label: "Camera", path: "/sdcard/DCIM" },
     ],
+  },
+  remoteControl: {
+    enabled: false,
+    allowedRelayOrigins: ["wss://hodor.this-time.com"],
+    localScrcpyUrl: DEFAULT_LOCAL_SCRCPY_URL,
   },
   tiktok: {
     allowedMaterialRoots: [
@@ -178,6 +196,38 @@ function stringArray(value: unknown, fallback: string[]): string[] {
     : fallback;
 }
 
+/**
+ * Parse an explicit list of trusted remote relay origins.
+ *
+ * @param value Unknown configuration value.
+ * @param fallback Safe default origin list.
+ * @returns Canonical WSS origins plus optional IPv4-loopback demo origins.
+ */
+function remoteRelayOrigins(value: unknown, fallback: string[]): string[] {
+  return stringArray(value, fallback).flatMap((origin) => {
+    try {
+      return [parseRemoteRelayOrigin(origin)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * Parse the fixed loopback ws-scrcpy endpoint without accepting a remote host.
+ *
+ * @param value Unknown configuration value.
+ * @param fallback Known-safe loopback endpoint.
+ * @returns Canonical loopback WebSocket URL.
+ */
+function localScrcpyUrl(value: unknown, fallback: string): string {
+  try {
+    return parseLocalScrcpyUrl(value);
+  } catch {
+    return fallback;
+  }
+}
+
 /** 将有限整数配置约束在安全范围内。 */
 function boundedInteger(
   value: unknown,
@@ -234,6 +284,9 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
   const security = isRecord(parsed.security) ? parsed.security : {};
   const tasks = isRecord(parsed.tasks) ? parsed.tasks : {};
   const ops = isRecord(parsed.ops) ? parsed.ops : {};
+  const remoteControl = isRecord(parsed.remoteControl)
+    ? parsed.remoteControl
+    : {};
   const tiktok = isRecord(parsed.tiktok) ? parsed.tiktok : {};
   const events = isRecord(parsed.events) ? parsed.events : {};
   const qos = mqtt.qos === 0 || mqtt.qos === 2 ? mqtt.qos : 1;
@@ -335,6 +388,20 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
                 : [],
             )
           : DEFAULT_CONFIG.ops.fileRoots,
+      },
+      remoteControl: {
+        enabled:
+          typeof remoteControl.enabled === "boolean"
+            ? remoteControl.enabled
+            : DEFAULT_CONFIG.remoteControl.enabled,
+        allowedRelayOrigins: remoteRelayOrigins(
+          remoteControl.allowedRelayOrigins,
+          DEFAULT_CONFIG.remoteControl.allowedRelayOrigins,
+        ),
+        localScrcpyUrl: localScrcpyUrl(
+          remoteControl.localScrcpyUrl,
+          DEFAULT_CONFIG.remoteControl.localScrcpyUrl,
+        ),
       },
       tiktok: {
         expectedHandle:

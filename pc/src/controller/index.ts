@@ -1,6 +1,14 @@
 export { createTask } from "./createTask.js";
 export { getAllTasks } from "./getAllTasks.js";
 export { getTaskStatus } from "./getTaskStatus.js";
+export { createDeviceOpsTask, getDeviceOpsTask } from "./deviceOps.js";
+export {
+  closeRemoteControlSession,
+  createRemoteControlRouteProbe,
+  createRemoteControlSession,
+  getRemoteControlRouteProbe,
+  getRemoteControlSession,
+} from "./remoteControl.js";
 export { createApps } from "./createApps.js";
 export { createAppsDetails } from "./createAppsDetails.js";
 export { createUpdate } from "./createUpdate.js";

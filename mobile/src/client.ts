@@ -66,6 +66,9 @@ import {
   DeviceOpsSessionManager,
   type DeviceOpsSessionEvent,
 } from "./ops-session.js";
+import { RemoteSessionPeer } from "./remote-session-peer.js";
+import type { RemoteSessionEvent } from "./remote-session-protocol.js";
+import { RTC_SIDECAR_RELEASE_PATH } from "./rtc-sidecar-client.js";
 import { curlProbe, NetworkRoutingManager } from "./network-routing.js";
 import { forceReconnectMqtt } from "./mqtt-reconnect.js";
 import { AndroidNetworkChangeMonitor } from "./network-change-monitor.js";
@@ -90,6 +93,7 @@ const resultOutboxDirectory = path.join(
 const releaseManifest = loadReleaseManifest();
 const runtimeDeployment = deploymentRuntimeInfo(releaseManifest);
 const clientVersion = releaseManifest.packageVersion;
+const rtcSidecarDigest = releaseManifest.files[RTC_SIDECAR_RELEASE_PATH];
 const RESULT_OUTBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** 格式化本地日期。 */
@@ -169,6 +173,8 @@ const deploymentCommandsTopic = `autojs6/deploy/v1/devices/${deviceId}/commands`
 const deploymentEventsTopic = `autojs6/deploy/v1/devices/${deviceId}/events`;
 const opsCommandsTopic = `autojs6/ops/v1/devices/${deviceId}/commands`;
 const opsEventsTopic = `autojs6/ops/v1/devices/${deviceId}/events`;
+const remoteSessionCommandsTopic = `autojs6/remote/v1/devices/${deviceId}/commands`;
+const remoteSessionEventsTopic = `autojs6/remote/v1/devices/${deviceId}/events`;
 const deploymentRootDirectory = path.resolve(
   process.env.AUTOJS6_DEPLOYMENT_ROOT ||
     path.join(process.env.HOME || mobileRoot, ".local", "share", "one-autojs6"),
@@ -195,6 +201,9 @@ if (usesHttpReporting && (!config.report.httpBaseUrl || !reportToken)) {
 }
 if (config.ops.enabled && !reportToken) {
   throw new Error("WSS operations require AUTOJS6_REPORT_TOKEN");
+}
+if (config.remoteControl.enabled && !reportToken) {
+  throw new Error("Remote-control relay requires AUTOJS6_REPORT_TOKEN");
 }
 
 /** 将旧共享目录中的 TikTok 去重历史迁移到 Termux 私有账本。 */
@@ -288,6 +297,8 @@ let isStartingTask = false;
 let queueSequence = 0;
 let taskIntakeChain = Promise.resolve();
 let deploymentIntakeChain = Promise.resolve();
+let remoteSessionIntakeChain = Promise.resolve();
+let remoteSessionPeer: RemoteSessionPeer | null = null;
 let observerWatcher: NodeJS.Timeout | null = null;
 let observersStarted = false;
 let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -1765,7 +1776,13 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
 
 /** 串行执行队列中的下一项任务。 */
 function processNextTask(): void {
-  if (activeTask || isStartingTask || deploymentBlockId) return;
+  if (
+    activeTask ||
+    isStartingTask ||
+    deploymentBlockId ||
+    remoteSessionPeer?.isActive()
+  )
+    return;
   const queued = taskQueue.shift();
   if (queued) {
     const request = queued.request;
@@ -1903,6 +1920,16 @@ function publishOpsEvent(event: DeviceOpsSessionEvent): Promise<void> {
   return publishMqttWithAck(opsEventsTopic, event, false);
 }
 
+/**
+ * Publish one non-secret remote-session lifecycle event for audit purposes.
+ *
+ * @param event Sanitized device-side session state.
+ * @returns Completion after the MQTT delivery callback.
+ */
+function publishRemoteSessionEvent(event: RemoteSessionEvent): Promise<void> {
+  return publishMqttWithAck(remoteSessionEventsTopic, event, false);
+}
+
 const opsExecutor = new DeviceOpsExecutor({
   fileRoots: [
     ...config.ops.fileRoots,
@@ -1922,8 +1949,31 @@ const opsSessionManager = new DeviceOpsSessionManager({
   allowedWsOrigins: config.ops.allowedWsOrigins,
   executor: opsExecutor,
   isDeploymentBlocked: () => Boolean(deploymentBlockId),
+  isRemoteControlBlocked: () => Boolean(remoteSessionPeer?.isActive()),
   publishEvent: publishOpsEvent,
 });
+
+remoteSessionPeer = config.remoteControl.enabled
+  ? new RemoteSessionPeer({
+      deviceId,
+      reportToken: reportToken || "",
+      allowedRelayOrigins: config.remoteControl.allowedRelayOrigins,
+      localScrcpyUrl: config.remoteControl.localScrcpyUrl,
+      isDeploymentBlocked: () => Boolean(deploymentBlockId),
+      isDeviceControlBusy: () =>
+        Boolean(activeTask || isStartingTask || opsSessionManager.isActive()),
+      onInactive: processNextTask,
+      publishEvent: publishRemoteSessionEvent,
+      ...(rtcSidecarDigest
+        ? {
+            rtcSidecarExecutable: {
+              executablePath: path.join(mobileRoot, RTC_SIDECAR_RELEASE_PATH),
+              expectedSha256: rtcSidecarDigest,
+            },
+          }
+        : {}),
+    })
+  : null;
 
 const deploymentManager = new DeploymentManager({
   deviceId,
@@ -1934,6 +1984,10 @@ const deploymentManager = new DeploymentManager({
       void opsSessionManager.close(
         "DEPLOYMENT_STARTED",
         "Operations session closed because deployment started",
+      );
+      void remoteSessionPeer?.close(
+        "DEPLOYMENT_STARTED",
+        "Remote session closed because deployment started",
       );
     },
     unblockTaskIntake: (deploymentId) => {
@@ -2014,6 +2068,9 @@ function handleMqttConnect(): void {
   mqttConnectionHandled = true;
   const managementTopics = [tasksTopic, deploymentCommandsTopic];
   if (config.ops.enabled) managementTopics.push(opsCommandsTopic);
+  if (config.remoteControl.enabled) {
+    managementTopics.push(remoteSessionCommandsTopic);
+  }
   mqttClient.subscribe(
     managementTopics,
     { qos: config.mqtt.qos },
@@ -2032,7 +2089,7 @@ function handleMqttConnect(): void {
         return;
       }
       console.log(
-        `[MQTT] Task, deployment and operations subscriptions ready device=${deviceLogId}`,
+        `[MQTT] Management subscriptions ready device=${deviceLogId}`,
       );
       void replayDeploymentOutcomes();
       void reportDeploymentReady().catch((readyError) =>
@@ -2061,7 +2118,8 @@ mqttClient.on("message", (topic, payload) => {
   if (
     topic !== tasksTopic &&
     topic !== deploymentCommandsTopic &&
-    topic !== opsCommandsTopic
+    topic !== opsCommandsTopic &&
+    topic !== remoteSessionCommandsTopic
   )
     return;
   try {
@@ -2085,13 +2143,25 @@ mqttClient.on("message", (topic, payload) => {
         );
       return;
     }
+    if (topic === remoteSessionCommandsTopic) {
+      if (!remoteSessionPeer) return;
+      remoteSessionIntakeChain = remoteSessionIntakeChain
+        .then(() => remoteSessionPeer.handleOpenCommand(value))
+        .catch((error) =>
+          console.error(
+            "[REMOTE] Failed to process remote-session invitation",
+            error,
+          ),
+        );
+      return;
+    }
     taskIntakeChain = taskIntakeChain
       .then(() => enqueueTask(value))
       .catch((error) =>
         console.error("[TASK] Failed to process queued task", error),
       );
   } catch (error) {
-    console.warn("[TASK] Ignored non-JSON task payload", error);
+    console.warn("[MQTT] Ignored non-JSON management payload", error);
   }
 });
 

@@ -9,6 +9,7 @@ import {
   isDeviceOpsArtifact,
   parseDeviceOpsOpenSessionCommand,
   parseDeviceOpsRequest,
+  type DeviceOpsOperation,
   type DeviceOpsOpenSessionCommand,
   type DeviceOpsRequest,
   type DeviceOpsResponse,
@@ -35,6 +36,7 @@ export interface DeviceOpsSessionManagerOptions {
   allowedWsOrigins: string[];
   executor: DeviceOpsExecutor;
   isDeploymentBlocked: () => boolean;
+  isRemoteControlBlocked?: () => boolean;
   publishEvent: (event: DeviceOpsSessionEvent) => Promise<void>;
   now?: () => number;
 }
@@ -62,12 +64,33 @@ function frameText(data: RawData, isBinary: boolean): string {
   return Buffer.from(data).toString("utf8");
 }
 
-/** Return true for operations that mutate device state. */
-function mutating(request: DeviceOpsRequest): boolean {
-  return (
-    request.operation.startsWith("device.audio.") &&
-    request.operation !== "device.audio.get"
-  );
+/** Return true when an operation mutates device state. */
+export function isMutatingDeviceOpsOperation(
+  operation: DeviceOpsOperation,
+): boolean {
+  switch (operation) {
+    case "device.audio.set":
+    case "device.audio.mute":
+    case "device.audio.unmute":
+    case "device.screen.brightness.set":
+    case "device.alert.find":
+      return true;
+    case "device.ops.capabilities":
+    case "device.audio.get":
+    case "device.screen.brightness.get":
+    case "device.storage.stat":
+    case "device.files.list":
+    case "device.foreground.get":
+    case "device.ui.target-at":
+    case "device.network.get":
+    case "device.telephony.get":
+    case "device.screen.capture":
+      return false;
+    default: {
+      const unclassifiedOperation: never = operation;
+      return unclassifiedOperation;
+    }
+  }
 }
 
 /** Manage at most one temporary WSS operations session for a device. */
@@ -246,7 +269,7 @@ export class DeviceOpsSessionManager {
       return;
     }
     const startedAt = this.now();
-    const isWrite = mutating(request);
+    const isWrite = isMutatingDeviceOpsOperation(request.operation);
     let response: DeviceOpsResponse;
     if (request.expiresAt <= startedAt) {
       response = this.response(
@@ -475,6 +498,15 @@ export class DeviceOpsSessionManager {
         "REJECTED",
         "DEPLOYMENT_DRAINING",
         "Device deployment is draining",
+      );
+      return;
+    }
+    if (this.options.isRemoteControlBlocked?.()) {
+      await this.event(
+        command,
+        "REJECTED",
+        "REMOTE_SESSION_ACTIVE",
+        "Remote screen control is active",
       );
       return;
     }

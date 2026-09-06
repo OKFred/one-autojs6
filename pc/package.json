@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "scrcpy:install": "git clone https://github.com/NetrisTV/ws-scrcpy.git ws-scrcpy && cd ws-scrcpy && npm install",
+    "scrcpy:install": "git clone https://github.com/OKFred/ws-scrcpy.git ws-scrcpy && cd ws-scrcpy && npm install",
     "scrcpy:start": "cd ws-scrcpy && npm start",
     "dev:all": "concurrently \"pnpm run dev\" \"pnpm run scrcpy:start\""
   },

@@ -1,12 +1,26 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import dotenv from "dotenv";
 import { MqttService } from "./service/mqtt.service.js";
 import { registerSwagger } from "./swagger.js";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage } from "http";
 import { exec } from "child_process";
+import {
+  createDeviceOpsWebSocketEndpoint,
+  resolveDeviceOpsWebSocketConfig,
+  type DeviceOpsWebSocketConfig,
+} from "./device-ops-websocket.js";
+import { attachWebSocketUpgradeRouter } from "./websocket-upgrade-router.js";
+import { DEVICE_OPS_MAX_FRAME_BYTES } from "./device-ops-protocol.js";
+import {
+  createRemoteControlWebSocketEndpoint,
+  resolveRemoteControlWebSocketConfig,
+  type RemoteControlWebSocketConfig,
+} from "./remote-control-websocket.js";
+import { REMOTE_CONTROL_MAX_JSON_BYTES } from "./remote-control-protocol.js";
 import {
   createApiAuthMiddleware,
   isValidApiToken,
@@ -30,6 +44,13 @@ import {
   createClientDeployment,
   getClientDeployment,
   rollbackClientDeployment,
+  createDeviceOpsTask,
+  getDeviceOpsTask,
+  closeRemoteControlSession,
+  createRemoteControlRouteProbe,
+  createRemoteControlSession,
+  getRemoteControlRouteProbe,
+  getRemoteControlSession,
 } from "./controller/index.js";
 
 dotenv.config();
@@ -55,6 +76,26 @@ if (!process.env.PC_IP) {
 if (!process.env.ONE_AUTOJS6_API_TOKEN) {
   console.error(
     "[ERROR] Environment variable ONE_AUTOJS6_API_TOKEN is required.",
+  );
+  process.exit(1);
+}
+let deviceOpsWebSocketConfig: DeviceOpsWebSocketConfig | null = null;
+let remoteControlWebSocketConfig: RemoteControlWebSocketConfig | null = null;
+try {
+  deviceOpsWebSocketConfig = resolveDeviceOpsWebSocketConfig();
+  remoteControlWebSocketConfig = resolveRemoteControlWebSocketConfig();
+  if (
+    deviceOpsWebSocketConfig &&
+    remoteControlWebSocketConfig &&
+    deviceOpsWebSocketConfig.pathname === remoteControlWebSocketConfig.pathname
+  ) {
+    throw new Error(
+      "DEVICE_OPS_WS_URL and REMOTE_CONTROL_RELAY_WS_URL must use different paths",
+    );
+  }
+} catch (error) {
+  console.error(
+    `[ERROR] ${error instanceof Error ? error.message : String(error)}`,
   );
   process.exit(1);
 }
@@ -86,6 +127,68 @@ app.get("/api/tasks", getAllTasks);
 
 // 获取单个任务状态
 app.get("/api/tasks/:taskId", getTaskStatus);
+
+// 短期设备运维任务：HTTP 只异步受理，手机通过独立认证 WSS 回传结果。
+app.post(
+  "/api/ops/tasks",
+  bodyLimit({
+    maxSize: DEVICE_OPS_MAX_FRAME_BYTES,
+    onError: (c) =>
+      c.json(
+        {
+          ok: false,
+          message: "Request body exceeds the device operations limit",
+          data: {},
+        },
+        413,
+      ),
+  }),
+  createDeviceOpsTask,
+);
+app.get("/api/ops/tasks/:taskId", getDeviceOpsTask);
+
+// AP 隔离场景下的短期服务端会合、单控制租约与有界二进制中继。
+app.post(
+  "/api/remote/sessions",
+  bodyLimit({
+    maxSize: REMOTE_CONTROL_MAX_JSON_BYTES,
+    onError: (c) =>
+      c.json(
+        {
+          ok: false,
+          message: "Request body exceeds the remote-control limit",
+          data: {},
+        },
+        413,
+      ),
+  }),
+  createRemoteControlSession,
+);
+app.get("/api/remote/sessions/:sessionId", getRemoteControlSession);
+app.post(
+  "/api/remote/sessions/:sessionId/route-probes",
+  bodyLimit({
+    maxSize: REMOTE_CONTROL_MAX_JSON_BYTES,
+    onError: (c) =>
+      c.json(
+        {
+          ok: false,
+          message: "Request body exceeds the remote-control limit",
+          data: {},
+        },
+        413,
+      ),
+  }),
+  createRemoteControlRouteProbe,
+);
+app.get(
+  "/api/remote/sessions/:sessionId/route-probes/:taskId",
+  getRemoteControlRouteProbe,
+);
+app.post(
+  "/api/remote/sessions/:sessionId/close",
+  closeRemoteControlSession,
+);
 
 // 下发获取基础应用列表任务 (包名)
 app.post("/api/apps", createApps);
@@ -131,6 +234,13 @@ app.get("/api/config", (c) => {
     message: "Success",
     data: {
       wsPort: MQTT_PORT + 1,
+      defaultClientId: String(process.env.AUTOJS6_CLIENT_ID || ""),
+      defaultAdbSerial: String(process.env.AUTOJS6_ADB_SERIAL || ""),
+      scrcpyOrigin: String(
+        process.env.SCRCPY_ORIGIN || "http://127.0.0.1:8000",
+      ),
+      deviceOpsEnabled: deviceOpsWebSocketConfig !== null,
+      remoteControlEnabled: remoteControlWebSocketConfig !== null,
     },
   });
 });
@@ -139,6 +249,10 @@ app.get("/api/config", (c) => {
 app.use("/dashboard/*", serveStatic({ root: "./public" }));
 // 重定向 /dashboard 到 /dashboard/index.html
 app.get("/dashboard", (c) => c.redirect("/dashboard/index.html"));
+
+// 本地远控、运维和录制演示工作台。
+app.use("/studio/*", serveStatic({ root: "./public" }));
+app.get("/studio", (c) => c.redirect("/studio/index.html"));
 
 // 启动 Hono 服务器
 const server = serve(
@@ -156,8 +270,7 @@ const server = serve(
 
 // 附加基于 WS 的原生简易截屏服务 (用于 Dashboard 的无依赖投屏)
 const wss = new WebSocketServer({
-  server: server as any,
-  path: "/api/screen",
+  noServer: true,
   verifyClient: ({ req }: { req: IncomingMessage }) => {
     const protocols = String(req.headers["sec-websocket-protocol"] || "")
       .split(",")
@@ -201,3 +314,37 @@ wss.on("connection", (ws) => {
     clearInterval(interval);
   });
 });
+
+// 一个 upgrade 路由器同时承载投屏与可选运维通道，避免两个 path WSS 互相拒绝。
+const deviceOpsEndpoint = deviceOpsWebSocketConfig
+  ? createDeviceOpsWebSocketEndpoint(deviceOpsWebSocketConfig)
+  : null;
+const remoteControlEndpoint = remoteControlWebSocketConfig
+  ? createRemoteControlWebSocketEndpoint(remoteControlWebSocketConfig)
+  : null;
+attachWebSocketUpgradeRouter(server as any, [
+  {
+    pathname: "/api/screen",
+    webSocketServer: wss,
+  },
+  ...(deviceOpsEndpoint ? [deviceOpsEndpoint] : []),
+  ...(remoteControlEndpoint ? [remoteControlEndpoint] : []),
+]);
+if (deviceOpsEndpoint) {
+  console.log(
+    `[OPS-WS] Device operations gateway enabled on ${deviceOpsEndpoint.pathname}`,
+  );
+} else {
+  console.log(
+    "[OPS-WS] Device operations gateway disabled; set DEVICE_OPS_REPORT_TOKEN and DEVICE_OPS_WS_URL together to enable it",
+  );
+}
+if (remoteControlEndpoint) {
+  console.log(
+    `[REMOTE-WS] Server relay enabled on ${remoteControlEndpoint.pathname}`,
+  );
+} else {
+  console.log(
+    "[REMOTE-WS] Server relay disabled; set REMOTE_CONTROL_RELAY_WS_URL with DEVICE_OPS_REPORT_TOKEN to enable it",
+  );
+}

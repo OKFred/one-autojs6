@@ -33,12 +33,31 @@ const previousConfigPath = process.env.AUTOJS6_CONFIG_PATH;
 try {
   fs.writeFileSync(
     configPath,
-    JSON.stringify({ security: { allowedScriptIds: ["device.apps.list"] } }),
+    JSON.stringify({
+      security: { allowedScriptIds: ["device.apps.list"] },
+      remoteControl: {
+        enabled: true,
+        allowedRelayOrigins: [
+          "wss://relay.example.test",
+          "ws://127.0.0.1:39001",
+          "ws://localhost:39001",
+          "wss://relay.example.test/path",
+        ],
+        localScrcpyUrl: "ws://192.0.2.10:8886/",
+      },
+    }),
   );
   process.env.AUTOJS6_CONFIG_PATH = configPath;
-  const allowed = loadConfig().config.security.allowedScriptIds;
+  const loaded = loadConfig().config;
+  const allowed = loaded.security.allowedScriptIds;
   assert.equal(allowed.includes("device.network.routing.apply"), true);
   assert.equal(allowed.includes("device.network.routing.disable"), true);
+  assert.equal(loaded.remoteControl.enabled, true);
+  assert.deepEqual(loaded.remoteControl.allowedRelayOrigins, [
+    "wss://relay.example.test",
+    "ws://127.0.0.1:39001",
+  ]);
+  assert.equal(loaded.remoteControl.localScrcpyUrl, "ws://127.0.0.1:8886/");
 } finally {
   if (previousConfigPath === undefined) delete process.env.AUTOJS6_CONFIG_PATH;
   else process.env.AUTOJS6_CONFIG_PATH = previousConfigPath;

@@ -19,10 +19,15 @@ export const DEVICE_OPS = [
   "device.audio.set",
   "device.audio.mute",
   "device.audio.unmute",
+  "device.screen.brightness.get",
+  "device.screen.brightness.set",
   "device.storage.stat",
   "device.files.list",
   "device.foreground.get",
+  "device.ui.target-at",
   "device.network.get",
+  "device.telephony.get",
+  "device.alert.find",
   "device.screen.capture",
 ] as const;
 

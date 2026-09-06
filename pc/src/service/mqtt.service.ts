@@ -18,6 +18,10 @@ const require = createRequire(import.meta.url);
 const createBroker = require("aedes") as typeof createAedesBroker;
 
 type TaskResultHandler = (topicDeviceId: string, payload: unknown) => void;
+type RemoteSessionEventHandler = (
+  topicDeviceId: string,
+  payload: unknown,
+) => void;
 
 interface PresencePayload {
   protocolVersion: 2;
@@ -77,6 +81,7 @@ export class MqttService {
   private externalClient: MqttClient | null = null;
   private readonly onlineDevices = new Map<string, number>();
   private taskResultHandler: TaskResultHandler | null = null;
+  private remoteSessionEventHandler: RemoteSessionEventHandler | null = null;
 
   private constructor() {}
 
@@ -89,6 +94,18 @@ export class MqttService {
   /** 注册严格任务结果处理器，避免服务之间循环 import。 */
   public setTaskResultHandler(handler: TaskResultHandler): void {
     this.taskResultHandler = handler;
+  }
+
+  /**
+   * Register the remote-session lifecycle event handler.
+   *
+   * @param handler Handler receiving the device id isolated by the MQTT topic and its untrusted payload.
+   * @returns Nothing.
+   */
+  public setRemoteSessionEventHandler(
+    handler: RemoteSessionEventHandler,
+  ): void {
+    this.remoteSessionEventHandler = handler;
   }
 
   /** 当前是否配置了可用于可信任务的外部认证 Broker。 */
@@ -106,20 +123,32 @@ export class MqttService {
     return online.length === 1 ? online[0] : null;
   }
 
-  /** 按隔离 Topic 路由 Presence 与任务结果。 */
+  /**
+   * Route device presence, task results, and remote-session lifecycle events by isolated topic.
+   *
+   * @param topic MQTT topic received from either supported broker.
+   * @param payload Raw MQTT message payload.
+   * @returns Nothing.
+   */
   private handleMessage(topic: string, payload: Buffer | string): void {
-    const matched = /^autojs6\/v2\/devices\/([^/]+)\/(presence|results)$/.exec(
-      topic,
-    );
-    if (!matched) return;
-    const topicDeviceId = matched[1];
-    const kind = matched[2];
+    const remoteMatched =
+      /^autojs6\/remote\/v1\/devices\/([^/]+)\/events$/.exec(topic);
+    const v2Matched =
+      /^autojs6\/v2\/devices\/([^/]+)\/(presence|results)$/.exec(topic);
+    if (!remoteMatched && !v2Matched) return;
     let value: unknown;
     try {
       value = JSON.parse(payload.toString()) as unknown;
     } catch {
       return;
     }
+    if (remoteMatched) {
+      this.remoteSessionEventHandler?.(remoteMatched[1], value);
+      return;
+    }
+    if (!v2Matched) return;
+    const topicDeviceId = v2Matched[1];
+    const kind = v2Matched[2];
     if (kind === "presence") {
       const presence = parsePresence(value);
       if (!presence || presence.deviceId !== topicDeviceId) return;
@@ -162,8 +191,15 @@ export class MqttService {
       });
       this.externalClient.on("connect", () => {
         console.log("[MQTT] Connected to external Broker.");
+        const subscriptions = [
+          "autojs6/v2/devices/+/presence",
+          "autojs6/v2/devices/+/results",
+        ];
+        if (String(process.env.REMOTE_CONTROL_RELAY_WS_URL || "").trim()) {
+          subscriptions.push("autojs6/remote/v1/devices/+/events");
+        }
         this.externalClient?.subscribe(
-          ["autojs6/v2/devices/+/presence", "autojs6/v2/devices/+/results"],
+          subscriptions,
           { qos: 1 },
           (error) => {
             if (error) console.error("[MQTT] Subscribe failed", error.message);
@@ -220,5 +256,45 @@ export class MqttService {
         else resolve();
       });
     });
+  }
+
+  /**
+   * Publish one short-lived device operations open-session command.
+   *
+   * @param deviceId Target mobile device identifier.
+   * @param payload Operations v1 OPEN_SESSION payload.
+   * @returns A promise resolved after the authenticated Broker acknowledges QoS 1.
+   */
+  public publishOpsOpenSession(
+    deviceId: string,
+    payload: unknown,
+  ): Promise<void> {
+    if (!/^[A-Za-z0-9._:-]{1,100}$/.test(deviceId)) {
+      return Promise.reject(new Error("Invalid device operations clientId"));
+    }
+    return this.publishExternal(
+      `autojs6/ops/v1/devices/${deviceId}/commands`,
+      payload,
+    );
+  }
+
+  /**
+   * Publish one short-lived remote-control relay invitation.
+   *
+   * @param deviceId Target mobile device identifier.
+   * @param payload Remote relay v1 OPEN_REMOTE_SESSION payload.
+   * @returns A promise resolved after the authenticated Broker acknowledges QoS 1.
+   */
+  public publishRemoteOpenSession(
+    deviceId: string,
+    payload: unknown,
+  ): Promise<void> {
+    if (!/^[A-Za-z0-9._:-]{1,100}$/.test(deviceId)) {
+      return Promise.reject(new Error("Invalid remote-control clientId"));
+    }
+    return this.publishExternal(
+      `autojs6/remote/v1/devices/${deviceId}/commands`,
+      payload,
+    );
   }
 }

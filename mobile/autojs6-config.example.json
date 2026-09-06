@@ -33,7 +33,7 @@
   },
   "ops": {
     "enabled": false,
-    "allowedWsOrigins": ["wss://hodor.this-time.com"],
+    "allowedWsOrigins": ["wss://control.example.com"],
     "fileRoots": [
       {
         "id": "shared-download",
@@ -42,6 +42,11 @@
       },
       { "id": "camera", "label": "Camera", "path": "/sdcard/DCIM" }
     ]
+  },
+  "remoteControl": {
+    "enabled": false,
+    "allowedRelayOrigins": ["wss://control.example.com"],
+    "localScrcpyUrl": "ws://127.0.0.1:8886/"
   },
   "tiktok": {
     "expectedHandle": "your_tiktok_handle",

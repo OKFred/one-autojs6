@@ -5,6 +5,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import {
+  buildTelephonySnapshot,
+  parseNetworkInterfaces,
+  parseTelephonyRegistry,
+  parseWifiStatus,
+} from "./android-diagnostics.js";
+import {
   DEVICE_OPS,
   DeviceOpsFailure,
   OPS_MAX_ARTIFACT_BYTES,
@@ -12,6 +18,15 @@ import {
   type DeviceOpsOperation,
 } from "./ops-protocol.js";
 import { isRecord } from "./protocol.js";
+import {
+  OPS_MAX_UI_DEPTH,
+  OPS_MAX_UI_HIERARCHY_BYTES,
+  OPS_MAX_UI_NODES,
+  OPS_MAX_UI_TEXT_LENGTH,
+  resolveUiTargetAt,
+  type DeviceUiTargetAtParams,
+  type DeviceUiTargetAtResult,
+} from "./ui-target.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -30,6 +45,25 @@ export const AUDIO_STREAMS = {
 
 /** Supported audio stream name. */
 export type AudioStreamName = keyof typeof AUDIO_STREAMS;
+
+/** Lowest remotely selectable brightness, avoiding an effectively black screen. */
+export const OPS_MIN_BRIGHTNESS = 1;
+
+/** Highest Android system brightness level accepted by this operation. */
+export const OPS_MAX_BRIGHTNESS = 255;
+
+/** Maximum duration of one find-device vibration. */
+export const OPS_MAX_FIND_DEVICE_DURATION_MS = 5_000;
+
+/** Minimum duration of one find-device vibration. */
+export const OPS_MIN_FIND_DEVICE_DURATION_MS = 500;
+
+/** Structured Android screen brightness state. */
+export interface AndroidBrightnessSnapshot {
+  level: number;
+  percent: number;
+  mode: "manual" | "automatic" | "unknown";
+}
 
 /** An allowlisted directory exposed through a stable identifier. */
 export interface DeviceOpsFileRoot {
@@ -108,6 +142,48 @@ export function parseScreenshotPng(content: Buffer): {
 /** Return true when a candidate path is inside a root path. */
 function pathWithin(root: string, candidate: string): boolean {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+/** Reject parameters that are not declared by a fixed operation. */
+function validateParamKeys(
+  params: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): void {
+  const unknownKeys = Object.keys(params).filter(
+    (key) => !allowedKeys.includes(key),
+  );
+  if (unknownKeys.length > 0) {
+    throw new DeviceOpsFailure(
+      "OPERATION_PARAMS_INVALID",
+      "The operation includes unsupported parameters",
+      "REJECTED",
+    );
+  }
+}
+
+/** Parse Android system brightness settings into a bounded snapshot. */
+export function parseBrightnessSettings(
+  levelOutput: string,
+  modeOutput: string,
+): AndroidBrightnessSnapshot {
+  const level = Number(levelOutput.trim());
+  if (!Number.isInteger(level) || level < 0 || level > OPS_MAX_BRIGHTNESS) {
+    throw new DeviceOpsFailure(
+      "BRIGHTNESS_QUERY_FAILED",
+      "Android returned an invalid screen brightness level",
+    );
+  }
+  const modeValue = modeOutput.trim();
+  return {
+    level,
+    percent: Math.round((level / OPS_MAX_BRIGHTNESS) * 100),
+    mode:
+      modeValue === "0"
+        ? "manual"
+        : modeValue === "1"
+          ? "automatic"
+          : "unknown",
+  };
 }
 
 /** Parse a supported audio stream name. */
@@ -215,7 +291,194 @@ export class DeviceOpsExecutor {
           maxBytes: OPS_MAX_ARTIFACT_BYTES,
         },
       },
+      screenBrightness: {
+        minimum: OPS_MIN_BRIGHTNESS,
+        maximum: OPS_MAX_BRIGHTNESS,
+        modes: ["manual", "automatic"],
+      },
+      telephony: {
+        sanitized: true,
+        phoneNumber: "availability-and-masked-last-four",
+        excludedIdentifiers: ["IMSI", "ICCID", "IMEI"],
+        rawDiagnostics: false,
+      },
+      uiTargetAt: {
+        source: "android-uiautomator",
+        returnsHierarchy: false,
+        maxHierarchyBytes: OPS_MAX_UI_HIERARCHY_BYTES,
+        maxNodes: OPS_MAX_UI_NODES,
+        maxDepth: OPS_MAX_UI_DEPTH,
+        maxTextLength: OPS_MAX_UI_TEXT_LENGTH,
+        textModes: ["literal", "parameter", "redacted"],
+      },
+      findDevice: {
+        methods: ["notification", "vibration"],
+        minimumDurationMs: OPS_MIN_FIND_DEVICE_DURATION_MS,
+        maximumDurationMs: OPS_MAX_FIND_DEVICE_DURATION_MS,
+        audible: false,
+        audibleReason: "NO_RELIABLE_AUDIO_BACKEND",
+        changesDoNotDisturb: false,
+      },
       arbitraryShell: false,
+    };
+  }
+
+  /** Run an optional diagnostic command without exposing its failure text. */
+  private async optionalRootCommand(command: string): Promise<string> {
+    try {
+      return await this.runRootCommand(command);
+    } catch {
+      return "";
+    }
+  }
+
+  /** Read the Android system brightness level and mode. */
+  private async getBrightness(): Promise<AndroidBrightnessSnapshot> {
+    try {
+      const [level, mode] = await Promise.all([
+        this.runRootCommand("settings get system screen_brightness"),
+        this.runRootCommand("settings get system screen_brightness_mode"),
+      ]);
+      return parseBrightnessSettings(level, mode);
+    } catch (error) {
+      if (error instanceof DeviceOpsFailure) throw error;
+      throw new DeviceOpsFailure(
+        "BRIGHTNESS_QUERY_FAILED",
+        "Android screen brightness query failed",
+      );
+    }
+  }
+
+  /** Apply validated brightness changes and restore prior values on failure. */
+  private async setBrightness(
+    params: Record<string, unknown>,
+  ): Promise<{
+    previous: AndroidBrightnessSnapshot;
+    current: AndroidBrightnessSnapshot;
+  }> {
+    validateParamKeys(params, ["level", "mode"]);
+    const hasLevel = Object.prototype.hasOwnProperty.call(params, "level");
+    const hasMode = Object.prototype.hasOwnProperty.call(params, "mode");
+    if (!hasLevel && !hasMode) {
+      throw new DeviceOpsFailure(
+        "BRIGHTNESS_PARAMS_REQUIRED",
+        "Brightness level or mode is required",
+        "REJECTED",
+      );
+    }
+    if (
+      hasLevel &&
+      (!Number.isInteger(params.level) ||
+        (params.level as number) < OPS_MIN_BRIGHTNESS ||
+        (params.level as number) > OPS_MAX_BRIGHTNESS)
+    ) {
+      throw new DeviceOpsFailure(
+        "BRIGHTNESS_LEVEL_OUT_OF_RANGE",
+        `Brightness level must be an integer from ${OPS_MIN_BRIGHTNESS} to ${OPS_MAX_BRIGHTNESS}`,
+        "REJECTED",
+      );
+    }
+    if (
+      hasMode &&
+      params.mode !== "manual" &&
+      params.mode !== "automatic"
+    ) {
+      throw new DeviceOpsFailure(
+        "BRIGHTNESS_MODE_INVALID",
+        "Brightness mode must be manual or automatic",
+        "REJECTED",
+      );
+    }
+    const previous = await this.getBrightness();
+    if (hasMode && previous.mode === "unknown") {
+      throw new DeviceOpsFailure(
+        "BRIGHTNESS_MODE_UNAVAILABLE",
+        "Android did not expose a restorable brightness mode",
+      );
+    }
+    const desiredLevel = hasLevel ? (params.level as number) : previous.level;
+    const desiredMode = hasMode
+      ? (params.mode as "manual" | "automatic")
+      : previous.mode;
+    let modeAttempted = false;
+    let levelAttempted = false;
+    try {
+      if (hasMode && desiredMode !== previous.mode) {
+        modeAttempted = true;
+        await this.runRootCommand(
+          `settings put system screen_brightness_mode ${desiredMode === "automatic" ? 1 : 0}`,
+        );
+      }
+      if (hasLevel && desiredLevel !== previous.level) {
+        levelAttempted = true;
+        await this.runRootCommand(
+          `settings put system screen_brightness ${desiredLevel}`,
+        );
+      }
+      return { previous, current: await this.getBrightness() };
+    } catch {
+      if (levelAttempted) {
+        await this.runRootCommand(
+          `settings put system screen_brightness ${previous.level}`,
+        ).catch(() => undefined);
+      }
+      if (modeAttempted) {
+        await this.runRootCommand(
+          `settings put system screen_brightness_mode ${previous.mode === "automatic" ? 1 : 0}`,
+        ).catch(() => undefined);
+      }
+      throw new DeviceOpsFailure(
+        "BRIGHTNESS_SET_FAILED",
+        "Android screen brightness update failed",
+      );
+    }
+  }
+
+  /** Post a visible notice and issue one bounded vibration without changing DND. */
+  private async findDeviceAlert(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    validateParamKeys(params, ["durationMs"]);
+    const durationMs = Object.prototype.hasOwnProperty.call(
+      params,
+      "durationMs",
+    )
+      ? params.durationMs
+      : 2_000;
+    if (
+      !Number.isInteger(durationMs) ||
+      (durationMs as number) < OPS_MIN_FIND_DEVICE_DURATION_MS ||
+      (durationMs as number) > OPS_MAX_FIND_DEVICE_DURATION_MS
+    ) {
+      throw new DeviceOpsFailure(
+        "FIND_DEVICE_DURATION_OUT_OF_RANGE",
+        `Find-device duration must be an integer from ${OPS_MIN_FIND_DEVICE_DURATION_MS} to ${OPS_MAX_FIND_DEVICE_DURATION_MS} milliseconds`,
+        "REJECTED",
+      );
+    }
+    const [notification, vibration] = await Promise.allSettled([
+      this.runRootCommand(
+        "cmd notification post -t 'One AutoJS6' one-autojs6-find-device 'Find-device request received'",
+      ),
+      this.runRootCommand(
+        `cmd vibrator_manager synced -f -d one-autojs6-find-device oneshot ${durationMs}`,
+      ),
+    ]);
+    const notificationPosted = notification.status === "fulfilled";
+    const vibrationStarted = vibration.status === "fulfilled";
+    if (!notificationPosted && !vibrationStarted) {
+      throw new DeviceOpsFailure(
+        "FIND_DEVICE_ALERT_FAILED",
+        "Android could not post the find-device notification or vibration",
+      );
+    }
+    return {
+      durationMs,
+      notificationPosted,
+      vibrationStarted,
+      audible: false,
+      audibleReason: "NO_RELIABLE_AUDIO_BACKEND",
+      dndSettingChanged: false,
     };
   }
 
@@ -258,6 +521,103 @@ export class DeviceOpsExecutor {
       ...dimensions,
       capturedAt: this.now(),
     };
+  }
+
+  /** Validate recording coordinates accepted by the UI target lookup. */
+  private uiTargetParams(
+    params: Record<string, unknown>,
+  ): DeviceUiTargetAtParams {
+    validateParamKeys(params, ["x", "y", "screenWidth", "screenHeight"]);
+    const { x, y, screenWidth, screenHeight } = params;
+    if (
+      !Number.isSafeInteger(screenWidth) ||
+      !Number.isSafeInteger(screenHeight) ||
+      (screenWidth as number) < 1 ||
+      (screenHeight as number) < 1 ||
+      (screenWidth as number) > 16_384 ||
+      (screenHeight as number) > 16_384 ||
+      !Number.isSafeInteger(x) ||
+      !Number.isSafeInteger(y) ||
+      (x as number) < 0 ||
+      (y as number) < 0 ||
+      (x as number) >= (screenWidth as number) ||
+      (y as number) >= (screenHeight as number)
+    ) {
+      throw new DeviceOpsFailure(
+        "UI_TARGET_COORDINATES_INVALID",
+        "UI target coordinates must be safe integers inside a 1 to 16384 pixel screen",
+        "REJECTED",
+      );
+    }
+    return {
+      x: x as number,
+      y: y as number,
+      screenWidth: screenWidth as number,
+      screenHeight: screenHeight as number,
+    };
+  }
+
+  /** Dump and inspect one Android UI hierarchy without returning the full tree. */
+  private async getUiTargetAt(
+    params: Record<string, unknown>,
+  ): Promise<DeviceUiTargetAtResult> {
+    const coordinates = this.uiTargetParams(params);
+    const suffix = randomUUID().replaceAll("-", "");
+    const temporaryPath = `/data/local/tmp/one-autojs6-ui-${suffix}.xml`;
+    let hierarchy = "";
+    let cleanupFailed = false;
+    try {
+      await this.runRootCommand(
+        `uiautomator dump --compressed ${temporaryPath}`,
+      );
+      hierarchy = await this.runRootCommand(`cat ${temporaryPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new DeviceOpsFailure(
+        /maxBuffer|parser limit/i.test(message)
+          ? "UI_HIERARCHY_TOO_LARGE"
+          : "UI_HIERARCHY_DUMP_FAILED",
+        /maxBuffer|parser limit/i.test(message)
+          ? "Android UI hierarchy exceeded the read limit"
+          : "Android UI hierarchy dump failed",
+      );
+    } finally {
+      await this.runRootCommand(`rm -f ${temporaryPath}`).catch(() => {
+        cleanupFailed = true;
+      });
+    }
+    if (cleanupFailed) {
+      throw new DeviceOpsFailure(
+        "UI_HIERARCHY_CLEANUP_FAILED",
+        "Android UI hierarchy temporary file cleanup failed",
+      );
+    }
+    if (Buffer.byteLength(hierarchy, "utf8") > OPS_MAX_UI_HIERARCHY_BYTES) {
+      throw new DeviceOpsFailure(
+        "UI_HIERARCHY_TOO_LARGE",
+        "Android UI hierarchy exceeded the read limit",
+      );
+    }
+    const [activity, windows, wmSize] = await Promise.all([
+      this.optionalRootCommand("dumpsys activity activities"),
+      this.optionalRootCommand("dumpsys window windows"),
+      this.optionalRootCommand("wm size"),
+    ]);
+    try {
+      return resolveUiTargetAt(
+        hierarchy,
+        activity,
+        windows,
+        wmSize,
+        coordinates,
+        this.now(),
+      );
+    } catch {
+      throw new DeviceOpsFailure(
+        "UI_HIERARCHY_INVALID",
+        "Android returned an invalid UI hierarchy",
+      );
+    }
   }
 
   /** Resolve an allowlisted path and reject traversal and escaping symlinks. */
@@ -391,6 +751,17 @@ export class DeviceOpsExecutor {
   ): Promise<unknown> {
     if (operation === "device.ops.capabilities") return this.getCapabilities();
     if (operation === "device.screen.capture") return this.captureScreenshot();
+    if (operation === "device.ui.target-at") return this.getUiTargetAt(params);
+    if (operation === "device.screen.brightness.get") {
+      validateParamKeys(params, []);
+      return this.getBrightness();
+    }
+    if (operation === "device.screen.brightness.set") {
+      return this.setBrightness(params);
+    }
+    if (operation === "device.alert.find") {
+      return this.findDeviceAlert(params);
+    }
     if (operation === "device.audio.get") {
       if (typeof params.stream === "string" && params.stream !== "all") {
         return this.getAudioStream(audioStream(params));
@@ -533,14 +904,26 @@ export class DeviceOpsExecutor {
         capturedAt: this.now(),
       };
     }
-    if (operation === "device.network.get") {
-      const [connectivity, addresses, routes, dns, wifi] = await Promise.all([
-        this.runRootCommand("dumpsys connectivity"),
-        this.runRootCommand("ip -o addr show"),
-        this.runRootCommand("ip route show"),
-        this.runRootCommand("getprop"),
-        this.runRootCommand("cmd wifi status"),
+    if (operation === "device.telephony.get") {
+      validateParamKeys(params, []);
+      const [registry, subscriptions, simStates] = await Promise.all([
+        this.optionalRootCommand("dumpsys telephony.registry"),
+        this.optionalRootCommand("dumpsys isub"),
+        this.optionalRootCommand("getprop gsm.sim.state"),
       ]);
+      return buildTelephonySnapshot(registry, subscriptions, simStates);
+    }
+    if (operation === "device.network.get") {
+      validateParamKeys(params, []);
+      const [connectivity, addresses, routes, dns, wifi, telephony] =
+        await Promise.all([
+          this.runRootCommand("dumpsys connectivity"),
+          this.runRootCommand("ip -o addr show"),
+          this.runRootCommand("ip route show"),
+          this.runRootCommand("getprop"),
+          this.runRootCommand("cmd wifi status"),
+          this.optionalRootCommand("dumpsys telephony.registry"),
+        ]);
       const activeNetwork = findActiveNetworkLine(connectivity);
       const transport =
         /ni\{(WIFI|MOBILE|ETHERNET|VPN)[^}]*CONNECTED/.exec(
@@ -558,12 +941,18 @@ export class DeviceOpsExecutor {
         : [...dns.matchAll(/\[net\.dns\d+\]: \[([^\]]+)\]/g)].map(
             (match) => match[1],
           );
-      const wifiSsid = /(?:mWifiInfo|WifiInfo):?.*?SSID:\s*([^,\n]+)/.exec(
-        wifi,
-      )?.[1];
-      const wifiBssid = /(?:mWifiInfo|WifiInfo):?.*?BSSID:\s*([^,\n]+)/.exec(
-        wifi,
-      )?.[1];
+      const wifiSnapshot = parseWifiStatus(wifi);
+      const cellularSlots = parseTelephonyRegistry(telephony).map((slot) => ({
+        slotIndex: slot.slotIndex,
+        registrationState: slot.dataRegistrationState,
+        radioTechnology: slot.dataRadioTechnology,
+        connectionState: slot.dataConnectionState,
+        signal: {
+          primaryTechnology: slot.primarySignalTechnology,
+          lte: slot.lte,
+          nr: slot.nr,
+        },
+      }));
       return {
         activeTransport:
           transport === "MOBILE"
@@ -572,10 +961,16 @@ export class DeviceOpsExecutor {
         validated: /VALIDATED/.test(activeNetwork || ""),
         vpn: transport === "VPN",
         interfaces: addresses.split("\n").filter(Boolean).slice(0, 100),
+        networkInterfaces: parseNetworkInterfaces(addresses),
         routes: routes.split("\n").filter(Boolean).slice(0, 100),
         dnsServers,
-        wifiSsid: wifiSsid?.replace(/^"|"$/g, "") || null,
-        wifiBssid: wifiBssid?.replace(/^"|"$/g, "") || null,
+        wifi: wifiSnapshot,
+        cellular: {
+          available: cellularSlots.length > 0,
+          slots: cellularSlots,
+        },
+        wifiSsid: wifiSnapshot.ssid,
+        wifiBssid: wifiSnapshot.bssid,
       };
     }
     throw new DeviceOpsFailure(

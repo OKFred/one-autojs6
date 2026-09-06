@@ -1,0 +1,3 @@
+[submodule "pc/ws-scrcpy"]
+	path = pc/ws-scrcpy
+	url = https://github.com/OKFred/ws-scrcpy.git

@@ -1,0 +1,4665 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>远程控制与录制工作室</title>
+    <style>
+      :root {
+        --bg: #08100f;
+        --panel: #101a18;
+        --panel-raised: #14221f;
+        --line: #29403a;
+        --text: #eef8f3;
+        --muted: #8ea69e;
+        --accent: #7df5ba;
+        --accent-strong: #29d88b;
+        --warning: #ffd37c;
+        --danger: #ff8e8e;
+        --blue: #83bcff;
+        --radius: 16px;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        background:
+          radial-gradient(circle at 78% -10%, rgba(43, 216, 139, 0.15), transparent 32rem),
+          var(--bg);
+        color: var(--text);
+        margin: 0;
+        min-height: 100vh;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.48;
+      }
+
+      .shell {
+        margin: 0 auto;
+        max-width: 1720px;
+        padding: 22px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        display: flex;
+        gap: 22px;
+        justify-content: space-between;
+        margin-bottom: 18px;
+      }
+
+      .brand {
+        align-items: center;
+        display: flex;
+        gap: 13px;
+      }
+
+      .brand-mark {
+        align-items: center;
+        background: var(--accent);
+        border-radius: 12px;
+        color: #06120d;
+        display: flex;
+        font-size: 20px;
+        font-weight: 900;
+        height: 43px;
+        justify-content: center;
+        width: 43px;
+      }
+
+      h1 {
+        font-size: 19px;
+        letter-spacing: -0.02em;
+        margin: 0;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 4px 0 0;
+      }
+
+      .demo-badge {
+        background: rgba(125, 245, 186, 0.1);
+        border: 1px solid rgba(125, 245, 186, 0.3);
+        border-radius: 999px;
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.11em;
+        padding: 8px 11px;
+        text-transform: uppercase;
+      }
+
+      .connection-bar {
+        align-items: end;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(145px, 210px) minmax(145px, 210px) minmax(170px, 230px) auto;
+      }
+
+      label {
+        color: var(--muted);
+        display: grid;
+        font-size: 11px;
+        gap: 5px;
+      }
+
+      input,
+      select,
+      textarea {
+        background: #0a1311;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        color: var(--text);
+        min-width: 0;
+        outline: none;
+        padding: 9px 11px;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        border-color: var(--accent-strong);
+        box-shadow: 0 0 0 3px rgba(41, 216, 139, 0.1);
+      }
+
+      textarea {
+        min-height: 68px;
+        resize: vertical;
+      }
+
+      .status-pill {
+        align-items: center;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        display: flex;
+        font-size: 12px;
+        gap: 7px;
+        min-height: 38px;
+        padding: 9px 12px;
+      }
+
+      .status-dot {
+        background: var(--muted);
+        border-radius: 50%;
+        height: 8px;
+        width: 8px;
+      }
+
+      .status-dot.online {
+        background: var(--accent);
+        box-shadow: 0 0 10px rgba(125, 245, 186, 0.6);
+      }
+
+      .role-tabs {
+        background: #0c1513;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        display: grid;
+        gap: 5px;
+        grid-template-columns: repeat(4, 1fr);
+        margin-bottom: 14px;
+        padding: 5px;
+      }
+
+      .role-tab {
+        align-items: center;
+        background: transparent;
+        border: 0;
+        border-radius: 9px;
+        color: var(--muted);
+        display: inline-flex;
+        font-size: 13px;
+        font-weight: 700;
+        gap: 7px;
+        justify-content: center;
+        padding: 10px;
+      }
+
+      .role-tab.active {
+        background: var(--panel-raised);
+        color: var(--accent);
+      }
+
+      .role-status-badge {
+        background: rgba(255, 142, 142, 0.14);
+        border: 1px solid rgba(255, 142, 142, 0.3);
+        border-radius: 999px;
+        color: var(--danger);
+        font-size: 9px;
+        line-height: 1;
+        padding: 4px 6px;
+      }
+
+      .workspace {
+        --remote-column-width: 500px;
+        display: grid;
+        gap: 14px;
+        grid-template-columns:
+          minmax(400px, min(var(--remote-column-width), calc(100% - 474px)))
+          minmax(460px, 1fr);
+        min-height: calc(100vh - 162px);
+      }
+
+      .card {
+        background: rgba(16, 26, 24, 0.94);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+
+      .remote-card {
+        container-type: inline-size;
+        display: flex;
+        flex-direction: column;
+        justify-self: center;
+        min-height: 700px;
+        width: min(100%, var(--remote-column-width));
+      }
+
+      .card-head {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        padding: 13px 15px;
+      }
+
+      .card-title {
+        align-items: center;
+        display: flex;
+        font-size: 13px;
+        font-weight: 800;
+        gap: 9px;
+      }
+
+      .small-note {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 500;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .transport-picker {
+        align-items: center;
+        display: flex;
+        flex-direction: row;
+        gap: 7px;
+      }
+
+      .transport-picker select {
+        padding: 7px 9px;
+      }
+
+      .button {
+        background: var(--panel-raised);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 700;
+        padding: 8px 11px;
+      }
+
+      .button:hover {
+        border-color: #507267;
+      }
+
+      .button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #07130e;
+      }
+
+      .button.warning {
+        color: var(--warning);
+      }
+
+      .remote-frame-wrap {
+        background:
+          linear-gradient(45deg, #09100e 25%, transparent 25%) 0 0 / 18px 18px,
+          linear-gradient(45deg, transparent 75%, #09100e 75%) 0 0 / 18px 18px,
+          #0d1714;
+        flex: 1;
+        min-height: 640px;
+        position: relative;
+      }
+
+      .remote-frame {
+        border: 0;
+        height: 100%;
+        transition: filter 150ms ease, opacity 150ms ease;
+        width: 100%;
+      }
+
+      .remote-frame.recovering {
+        filter: grayscale(0.8) blur(1px);
+        opacity: 0.55;
+        pointer-events: none;
+      }
+
+      .transport-overlay {
+        align-items: center;
+        background: rgba(5, 10, 9, 0.82);
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        justify-content: center;
+        left: 0;
+        padding: 28px;
+        position: absolute;
+        right: 0;
+        text-align: center;
+        top: 0;
+        z-index: 3;
+      }
+
+      .transport-overlay strong {
+        color: var(--warning);
+        font-size: 16px;
+      }
+
+      .transport-overlay span {
+        color: var(--muted);
+        font-size: 12px;
+        max-width: 430px;
+      }
+
+      .frame-empty {
+        align-items: center;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 13px;
+        justify-content: center;
+        left: 0;
+        padding: 30px;
+        position: absolute;
+        right: 0;
+        text-align: center;
+        top: 0;
+      }
+
+      .phone-outline {
+        border: 2px solid #39544c;
+        border-radius: 24px;
+        height: 185px;
+        position: relative;
+        width: 92px;
+      }
+
+      .phone-outline::before {
+        background: #39544c;
+        border-radius: 999px;
+        content: "";
+        height: 4px;
+        left: 32px;
+        position: absolute;
+        top: 8px;
+        width: 26px;
+      }
+
+      .side {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-width: 0;
+      }
+
+      .role-panel {
+        min-height: 390px;
+        padding: 17px;
+      }
+
+      .eyebrow {
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h2 {
+        font-size: 21px;
+        letter-spacing: -0.025em;
+        margin: 7px 0;
+      }
+
+      .lead {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.65;
+        margin: 0 0 16px;
+      }
+
+      .quick-grid {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .quick-action {
+        background: #0b1512;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        color: var(--text);
+        min-height: 70px;
+        padding: 11px;
+        text-align: left;
+      }
+
+      .quick-action strong,
+      .quick-action span {
+        display: block;
+      }
+
+      .quick-action strong {
+        font-size: 12px;
+        margin-bottom: 5px;
+      }
+
+      .quick-action span {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .quick-action:hover {
+        border-color: var(--accent-strong);
+      }
+
+      .brightness-row {
+        align-items: end;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: 1fr auto;
+        margin-top: 12px;
+      }
+
+      .feature-list {
+        display: grid;
+        gap: 8px;
+        margin: 14px 0;
+      }
+
+      .feature {
+        align-items: start;
+        background: #0b1512;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        display: grid;
+        gap: 9px;
+        grid-template-columns: auto 1fr;
+        padding: 11px;
+      }
+
+      .feature-icon {
+        color: var(--accent);
+        font-weight: 900;
+      }
+
+      .feature strong,
+      .feature span {
+        display: block;
+      }
+
+      .feature strong {
+        font-size: 12px;
+      }
+
+      .feature span {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.5;
+        margin-top: 3px;
+      }
+
+      .boundary {
+        background: rgba(255, 211, 124, 0.07);
+        border: 1px solid rgba(255, 211, 124, 0.22);
+        border-radius: 10px;
+        color: var(--warning);
+        font-size: 10px;
+        line-height: 1.55;
+        margin-top: 14px;
+        padding: 10px;
+      }
+
+      .studio-workbench {
+        display: grid;
+        gap: 14px;
+        min-width: 0;
+      }
+
+      .studio-heading {
+        align-items: flex-start;
+        display: flex;
+        gap: 14px;
+        justify-content: space-between;
+      }
+
+      .studio-heading h2 {
+        margin-bottom: 3px;
+      }
+
+      .studio-heading p {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+        margin: 0;
+      }
+
+      .studio-status-banner {
+        background: rgba(131, 188, 255, 0.08);
+        border: 1px solid rgba(131, 188, 255, 0.24);
+        border-radius: 11px;
+        color: var(--blue);
+        font-size: 11px;
+        line-height: 1.55;
+        padding: 10px 12px;
+      }
+
+      .studio-status-banner.error {
+        background: rgba(255, 142, 142, 0.08);
+        border-color: rgba(255, 142, 142, 0.25);
+        color: var(--danger);
+      }
+
+      .studio-section {
+        background: #0b1512;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+        padding: 12px;
+      }
+
+      .studio-section:focus {
+        border-color: var(--accent-strong);
+        outline: none;
+      }
+
+      .studio-section-title {
+        align-items: baseline;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: space-between;
+      }
+
+      .studio-section-title strong {
+        font-size: 12px;
+      }
+
+      .studio-section-title span {
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .studio-field-grid,
+      .studio-library-row {
+        align-items: end;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: minmax(180px, 1fr) auto;
+        min-width: 0;
+      }
+
+      .studio-library-row {
+        grid-template-columns: minmax(180px, 1fr) repeat(3, auto);
+      }
+
+      .studio-text-row {
+        align-items: end;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: minmax(180px, 1fr) auto;
+        min-width: 0;
+      }
+
+      .studio-button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .studio-checkbox {
+        align-items: center;
+        color: var(--text);
+        display: inline-flex;
+        font-size: 11px;
+        gap: 8px;
+      }
+
+      .studio-checkbox input {
+        margin: 0;
+      }
+
+      .studio-semantic-settings {
+        align-items: end;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: repeat(2, minmax(150px, 1fr));
+        min-width: 0;
+      }
+
+      .studio-semantic-note {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.5;
+        margin: 0;
+      }
+
+      .studio-file-input {
+        display: none;
+      }
+
+      .studio-summary {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.5;
+      }
+
+      .studio-timeline,
+      .studio-action-list,
+      .studio-audit-list {
+        display: grid;
+        gap: 7px;
+        min-width: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
+
+      .studio-timeline {
+        max-height: 132px;
+      }
+
+      .studio-action-list {
+        max-height: 260px;
+      }
+
+      .studio-audit-list {
+        max-height: 180px;
+      }
+
+      .studio-list-empty {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+        padding: 9px 2px;
+      }
+
+      .studio-action,
+      .studio-marker,
+      .studio-audit-item {
+        background: #07100e;
+        border: 1px solid #203630;
+        border-radius: 9px;
+        color: var(--text);
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+        padding: 9px 10px;
+        text-align: left;
+      }
+
+      .studio-action {
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .studio-action-copy {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      .studio-selector-badge {
+        align-self: start;
+        background: rgba(130, 164, 255, 0.1);
+        border: 1px solid rgba(130, 164, 255, 0.3);
+        border-radius: 999px;
+        color: var(--blue);
+        font-size: 9px;
+        font-weight: 800;
+        padding: 4px 7px;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      .studio-selector-badge.resolved {
+        background: rgba(125, 245, 186, 0.1);
+        border-color: rgba(125, 245, 186, 0.34);
+        color: var(--accent);
+      }
+
+      .studio-selector-badge.needs-review {
+        background: rgba(255, 211, 124, 0.1);
+        border-color: rgba(255, 211, 124, 0.34);
+        color: var(--warning);
+      }
+
+      .studio-action:hover,
+      .studio-action.selected {
+        border-color: var(--accent-strong);
+      }
+
+      .studio-action.deleted {
+        opacity: 0.52;
+        text-decoration: line-through;
+      }
+
+      .studio-action.incomplete {
+        border-color: rgba(255, 211, 124, 0.45);
+      }
+
+      .studio-item-title {
+        font-size: 11px;
+        font-weight: 800;
+        overflow-wrap: anywhere;
+      }
+
+      .studio-item-meta {
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.45;
+      }
+
+      .studio-audit-item.warning {
+        border-color: rgba(255, 211, 124, 0.34);
+        color: var(--warning);
+      }
+
+      .studio-audit-item.info {
+        color: var(--blue);
+      }
+
+      .studio-phase {
+        background: rgba(125, 245, 186, 0.1);
+        border-radius: 999px;
+        color: var(--accent);
+        font-size: 9px;
+        font-weight: 800;
+        padding: 5px 8px;
+      }
+
+      .result-card {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        min-height: 290px;
+      }
+
+      .result-status {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .result-status.busy {
+        color: var(--blue);
+      }
+
+      .result-status.success {
+        color: var(--accent);
+      }
+
+      .result-status.error {
+        color: var(--danger);
+      }
+
+      pre {
+        color: #bdd1ca;
+        flex: 1;
+        font: 11px/1.55 "SFMono-Regular", Consolas, monospace;
+        margin: 0;
+        max-height: 330px;
+        overflow: auto;
+        padding: 14px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .screenshot {
+        background: #050807;
+        border-top: 1px solid var(--line);
+        display: none;
+        max-height: 340px;
+        object-fit: contain;
+        width: 100%;
+      }
+
+      .screenshot.visible {
+        display: block;
+      }
+
+      .route-button {
+        align-items: center;
+        display: inline-flex;
+        gap: 7px;
+      }
+
+      .route-button-dot {
+        background: var(--muted);
+        border-radius: 50%;
+        height: 7px;
+        width: 7px;
+      }
+
+      .route-button-dot.p2p {
+        background: var(--accent);
+        box-shadow: 0 0 8px rgba(125, 245, 186, 0.55);
+      }
+
+      .route-button-dot.relay {
+        background: var(--blue);
+      }
+
+      .route-button-dot.checking {
+        animation: route-pulse 1.1s ease-in-out infinite;
+        background: var(--warning);
+      }
+
+      @keyframes route-pulse {
+        50% { opacity: 0.35; }
+      }
+
+      .route-drawer-backdrop {
+        background: rgba(2, 7, 6, 0.66);
+        inset: 0;
+        opacity: 0;
+        pointer-events: none;
+        position: fixed;
+        transition: opacity 180ms ease;
+        z-index: 19;
+      }
+
+      .route-drawer-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .route-drawer {
+        background: #0c1513;
+        border-left: 1px solid var(--line);
+        bottom: 0;
+        box-shadow: -24px 0 70px rgba(0, 0, 0, 0.42);
+        display: flex;
+        flex-direction: column;
+        max-width: 100%;
+        position: fixed;
+        right: 0;
+        top: 0;
+        transform: translateX(102%);
+        transition: transform 210ms ease;
+        width: 440px;
+        z-index: 20;
+      }
+
+      .route-drawer.open {
+        transform: translateX(0);
+      }
+
+      .route-drawer-head {
+        align-items: flex-start;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 18px;
+        justify-content: space-between;
+        padding: 20px;
+      }
+
+      .route-drawer-head h2 {
+        font-size: 19px;
+        margin: 3px 0 4px;
+      }
+
+      .route-drawer-head p {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+        margin: 0;
+      }
+
+      .route-close {
+        align-items: center;
+        background: var(--panel-raised);
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        color: var(--text);
+        display: flex;
+        flex: 0 0 auto;
+        font-size: 18px;
+        height: 34px;
+        justify-content: center;
+        width: 34px;
+      }
+
+      .route-drawer-body {
+        display: grid;
+        gap: 14px;
+        overflow-y: auto;
+        padding: 16px 20px 24px;
+      }
+
+      .route-summary {
+        background: linear-gradient(145deg, rgba(41, 216, 139, 0.12), rgba(20, 34, 31, 0.72));
+        border: 1px solid rgba(125, 245, 186, 0.24);
+        border-radius: 14px;
+        padding: 15px;
+      }
+
+      .route-summary-row {
+        align-items: center;
+        display: flex;
+        gap: 10px;
+        justify-content: space-between;
+      }
+
+      .route-summary strong {
+        font-size: 16px;
+      }
+
+      .route-health {
+        background: rgba(125, 245, 186, 0.1);
+        border-radius: 999px;
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 800;
+        padding: 5px 8px;
+      }
+
+      .route-summary p {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.55;
+        margin: 8px 0 0;
+      }
+
+      .route-path {
+        align-items: center;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        margin-top: 14px;
+      }
+
+      .route-endpoint {
+        background: #07100e;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        font-size: 10px;
+        font-weight: 800;
+        padding: 8px 9px;
+        text-align: center;
+      }
+
+      .route-path-line {
+        color: var(--accent);
+        font-size: 10px;
+        overflow: hidden;
+        position: relative;
+        text-align: center;
+        white-space: nowrap;
+      }
+
+      .route-path-line::before,
+      .route-path-line::after {
+        border-top: 1px solid rgba(125, 245, 186, 0.35);
+        content: "";
+        display: inline-block;
+        margin: 0 6px 3px;
+        width: 18px;
+      }
+
+      .route-metrics {
+        display: grid;
+        gap: 7px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 12px;
+      }
+
+      .route-metric {
+        background: rgba(6, 14, 12, 0.62);
+        border-radius: 9px;
+        padding: 9px;
+      }
+
+      .route-metric span,
+      .route-metric strong {
+        display: block;
+      }
+
+      .route-metric span {
+        color: var(--muted);
+        font-size: 9px;
+        margin-bottom: 4px;
+      }
+
+      .route-metric strong {
+        font-size: 11px;
+      }
+
+      .route-section-title {
+        align-items: center;
+        display: flex;
+        font-size: 12px;
+        font-weight: 800;
+        justify-content: space-between;
+        margin: 2px 0 8px;
+      }
+
+      .route-section-title span {
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 500;
+      }
+
+      .route-choice-list,
+      .route-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .route-choice {
+        align-items: center;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        cursor: pointer;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: auto 1fr;
+        padding: 11px;
+      }
+
+      .route-choice:has(input:checked) {
+        border-color: var(--accent-strong);
+        box-shadow: inset 0 0 0 1px rgba(41, 216, 139, 0.16);
+      }
+
+      .route-choice input {
+        accent-color: var(--accent-strong);
+        min-width: auto;
+      }
+
+      .route-choice strong,
+      .route-choice span {
+        display: block;
+      }
+
+      .route-choice strong {
+        color: var(--text);
+        font-size: 11px;
+      }
+
+      .route-choice span {
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.45;
+        margin-top: 3px;
+      }
+
+      .route-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        padding: 11px;
+      }
+
+      .route-card.selected {
+        border-color: rgba(125, 245, 186, 0.42);
+      }
+
+      .route-card-head {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+      }
+
+      .route-card-head strong {
+        font-size: 11px;
+      }
+
+      .route-state {
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 9px;
+        padding: 4px 7px;
+      }
+
+      .route-state.selected {
+        background: rgba(125, 245, 186, 0.1);
+        color: var(--accent);
+      }
+
+      .route-state.available {
+        background: rgba(131, 188, 255, 0.1);
+        color: var(--blue);
+      }
+
+      .route-card-summary {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.5;
+        margin-top: 6px;
+      }
+
+      .route-tech {
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        margin-top: 8px;
+        padding-top: 8px;
+      }
+
+      .route-tech summary {
+        cursor: pointer;
+        font-size: 9px;
+      }
+
+      .route-tech div {
+        font: 9px/1.55 "SFMono-Regular", Consolas, monospace;
+        margin-top: 7px;
+        word-break: break-all;
+      }
+
+      .route-probe-action {
+        align-items: center;
+        border-top: 1px solid var(--line);
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+        margin-top: 9px;
+        padding-top: 9px;
+      }
+
+      .route-probe-action span {
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .route-probe-button {
+        background: rgba(131, 188, 255, 0.08);
+        border: 1px solid rgba(131, 188, 255, 0.24);
+        border-radius: 8px;
+        color: var(--blue);
+        flex: 0 0 auto;
+        font-size: 9px;
+        font-weight: 800;
+        padding: 7px 9px;
+      }
+
+      .route-probe-button:disabled {
+        cursor: wait;
+        opacity: 0.62;
+      }
+
+      .route-probe-panel {
+        background: rgba(5, 12, 11, 0.72);
+        border-radius: 9px;
+        margin-top: 9px;
+        padding: 10px;
+      }
+
+      .route-probe-heading {
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.5;
+        margin-bottom: 8px;
+      }
+
+      .route-probe-heading.error {
+        color: var(--danger);
+      }
+
+      .route-hop {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: 22px minmax(0, 1fr) auto;
+        min-height: 42px;
+        position: relative;
+      }
+
+      .route-hop:not(:last-child)::after {
+        border-left: 1px solid rgba(131, 188, 255, 0.24);
+        bottom: -2px;
+        content: "";
+        left: 10px;
+        position: absolute;
+        top: 20px;
+      }
+
+      .route-hop-index {
+        align-items: center;
+        background: #101f1c;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        color: var(--blue);
+        display: flex;
+        font-size: 8px;
+        font-weight: 800;
+        height: 20px;
+        justify-content: center;
+        position: relative;
+        width: 20px;
+        z-index: 1;
+      }
+
+      .route-hop.endpoint .route-hop-index {
+        background: rgba(41, 216, 139, 0.12);
+        border-color: rgba(125, 245, 186, 0.32);
+        color: var(--accent);
+      }
+
+      .route-hop-main strong,
+      .route-hop-main span {
+        display: block;
+      }
+
+      .route-hop-main strong {
+        color: var(--text);
+        font: 10px/1.4 "SFMono-Regular", Consolas, monospace;
+        overflow-wrap: anywhere;
+      }
+
+      .route-hop-main span {
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+
+      .route-hop-latency {
+        color: var(--muted);
+        font-size: 9px;
+        padding-top: 2px;
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      .route-hop-latency.ping {
+        color: var(--accent);
+      }
+
+      .route-note {
+        background: rgba(255, 211, 124, 0.06);
+        border: 1px solid rgba(255, 211, 124, 0.18);
+        border-radius: 10px;
+        color: #dbc89e;
+        font-size: 9px;
+        line-height: 1.55;
+        padding: 10px;
+      }
+
+      .route-apply {
+        width: 100%;
+      }
+
+      body.route-drawer-open {
+        overflow: hidden;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      @container (max-width: 560px) {
+        .remote-card > .card-head {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .remote-card > .card-head .actions {
+          width: 100%;
+        }
+      }
+
+      @media (max-width: 1050px) {
+        .topbar {
+          display: grid;
+        }
+
+        .connection-bar {
+          width: 100%;
+        }
+      }
+
+      @media (max-width: 960px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .role-panel {
+          scroll-margin-top: 12px;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .shell {
+          padding: 12px;
+        }
+
+        .connection-bar {
+          grid-template-columns: 1fr;
+        }
+
+        .role-tabs {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .workspace {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .remote-card {
+          min-height: 600px;
+        }
+
+        .card-head {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .studio-field-grid,
+        .studio-library-row,
+        .studio-text-row,
+        .studio-semantic-settings {
+          align-items: stretch;
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .studio-heading {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .studio-heading .button {
+          align-self: flex-start;
+        }
+
+        .route-drawer {
+          width: calc(100% - 14px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">R</div>
+          <div>
+            <h1>远程控制与录制工作室</h1>
+            <p class="subtitle">服务端会合与中继、真机控制、行为录制和自动化草稿</p>
+          </div>
+          <span class="demo-badge">可选 P2P</span>
+        </div>
+        <div class="connection-bar">
+          <label>
+            手机 Client ID
+            <input id="client-id" autocomplete="off" placeholder="例如 phone-001" />
+          </label>
+          <label>
+            ADB Serial（仅本机调试）
+            <input id="adb-serial" autocomplete="off" placeholder="adb devices 中的序列号" />
+          </label>
+          <label>
+            PC API Token（不持久化）
+            <input id="api-token" type="password" autocomplete="off" placeholder="Bearer token" />
+          </label>
+          <div class="status-pill">
+            <span id="connection-dot" class="status-dot"></span>
+            <span id="connection-label">等待连接</span>
+          </div>
+        </div>
+      </header>
+
+      <nav class="role-tabs" aria-label="角色工作台">
+        <button class="role-tab active" data-role="ops">运维</button>
+        <button class="role-tab" data-role="product">
+          产品
+          <span id="recording-role-badge" class="role-status-badge hidden" aria-live="polite">录制中</span>
+        </button>
+        <button class="role-tab" data-role="developer">开发</button>
+        <button class="role-tab" data-role="ai">AI</button>
+      </nav>
+
+      <section class="workspace">
+        <article class="card remote-card">
+          <div class="card-head">
+            <div class="card-title">
+              实时手机画面
+              <span class="small-note">ws-scrcpy · 服务端会合 + 可选 WebRTC 直连</span>
+            </div>
+            <div class="actions">
+              <button id="open-route-drawer" class="button route-button" type="button" aria-haspopup="dialog" aria-controls="route-drawer">
+                <span id="route-button-dot" class="route-button-dot" aria-hidden="true"></span>
+                <span id="route-button-label">线路详情</span>
+              </button>
+              <button id="connect-relay" class="button primary">连接远控</button>
+              <button id="connect-stream" class="button">本机 ADB 调试</button>
+              <button id="show-devices" class="button">本机设备列表</button>
+              <button id="open-stream" class="button">独立窗口（本机）</button>
+              <button id="reload-stream" class="button">刷新</button>
+            </div>
+          </div>
+          <div class="remote-frame-wrap">
+            <div id="frame-empty" class="frame-empty">
+              <div class="phone-outline" aria-hidden="true"></div>
+              <strong>输入 Client ID 与 API Token，然后通过服务端连接真机</strong>
+              <span class="small-note">手机与浏览器分别主动连接同一服务端；不依赖同一局域网，AP 隔离下仍可工作。</span>
+            </div>
+            <iframe
+              id="remote-frame"
+              class="remote-frame hidden"
+              title="ws-scrcpy 真机远程控制"
+              allow="clipboard-read; clipboard-write"
+            ></iframe>
+            <div id="transport-overlay" class="transport-overlay hidden" role="status" aria-live="assertive">
+              <strong>数据通道正在恢复</strong>
+              <span id="transport-overlay-detail">输入已冻结；不会缓存或补发触控与按键。</span>
+            </div>
+          </div>
+        </article>
+
+        <aside class="side">
+          <article class="card role-panel">
+            <section data-panel="ops">
+              <span class="eyebrow">运维</span>
+              <h2>安全白名单运维</h2>
+              <p class="lead">每次操作先异步受理，再轮询真机结果。没有任意 Shell、任意文件或远程脚本入口。</p>
+              <div class="quick-grid">
+                <button class="quick-action" data-operation="device.ops.capabilities">
+                  <strong>能力清单</strong><span>查询手机实际支持项</span>
+                </button>
+                <button class="quick-action" data-bundle="overview">
+                  <strong>设备概览</strong><span>网络、SIM、亮度</span>
+                </button>
+                <button class="quick-action" data-operation="device.network.get">
+                  <strong>网络与信号</strong><span>网卡 IP、Wi-Fi、蜂窝信号</span>
+                </button>
+                <button class="quick-action" data-operation="device.telephony.get">
+                  <strong>手机号信息</strong><span>只返回掩码或不可用原因</span>
+                </button>
+                <button class="quick-action" data-operation="device.audio.get" data-params='{"stream":"ring"}'>
+                  <strong>铃声音量</strong><span>只读当前音量与上限</span>
+                </button>
+                <button class="quick-action warning" data-operation="device.alert.find" data-params='{"durationMs":1200}'>
+                  <strong>寻找手机</strong><span>振动 + 通知，不改勿扰</span>
+                </button>
+                <button class="quick-action" data-operation="device.foreground.get">
+                  <strong>前台应用</strong><span>当前焦点窗口</span>
+                </button>
+                <button class="quick-action" data-operation="device.screen.capture">
+                  <strong>临时截图</strong><span>仅在内存短时保留</span>
+                </button>
+              </div>
+              <div class="brightness-row">
+                <label>
+                  屏幕亮度 1–255
+                  <input id="brightness" type="number" min="1" max="255" value="31" />
+                </label>
+                <button id="set-brightness" class="button">设置亮度</button>
+              </div>
+            </section>
+
+            <section id="product-panel" class="hidden" data-panel="product">
+              <div id="product-intro">
+                <span class="eyebrow">产品</span>
+                <h2>录制与剪辑</h2>
+                <p class="lead">工作台固定显示在手机画面右侧；录制期间仍可直接点击、滑动和输入，不再展开遮挡画面的 More 面板。</p>
+                <div class="feature-list">
+                  <div class="feature"><span class="feature-icon">01</span><div><strong>动作 + 可选 WebM</strong><span>录制浏览器发出的触摸、滑动、按键和文本；画面录制需主动勾选。</span></div></div>
+                  <div class="feature"><span class="feature-icon">02</span><div><strong>非破坏剪辑</strong><span>选择时间线动作后删除，可撤销/重做；原始事件始终保留。</span></div></div>
+                  <div class="feature"><span class="feature-icon">03</span><div><strong>保存、载入、删除</strong><span>项目保存在 ws-scrcpy 所在浏览器空间，可导入导出 JSON。</span></div></div>
+                  <div class="feature"><span class="feature-icon">04</span><div><strong>可视化回放</strong><span>回放时叠加点击脉冲与滑动轨迹，已删除动作不执行。</span></div></div>
+                </div>
+                <button class="button primary open-studio" type="button" data-studio-focus="overview">打开远控与录制工作室</button>
+                <div class="boundary">直接在手机屏幕上的物理触摸不会经过浏览器控制通道，因此本工作台只录制网页端发出的操作。</div>
+              </div>
+
+              <div id="recording-studio" class="studio-workbench hidden">
+                <div class="studio-heading">
+                  <div>
+                    <span class="eyebrow">录制工作台</span>
+                    <h2>录制、剪辑与回放</h2>
+                    <p>数据保留在 ws-scrcpy 页面；父页只接收隐私安全的动作摘要和本地下载产物。</p>
+                  </div>
+                  <button id="close-recording-studio" class="button" type="button">收起工作台</button>
+                </div>
+
+                <div id="studio-status-banner" class="studio-status-banner" role="status" aria-live="polite">
+                  正在准备录制工作台…
+                </div>
+
+                <section id="studio-overview" class="studio-section" tabindex="-1">
+                  <div class="studio-section-title">
+                    <strong>录制设置</strong>
+                    <span id="studio-phase" class="studio-phase">等待连接</span>
+                  </div>
+                  <div class="studio-field-grid">
+                    <label>
+                      录制标题
+                      <input id="studio-title" maxlength="120" autocomplete="off" placeholder="未命名录制" />
+                    </label>
+                    <button id="studio-record-toggle" class="button primary" type="button" disabled>开始录制</button>
+                  </div>
+                  <label class="studio-checkbox">
+                    <input id="studio-capture-video" type="checkbox" disabled />
+                    同时录制渲染画面（可选 WebM，内存上限 128 MiB）
+                  </label>
+                  <div class="studio-text-row">
+                    <label>
+                      向当前焦点输入文本
+                      <textarea id="studio-send-text" maxlength="2000" autocomplete="off" spellcheck="false" disabled></textarea>
+                    </label>
+                    <button id="studio-send-text-button" class="button primary" type="button" disabled>输入并记录为文本动作</button>
+                  </div>
+                  <p class="studio-semantic-note">仅在录制中使用；只向当前焦点输入，不会点击发送按钮；提交后输入框立即清空，但项目 JSON 与生成代码可能包含输入值。</p>
+                  <div class="studio-button-row">
+                    <button id="studio-export-json" class="button" type="button" data-studio-command="export-json" disabled>导出项目 JSON</button>
+                    <button id="studio-import-json" class="button" type="button" disabled>导入 JSON</button>
+                    <input id="studio-import-file" class="studio-file-input" type="file" accept="application/json,.json" />
+                    <button id="studio-export-webm" class="button" type="button" data-studio-command="export-webm" disabled>下载 WebM</button>
+                  </div>
+                </section>
+
+                <section class="studio-section">
+                  <div class="studio-section-title">
+                    <strong>浏览器项目库</strong>
+                    <span>最多保存 25 条</span>
+                  </div>
+                  <div class="studio-library-row">
+                    <label>
+                      已保存项目
+                      <select id="studio-project-select" disabled>
+                        <option value="">请选择已保存项目</option>
+                      </select>
+                    </label>
+                    <button id="studio-save-project" class="button" type="button" data-studio-command="save-project" disabled>保存</button>
+                    <button id="studio-load-project" class="button" type="button" disabled>载入</button>
+                    <button id="studio-delete-project" class="button warning" type="button" disabled>删除</button>
+                  </div>
+                </section>
+
+                <section class="studio-section">
+                  <div class="studio-section-title">
+                    <strong>剪辑时间线</strong>
+                    <span id="studio-counts">尚无动作</span>
+                  </div>
+                  <div id="studio-timeline" class="studio-timeline" aria-label="传输中断标记">
+                    <div class="studio-list-empty">录制过程中发生的 P2P → WSS 中断会显示在这里，但不会作为动作执行。</div>
+                  </div>
+                  <div id="studio-action-list" class="studio-action-list" aria-label="录制动作">
+                    <div class="studio-list-empty">停止录制或载入项目后，可在这里选择并删除动作。</div>
+                  </div>
+                  <div class="studio-button-row">
+                    <button id="studio-delete-action" class="button warning" type="button" data-studio-command="delete-selected-action" disabled>删除所选动作</button>
+                    <button id="studio-undo-delete" class="button" type="button" data-studio-command="undo-delete" disabled>撤销删除</button>
+                    <button id="studio-redo-delete" class="button" type="button" data-studio-command="redo-delete" disabled>重做删除</button>
+                    <button id="studio-identify-action" class="button primary" type="button" disabled>识别所选控件</button>
+                    <button id="studio-clear-action-semantic" class="button" type="button" disabled>清除控件识别</button>
+                    <button id="studio-start-replay" class="button primary" type="button" data-studio-command="start-replay" disabled>按原时序回放</button>
+                    <button id="studio-cancel-replay" class="button" type="button" data-studio-command="cancel-replay" disabled>取消回放</button>
+                  </div>
+                  <div class="studio-semantic-settings">
+                    <label>
+                      选择器失败策略
+                      <select id="studio-semantic-fallback">
+                        <option value="selector-only" selected>仅选择器（默认最安全）</option>
+                        <option value="selector-then-coordinate">选择器优先，坐标兜底</option>
+                        <option value="confirm-coordinate">坐标兜底前确认</option>
+                      </select>
+                    </label>
+                    <label>
+                      动作影响
+                      <select id="studio-semantic-side-effect">
+                        <option value="none" selected>普通操作</option>
+                        <option value="external-write">外部写入（发送 / 发布）</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p class="studio-semantic-note">识别读取手机当前画面，请先回到该动作所在页面。外部写入会强制使用“仅选择器”，避免坐标漂移触发不可逆操作；设置会在下次识别时确认。</p>
+                </section>
+
+                <section id="studio-autojs6" class="studio-section" tabindex="-1">
+                  <div class="studio-section-title">
+                    <strong>AutoJS6 选择器优先草稿</strong>
+                    <span>优先使用已识别控件；坐标仅按安全策略兜底</span>
+                  </div>
+                  <button id="studio-export-autojs6" class="button primary" type="button" data-studio-command="export-autojs6" disabled>下载选择器优先 AutoJS6 草稿</button>
+                </section>
+
+                <section id="studio-audit-section" class="studio-section" tabindex="-1">
+                  <div class="studio-section-title">
+                    <strong>本地规则审计</strong>
+                    <span>不上传录制内容</span>
+                  </div>
+                  <div id="studio-audit-list" class="studio-audit-list">
+                    <div class="studio-list-empty">完成一段录制后，这里会检查坐标脆弱性、异常等待和未闭合手势。</div>
+                  </div>
+                </section>
+              </div>
+            </section>
+
+            <section class="hidden" data-panel="developer">
+              <span class="eyebrow">开发</span>
+              <h2>一键生成选择器优先 AutoJS6 草稿</h2>
+              <p class="lead">剪辑后的可见动作优先使用已确认的控件选择器；只有普通操作才可按显式安全策略使用缩放坐标兜底。</p>
+              <div class="feature-list">
+                <div class="feature"><span class="feature-icon">{ }</span><div><strong>动作语义化</strong><span>原始控制包聚合为 tap、longPress、swipe、scroll、text 与 key。</span></div></div>
+                <div class="feature"><span class="feature-icon">↗</span><div><strong>选择器优先</strong><span>资源 ID、描述、文本和控件类型按质量排序；坐标只作受控兜底。</span></div></div>
+                <div class="feature"><span class="feature-icon">!</span><div><strong>运行前复核</strong><span>生成文件是开发草稿，不会由服务端直接执行。</span></div></div>
+              </div>
+              <button class="button primary open-studio" type="button" data-studio-focus="autojs6">进入工作台生成代码</button>
+              <div class="boundary">草稿中可能包含录制时输入的文本；下载前应删除敏感动作并进行代码审查。</div>
+            </section>
+
+            <section class="hidden" data-panel="ai">
+              <span class="eyebrow">AI 助手</span>
+              <h2>先做确定性审计</h2>
+              <p class="lead">AI 入口的第一版不上传录制内容：本地检查坐标脆弱性、异常等待、敏感文本和未闭合手势。</p>
+              <div class="feature-list">
+                <div class="feature"><span class="feature-icon">A</span><div><strong>脚本体检</strong><span>给每个动作定位风险，并建议优先改成控件选择器。</span></div></div>
+                <div class="feature"><span class="feature-icon">B</span><div><strong>失败解释</strong><span>后续可结合截图和执行轨迹定位回放偏差。</span></div></div>
+                <div class="feature"><span class="feature-icon">C</span><div><strong>自然语言编排</strong><span>未来把意图编译成白名单操作或待审核脚本，不直接越权执行。</span></div></div>
+              </div>
+              <button class="button primary open-studio" type="button" data-studio-focus="audit">查看本地 AI 审计</button>
+              <div class="boundary">本轮 AI 是本地规则审计，不是大模型调用；这使演示可重复，也避免操作与输入数据外发。</div>
+            </section>
+          </article>
+
+          <article class="card result-card">
+            <div class="card-head">
+              <div class="card-title">任务结果</div>
+              <span id="result-status" class="result-status">尚未执行</span>
+            </div>
+            <pre id="result-output">选择一个运维动作后，这里会展示异步任务状态与真机返回值。</pre>
+            <img id="screenshot" class="screenshot" alt="手机临时截图" />
+          </article>
+        </aside>
+      </section>
+    </main>
+
+    <div id="route-drawer-backdrop" class="route-drawer-backdrop" aria-hidden="true"></div>
+    <aside id="route-drawer" class="route-drawer" role="dialog" aria-modal="true" aria-labelledby="route-drawer-title" aria-hidden="true" inert>
+      <div class="route-drawer-head">
+        <div>
+          <span class="eyebrow">连接</span>
+          <h2 id="route-drawer-title">连接线路</h2>
+          <p>看懂当前画面从哪里走，也可以换一种连接方式。</p>
+        </div>
+        <button id="close-route-drawer" class="route-close" type="button" aria-label="关闭线路详情">×</button>
+      </div>
+      <div class="route-drawer-body">
+        <section class="route-summary" aria-live="polite">
+          <div class="route-summary-row">
+            <strong id="route-summary-title">尚未连接</strong>
+            <span id="route-summary-health" class="route-health">等待连接</span>
+          </div>
+          <p id="route-summary-description">连接手机后，这里会显示实际使用的线路。</p>
+          <div class="route-path" aria-label="当前数据路径">
+            <span class="route-endpoint">这台电脑</span>
+            <span id="route-path-label" class="route-path-line">等待连接</span>
+            <span class="route-endpoint">手机</span>
+          </div>
+          <div class="route-metrics">
+            <div class="route-metric"><span>连接耗时</span><strong id="route-duration">—</strong></div>
+            <div class="route-metric"><span>当前延迟</span><strong id="route-rtt">—</strong></div>
+            <div class="route-metric"><span>已传输</span><strong id="route-traffic">—</strong></div>
+          </div>
+        </section>
+
+        <section>
+          <div class="route-section-title">选择连接方式 <span>更改后会重新连接</span></div>
+          <div class="route-choice-list">
+            <label class="route-choice">
+              <input type="radio" name="route-preference" value="p2p-preferred" />
+              <span><strong>自动选择（推荐）</strong><span>优先让电脑和手机直接连接，不通时自动走服务器。</span></span>
+            </label>
+            <label class="route-choice">
+              <input type="radio" name="route-preference" value="relay" checked />
+              <span><strong>服务器中继</strong><span>画面固定经过服务器，兼容性更稳，但延迟和流量成本更高。</span></span>
+            </label>
+          </div>
+          <select id="transport-preference" class="hidden" aria-hidden="true" tabindex="-1">
+            <option value="relay" selected>服务器中继</option>
+            <option value="p2p-preferred">自动（P2P 优先）</option>
+          </select>
+          <button id="apply-route-preference" class="button primary route-apply" type="button">使用此方式连接</button>
+        </section>
+
+        <section>
+          <div class="route-section-title">本次检测到的线路 <span id="route-updated-at">等待检测</span></div>
+          <div id="route-list" class="route-list">
+            <div class="route-card"><div class="route-card-summary">连接后会自动检测，不需要手动配置 IP 或端口。</div></div>
+          </div>
+        </section>
+
+        <div class="route-note">
+          点击“查看经过节点”后，由这台 PC 对本次手机候选地址做一次限时探测。节点 IP、可用的域名和 Ping 延时仅在内存短暂保留，不写入审计；有些路由器或运营商节点会选择不回应。
+        </div>
+      </div>
+    </aside>
+
+    <script>
+      "use strict";
+
+      let scrcpyOrigin = "http://127.0.0.1:8000";
+      const terminalStates = new Set(["SUCCESS", "FAILURE", "TIMEOUT", "REJECTED", "CANCELLED"]);
+      const remoteTerminalStates = new Set(["CLOSED", "EXPIRED", "FAILED"]);
+      const routeProbeTerminalStates = new Set(["SUCCESS", "FAILURE", "TIMEOUT"]);
+      const relayConnectMessageType = "one-autojs6.remote.connect.v1";
+      const relayStateMessageType = "one-autojs6.remote.state.v1";
+      const relayDiagnosticsMessageType = "one-autojs6.remote.diagnostics.v1";
+      const relayLayoutMessageType = "one-autojs6.remote.layout.v1";
+      const studioCommandMessageType = "one-autojs6.remote.studio.command.v1";
+      const studioEventMessageType = "one-autojs6.remote.studio.event.v1";
+      const studioPhases = new Set(["idle", "recording", "replaying", "finalizing-video"]);
+      const studioCommands = new Set([
+        "subscribe",
+        "set-title",
+        "set-capture-video",
+        "send-text",
+        "start-recording",
+        "stop-recording",
+        "import-json",
+        "export-json",
+        "save-project",
+        "load-project",
+        "delete-project",
+        "select-action",
+        "set-action-semantic-target",
+        "clear-action-semantic-target",
+        "delete-selected-action",
+        "undo-delete",
+        "redo-delete",
+        "start-replay",
+        "cancel-replay",
+        "export-autojs6",
+        "export-webm",
+      ]);
+      const studioCapabilityKeys = [
+        "setTitle",
+        "setCaptureVideo",
+        "sendText",
+        "startRecording",
+        "stopRecording",
+        "importJson",
+        "exportJson",
+        "saveProject",
+        "loadProject",
+        "deleteProject",
+        "selectAction",
+        "setActionSemanticTarget",
+        "clearActionSemanticTarget",
+        "deleteSelectedAction",
+        "undoDelete",
+        "redoDelete",
+        "startReplay",
+        "cancelReplay",
+        "exportAutoJs6",
+        "exportWebm",
+      ];
+      const remoteColumnDefaultWidth = 500;
+      const remoteColumnMinimumWidth = 400;
+      const sideColumnMinimumWidth = 460;
+      const workspaceColumnGap = 14;
+      const remoteCardBorderWidth = 2;
+      const remoteColumnResizeDeadband = 16;
+      const clientIdInput = document.querySelector("#client-id");
+      const adbSerialInput = document.querySelector("#adb-serial");
+      const tokenInput = document.querySelector("#api-token");
+      const transportPreferenceInput = document.querySelector("#transport-preference");
+      const remoteFrame = document.querySelector("#remote-frame");
+      const frameEmpty = document.querySelector("#frame-empty");
+      const transportOverlay = document.querySelector("#transport-overlay");
+      const transportOverlayDetail = document.querySelector("#transport-overlay-detail");
+      const resultOutput = document.querySelector("#result-output");
+      const resultStatus = document.querySelector("#result-status");
+      const screenshot = document.querySelector("#screenshot");
+      const connectionDot = document.querySelector("#connection-dot");
+      const connectionLabel = document.querySelector("#connection-label");
+      const workspace = document.querySelector(".workspace");
+      const routeDrawer = document.querySelector("#route-drawer");
+      const routeDrawerBackdrop = document.querySelector("#route-drawer-backdrop");
+      const routeButton = document.querySelector("#open-route-drawer");
+      const routeButtonDot = document.querySelector("#route-button-dot");
+      const routeButtonLabel = document.querySelector("#route-button-label");
+      const routeSummaryTitle = document.querySelector("#route-summary-title");
+      const routeSummaryHealth = document.querySelector("#route-summary-health");
+      const routeSummaryDescription = document.querySelector("#route-summary-description");
+      const routePathLabel = document.querySelector("#route-path-label");
+      const routeDuration = document.querySelector("#route-duration");
+      const routeRtt = document.querySelector("#route-rtt");
+      const routeTraffic = document.querySelector("#route-traffic");
+      const routeUpdatedAt = document.querySelector("#route-updated-at");
+      const routeList = document.querySelector("#route-list");
+      const applyRoutePreferenceButton = document.querySelector("#apply-route-preference");
+      const productIntro = document.querySelector("#product-intro");
+      const recordingStudio = document.querySelector("#recording-studio");
+      const recordingRoleBadge = document.querySelector("#recording-role-badge");
+      const studioStatusBanner = document.querySelector("#studio-status-banner");
+      const studioPhase = document.querySelector("#studio-phase");
+      const studioTitle = document.querySelector("#studio-title");
+      const studioCaptureVideo = document.querySelector("#studio-capture-video");
+      const studioSendText = document.querySelector("#studio-send-text");
+      const studioSendTextButton = document.querySelector("#studio-send-text-button");
+      const studioRecordToggle = document.querySelector("#studio-record-toggle");
+      const studioImportFile = document.querySelector("#studio-import-file");
+      const studioProjectSelect = document.querySelector("#studio-project-select");
+      const studioCounts = document.querySelector("#studio-counts");
+      const studioTimeline = document.querySelector("#studio-timeline");
+      const studioActionList = document.querySelector("#studio-action-list");
+      const studioAuditList = document.querySelector("#studio-audit-list");
+      const studioSemanticFallback = document.querySelector("#studio-semantic-fallback");
+      const studioSemanticSideEffect = document.querySelector("#studio-semantic-side-effect");
+      const studioButtons = {
+        exportJson: document.querySelector("#studio-export-json"),
+        importJson: document.querySelector("#studio-import-json"),
+        exportWebm: document.querySelector("#studio-export-webm"),
+        saveProject: document.querySelector("#studio-save-project"),
+        loadProject: document.querySelector("#studio-load-project"),
+        deleteProject: document.querySelector("#studio-delete-project"),
+        deleteSelectedAction: document.querySelector("#studio-delete-action"),
+        identifyAction: document.querySelector("#studio-identify-action"),
+        clearActionSemantic: document.querySelector("#studio-clear-action-semantic"),
+        undoDelete: document.querySelector("#studio-undo-delete"),
+        redoDelete: document.querySelector("#studio-redo-delete"),
+        startReplay: document.querySelector("#studio-start-replay"),
+        cancelReplay: document.querySelector("#studio-cancel-replay"),
+        exportAutoJs6: document.querySelector("#studio-export-autojs6"),
+      };
+      let currentStreamUrl = "";
+      let currentStreamMode = "none";
+      let activeTransport = null;
+      let activeRelaySessionId = "";
+      let pendingRelayBootstrap = null;
+      let recordingStudioOpenIntent = false;
+      let recordingStudioVisible = false;
+      let recordingStudioFocusTarget = "overview";
+      let studioBridgeSessionId = "";
+      let studioRequestId = 0;
+      let studioEventRevision = 0;
+      let studioSnapshot = null;
+      let studioSemanticRecognitionBusy = false;
+      let studioSemanticRecognitionGeneration = 0;
+      let relayGeneration = 0;
+      let transportRecoveryGeneration = -1;
+      let transportStateRevision = 0;
+      let relayLifecyclePhase = "idle";
+      let relayLifecycleTail = Promise.resolve();
+      let ordinaryRelayConnectPending = false;
+      let explicitRelayRefreshPending = 0;
+      let busyCount = 0;
+      let remoteLayoutMetrics = null;
+      let remoteLayoutAnimationFrame = 0;
+      let committedRemoteColumnWidth = remoteColumnDefaultWidth;
+      let latestRemoteSession = null;
+      let latestRouteDiagnostics = null;
+      const routeProbeByTarget = new Map();
+      let routeProbeRevision = 0;
+      let routeDrawerReturnFocus = null;
+
+      /** Wait for a bounded polling interval. */
+      function delay(milliseconds) {
+        return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+      }
+
+      /** Format one byte counter as a short user-facing value. */
+      function formatRouteBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+        if (bytes < 1024) return `${Math.round(bytes)} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+        if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+        return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+      }
+
+      /** Translate one ICE route into a plain-language connection name. */
+      function friendlyRouteName(route) {
+        if (!route) return "设备直连";
+        if (route.localCandidateType === "relay" || route.remoteCandidateType === "relay") return "中转线路";
+        if (
+          route.localCandidateType === "srflx" ||
+          route.localCandidateType === "prflx" ||
+          route.remoteCandidateType === "srflx" ||
+          route.remoteCandidateType === "prflx"
+        ) return "公网映射直连";
+        return "本地网络直连";
+      }
+
+      /** Return a concise protocol and address-family description. */
+      function friendlyRouteSummary(route) {
+        const family = route.addressFamily === "ipv6" ? "IPv6" : route.addressFamily === "ipv4" ? "IPv4" : "网络地址已隐藏";
+        const protocol = route.protocol === "udp" ? "低延迟 UDP" : "兼容 TCP";
+        const rtt = route.rttMs === null ? "" : ` · ${Math.round(route.rttMs)} ms`;
+        return `${family} · ${protocol}${rtt}`;
+      }
+
+      /** Format an optional endpoint without guessing an address hidden by the browser. */
+      function formatRouteEndpoint(address, port) {
+        if (!address) return "浏览器已隐藏";
+        return port ? `${address}:${port}` : address;
+      }
+
+      /** Return whether a browser-observed route address looks like a literal IP. */
+      function isLiteralRouteAddress(value) {
+        if (typeof value !== "string" || value.length < 2 || value.length > 45) return false;
+        const ipv4Parts = value.split(".");
+        if (
+          ipv4Parts.length === 4 &&
+          ipv4Parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
+        ) return true;
+        return value.includes(":") && /^[0-9a-f:.]+$/i.test(value);
+      }
+
+      /** Validate and detach one route-probe task returned by this PC service. */
+      function acceptRouteProbeTask(task, expectedSessionId) {
+        if (!task || typeof task !== "object" || Object.keys(task).length !== 11) return null;
+        if (
+          typeof task.taskId !== "string" ||
+          !/^[A-Za-z0-9_-]{8,100}$/.test(task.taskId) ||
+          task.sessionId !== expectedSessionId ||
+          !isLiteralRouteAddress(task.targetAddress) ||
+          !["EXECUTING", "SUCCESS", "FAILURE", "TIMEOUT"].includes(task.status) ||
+          !Number.isSafeInteger(task.createdAtUtc) ||
+          task.createdAtUtc <= 0 ||
+          (task.finishedAtUtc !== null && (!Number.isSafeInteger(task.finishedAtUtc) || task.finishedAtUtc < task.createdAtUtc)) ||
+          typeof task.complete !== "boolean" ||
+          typeof task.reachedTarget !== "boolean" ||
+          !Array.isArray(task.hops) ||
+          task.hops.length > 12 ||
+          (task.code !== null && (typeof task.code !== "string" || task.code.length > 100)) ||
+          (task.message !== null && (typeof task.message !== "string" || task.message.length > 300))
+        ) return null;
+        let previousIndex = 0;
+        const hops = [];
+        for (const hop of task.hops) {
+          if (
+            !hop ||
+            typeof hop !== "object" ||
+            Object.keys(hop).length !== 5 ||
+            !Number.isSafeInteger(hop.index) ||
+            hop.index <= previousIndex ||
+            hop.index > 12 ||
+            (hop.address !== null && !isLiteralRouteAddress(hop.address)) ||
+            (hop.hostname !== null && (
+              typeof hop.hostname !== "string" ||
+              hop.hostname.length < 1 ||
+              hop.hostname.length > 253 ||
+              /[\u0000-\u001f\u007f]/.test(hop.hostname)
+            )) ||
+            (hop.latencyMs !== null && (!Number.isFinite(hop.latencyMs) || hop.latencyMs < 0 || hop.latencyMs > 600000)) ||
+            (hop.latencySource !== null && hop.latencySource !== "ping" && hop.latencySource !== "trace")
+          ) return null;
+          previousIndex = hop.index;
+          hops.push({ ...hop });
+        }
+        return { ...task, hops };
+      }
+
+      /** Format one optional hop delay without overstating a traceroute estimate as Ping. */
+      function formatRouteHopLatency(hop) {
+        if (hop.latencyMs === null) return "Ping 不可用";
+        const value = hop.latencyMs < 1 ? "<1" : hop.latencyMs < 10 ? hop.latencyMs.toFixed(1).replace(/\.0$/, "") : String(Math.round(hop.latencyMs));
+        return hop.latencySource === "ping" ? `Ping ${value} ms` : `路径约 ${value} ms`;
+      }
+
+      /** Build one human-readable row in the numbered route chain. */
+      function createRouteHopRow({ badge, address, detail, latency, endpoint = false, ping = false }) {
+        const row = document.createElement("div");
+        row.className = `route-hop ${endpoint ? "endpoint" : ""}`.trim();
+        const index = document.createElement("span");
+        index.className = "route-hop-index";
+        index.textContent = badge;
+        const main = document.createElement("div");
+        main.className = "route-hop-main";
+        const primary = document.createElement("strong");
+        primary.textContent = address;
+        const secondary = document.createElement("span");
+        secondary.textContent = detail;
+        main.append(primary, secondary);
+        const delay = document.createElement("span");
+        delay.className = `route-hop-latency ${ping ? "ping" : ""}`.trim();
+        delay.textContent = latency;
+        row.append(index, main, delay);
+        return row;
+      }
+
+      /** Add the optional per-hop trace result and its simple action button. */
+      function appendRouteProbe(card, route) {
+        if (!isLiteralRouteAddress(route.remoteAddress)) return;
+        const targetAddress = route.remoteAddress;
+        const probeState = routeProbeByTarget.get(targetAddress) || null;
+        const action = document.createElement("div");
+        action.className = "route-probe-action";
+        const hint = document.createElement("span");
+        hint.textContent = "逐跳查看 IP、域名和延时";
+        const button = document.createElement("button");
+        button.className = "route-probe-button";
+        button.type = "button";
+        button.disabled = probeState?.task?.status === "EXECUTING" || probeState?.starting === true;
+        button.textContent = button.disabled
+          ? "正在探测…"
+          : probeState
+            ? "重新探测"
+            : "查看经过节点";
+        button.addEventListener("click", () => void requestRouteProbe(route));
+        action.append(hint, button);
+        card.appendChild(action);
+        if (!probeState) return;
+
+        const panel = document.createElement("div");
+        panel.className = "route-probe-panel";
+        const heading = document.createElement("div");
+        heading.className = `route-probe-heading ${probeState.error ? "error" : ""}`.trim();
+        if (probeState.starting || probeState.task?.status === "EXECUTING") {
+          heading.textContent = "正在从这台电脑逐跳寻找手机，中间节点可能需要几秒。";
+        } else if (probeState.error) {
+          heading.textContent = probeState.error;
+        } else if (probeState.task?.status === "TIMEOUT") {
+          heading.textContent = "探测已到安全时限；下面保留已经找到的节点。";
+        } else if (probeState.task?.status === "FAILURE") {
+          heading.classList.add("error");
+          heading.textContent = "这次没有拿到节点信息，可以稍后重试。";
+        } else {
+          heading.textContent = probeState.task?.reachedTarget
+            ? `已到达手机，共经过 ${probeState.task.hops.length} 跳。`
+            : "已显示能回应的节点；后续节点可能屏蔽了探测。";
+        }
+        panel.appendChild(heading);
+        const task = probeState.task;
+        if (!task || task.status === "EXECUTING") {
+          card.appendChild(panel);
+          return;
+        }
+        panel.appendChild(createRouteHopRow({
+          badge: "PC",
+          address: route.localAddress || "这台电脑",
+          detail: route.localAddress ? "这台电脑" : "浏览器端地址未公开",
+          latency: "起点",
+          endpoint: true,
+        }));
+        for (const hop of task.hops) {
+          const isTarget = hop.address === task.targetAddress;
+          panel.appendChild(createRouteHopRow({
+            badge: String(hop.index),
+            address: hop.address || `第 ${hop.index} 跳未响应`,
+            detail: hop.address
+              ? `${isTarget ? "手机 · " : ""}${hop.hostname || "未查到域名"}`
+              : "该节点选择不回应",
+            latency: formatRouteHopLatency(hop),
+            endpoint: isTarget,
+            ping: hop.latencySource === "ping",
+          }));
+        }
+        if (!task.reachedTarget) {
+          panel.appendChild(createRouteHopRow({
+            badge: "终",
+            address: task.targetAddress,
+            detail: "手机目标暂未回应或路径在此后被隐藏",
+            latency: "未到达",
+            endpoint: true,
+          }));
+        }
+        card.appendChild(panel);
+      }
+
+      /** Build one safe route card using text nodes only. */
+      function createRouteCard(route, index, activeP2p) {
+        const displayStatus = activeP2p || route.status !== "selected" ? route.status : "available";
+        const card = document.createElement("div");
+        card.className = `route-card ${displayStatus === "selected" ? "selected" : ""}`.trim();
+        const head = document.createElement("div");
+        head.className = "route-card-head";
+        const title = document.createElement("strong");
+        title.textContent = `${friendlyRouteName(route)}${index > 0 ? ` ${index + 1}` : ""}`;
+        const state = document.createElement("span");
+        state.className = `route-state ${displayStatus}`;
+        state.textContent = {
+          selected: "正在使用",
+          available: "可用备用",
+          checking: "正在检测",
+          unavailable: "未连通",
+        }[displayStatus];
+        head.append(title, state);
+        const summary = document.createElement("div");
+        summary.className = "route-card-summary";
+        summary.textContent = friendlyRouteSummary(route);
+        const technical = document.createElement("details");
+        technical.className = "route-tech";
+        const technicalSummary = document.createElement("summary");
+        technicalSummary.textContent = "技术信息";
+        const technicalDetail = document.createElement("div");
+        technicalDetail.textContent = `电脑端 ${formatRouteEndpoint(route.localAddress, route.localPort)}\n手机端 ${formatRouteEndpoint(route.remoteAddress, route.remotePort)}\n发送 ${formatRouteBytes(route.bytesSent)} · 接收 ${formatRouteBytes(route.bytesReceived)}`;
+        technical.append(technicalSummary, technicalDetail);
+        card.append(head, summary, technical);
+        appendRouteProbe(card, route);
+        return card;
+      }
+
+      /** Build the always-available WSS route card from server relay counters. */
+      function createRelayRouteCard(selected) {
+        const card = document.createElement("div");
+        card.className = `route-card ${selected ? "selected" : ""}`.trim();
+        const head = document.createElement("div");
+        head.className = "route-card-head";
+        const title = document.createElement("strong");
+        title.textContent = "服务器中继";
+        const state = document.createElement("span");
+        state.className = `route-state ${selected ? "selected" : "available"}`;
+        state.textContent = selected ? "正在使用" : "自动备用";
+        head.append(title, state);
+        const summary = document.createElement("div");
+        summary.className = "route-card-summary";
+        summary.textContent = "电脑和手机分别连接服务端；服务端看不到手机这一侧经过的全部运营商节点。";
+        card.append(head, summary);
+        return card;
+      }
+
+      /** Render the drawer from the latest ticket-free server state and browser-local stats. */
+      function renderRouteDrawer() {
+        const session = latestRemoteSession;
+        let routes = latestRouteDiagnostics?.sessionId === activeRelaySessionId
+          ? latestRouteDiagnostics.routes
+          : [];
+        const selectedTransport = activeTransport || session?.selectedTransport || null;
+        if (!routes.length && selectedTransport === "p2p" && session?.p2pSelectedPair) {
+          routes = [{
+            addressFamily: "unknown",
+            bytesReceived: 0,
+            bytesSent: 0,
+            id: "server-selected-pair",
+            localAddress: null,
+            localCandidateType: session.p2pSelectedPair.localCandidateType,
+            localPort: null,
+            networkType: null,
+            protocol: session.p2pSelectedPair.protocol,
+            remoteAddress: null,
+            remoteCandidateType: session.p2pSelectedPair.remoteCandidateType,
+            remotePort: null,
+            rttMs: null,
+            status: "selected",
+          }];
+        }
+        const selectedRoute = selectedTransport === "p2p"
+          ? routes.find((route) => route.status === "selected") || null
+          : null;
+        const selecting = session?.sessionState === "SELECTING_TRANSPORT";
+        const recovering = session?.sessionState === "RECOVERING_TRANSPORT" || transportRecoveryGeneration === relayGeneration;
+
+        routeButtonDot.className = `route-button-dot ${selecting ? "checking" : selectedTransport || ""}`.trim();
+        routeButtonLabel.textContent = selecting ? "正在选线路" : selectedTransport === "p2p" ? "直连线路" : selectedTransport === "relay" ? "服务器线路" : "线路详情";
+        applyRoutePreferenceButton.textContent = activeRelaySessionId || pendingRelayBootstrap
+          ? "应用并重新连接"
+          : "使用此方式连接";
+
+        if (recovering) {
+          routeSummaryTitle.textContent = "正在恢复连接";
+          routeSummaryHealth.textContent = "请稍候";
+          routeSummaryDescription.textContent = "直连刚刚中断，输入已暂停，正在安全切换到服务器线路。";
+          routePathLabel.textContent = "切换中";
+        } else if (selecting) {
+          routeSummaryTitle.textContent = "正在寻找合适线路";
+          routeSummaryHealth.textContent = "自动检测";
+          routeSummaryDescription.textContent = "会先尝试电脑与手机直接连接，超时后自动使用服务器。";
+          routePathLabel.textContent = "检测中";
+        } else if (selectedTransport === "p2p") {
+          routeSummaryTitle.textContent = "直连成功";
+          routeSummaryHealth.textContent = "延迟更低";
+          routeSummaryDescription.textContent = "画面和操作在电脑与手机之间直接传输；服务端只保留连接协调。";
+          routePathLabel.textContent = friendlyRouteName(selectedRoute);
+        } else if (selectedTransport === "relay") {
+          routeSummaryTitle.textContent = "经服务器连接";
+          routeSummaryHealth.textContent = session?.p2pStatus === "FALLBACK" ? "已自动切换" : "稳定连接";
+          routeSummaryDescription.textContent = session?.p2pStatus === "FALLBACK"
+            ? "本次直连未成功，系统已经切换到服务器线路，画面仍可继续使用。"
+            : "画面和操作固定经过服务器，适合网络限制较多的环境。";
+          routePathLabel.textContent = "经过服务器";
+        } else {
+          routeSummaryTitle.textContent = "尚未连接";
+          routeSummaryHealth.textContent = "等待连接";
+          routeSummaryDescription.textContent = "连接手机后，这里会显示实际使用的线路。";
+          routePathLabel.textContent = "等待连接";
+        }
+
+        routeDuration.textContent = Number.isFinite(session?.p2pNegotiationDurationMs)
+          ? `${Math.round(session.p2pNegotiationDurationMs)} ms`
+          : "—";
+        routeRtt.textContent = selectedRoute?.rttMs === null || selectedRoute?.rttMs === undefined
+          ? "—"
+          : `${Math.round(selectedRoute.rttMs)} ms`;
+        const p2pTraffic = selectedRoute ? selectedRoute.bytesSent + selectedRoute.bytesReceived : 0;
+        const relayTraffic = Number(session?.controllerToDeviceBytes || 0) + Number(session?.deviceToControllerBytes || 0);
+        routeTraffic.textContent = selectedTransport === "p2p"
+          ? formatRouteBytes(p2pTraffic)
+          : selectedTransport === "relay"
+            ? formatRouteBytes(relayTraffic)
+            : "—";
+        routeUpdatedAt.textContent = latestRouteDiagnostics?.capturedAt
+          ? `更新于 ${new Date(latestRouteDiagnostics.capturedAt).toLocaleTimeString("zh-CN", { hour12: false })}`
+          : "等待检测";
+
+        routeList.replaceChildren();
+        routes.slice(0, 8).forEach((route, index) => routeList.appendChild(createRouteCard(route, index, selectedTransport === "p2p")));
+        if (currentStreamMode === "relay" || session) {
+          routeList.appendChild(createRelayRouteCard(selectedTransport === "relay"));
+        }
+        if (!routeList.childElementCount) {
+          const empty = document.createElement("div");
+          empty.className = "route-card";
+          const summary = document.createElement("div");
+          summary.className = "route-card-summary";
+          summary.textContent = "连接后会自动检测，不需要手动配置 IP 或端口。";
+          empty.appendChild(summary);
+          routeList.appendChild(empty);
+        }
+      }
+
+      /** Validate one route snapshot received from the exact embedded ws-scrcpy frame. */
+      function acceptRouteDiagnosticsMessage(message) {
+        if (!message || typeof message !== "object") return false;
+        if (
+          Object.keys(message).length !== 5 ||
+          message.type !== relayDiagnosticsMessageType ||
+          message.sessionId !== activeRelaySessionId ||
+          message.transport !== "p2p" ||
+          !Number.isSafeInteger(message.capturedAt) ||
+          message.capturedAt <= 0 ||
+          !Array.isArray(message.routes) ||
+          message.routes.length > 16
+        ) return false;
+        const candidateTypes = new Set(["host", "srflx", "prflx", "relay"]);
+        const statuses = new Set(["selected", "available", "checking", "unavailable"]);
+        const families = new Set(["ipv4", "ipv6", "unknown"]);
+        const validOptionalAddress = (value) => value === null || (
+          typeof value === "string" && value.length > 0 && value.length <= 255 && !/[\u0000-\u001f\u007f]/.test(value)
+        );
+        const validOptionalPort = (value) => value === null || (Number.isSafeInteger(value) && value >= 1 && value <= 65535);
+        const validRoutes = message.routes.every((route) => (
+          route &&
+          typeof route === "object" &&
+          Object.keys(route).length === 14 &&
+          typeof route.id === "string" &&
+          route.id.length > 0 &&
+          route.id.length <= 256 &&
+          statuses.has(route.status) &&
+          families.has(route.addressFamily) &&
+          candidateTypes.has(route.localCandidateType) &&
+          candidateTypes.has(route.remoteCandidateType) &&
+          (route.protocol === "udp" || route.protocol === "tcp") &&
+          validOptionalAddress(route.localAddress) &&
+          validOptionalAddress(route.remoteAddress) &&
+          validOptionalPort(route.localPort) &&
+          validOptionalPort(route.remotePort) &&
+          (route.networkType === null || (typeof route.networkType === "string" && /^[a-z0-9-]{1,32}$/i.test(route.networkType))) &&
+          (route.rttMs === null || (Number.isFinite(route.rttMs) && route.rttMs >= 0 && route.rttMs <= 600000)) &&
+          Number.isSafeInteger(route.bytesSent) && route.bytesSent >= 0 &&
+          Number.isSafeInteger(route.bytesReceived) && route.bytesReceived >= 0
+        ));
+        if (!validRoutes) return false;
+        latestRouteDiagnostics = {
+          capturedAt: message.capturedAt,
+          routes: message.routes.map((route) => ({ ...route })),
+          sessionId: message.sessionId,
+          transport: "p2p",
+        };
+        renderRouteDrawer();
+        return true;
+      }
+
+      /** Start and poll one server-bounded route trace for a phone ICE address. */
+      async function requestRouteProbe(route) {
+        const sessionId = activeRelaySessionId;
+        const targetAddress = route?.remoteAddress;
+        const token = tokenInput.value.trim();
+        if (!sessionId || !isLiteralRouteAddress(targetAddress)) {
+          setResult("线路节点 · 暂不可探测", "请先建立一条可见手机 IP 的远控线路。", "error");
+          return;
+        }
+        if (token.length < 16) {
+          setResult("线路节点 · 缺少授权", "查看节点需要当前有效的 PC API Token。", "error");
+          return;
+        }
+        const revision = routeProbeRevision;
+        routeProbeByTarget.set(targetAddress, { starting: true, task: null, error: "" });
+        renderRouteDrawer();
+        try {
+          const response = await fetch(
+            `/api/remote/sessions/${encodeURIComponent(sessionId)}/route-probes`,
+            {
+              method: "POST",
+              cache: "no-store",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ targetAddress }),
+            },
+          );
+          let task = acceptRouteProbeTask(await readEnvelope(response), sessionId);
+          if (!task) throw new Error("PC 返回了无法识别的节点探测结果");
+          if (revision !== routeProbeRevision || sessionId !== activeRelaySessionId) return;
+          routeProbeByTarget.set(targetAddress, { starting: false, task, error: "" });
+          renderRouteDrawer();
+          while (!routeProbeTerminalStates.has(task.status)) {
+            await delay(400);
+            if (revision !== routeProbeRevision || sessionId !== activeRelaySessionId) return;
+            const pollResponse = await fetch(
+              `/api/remote/sessions/${encodeURIComponent(sessionId)}/route-probes/${encodeURIComponent(task.taskId)}`,
+              {
+                cache: "no-store",
+                headers: { Authorization: `Bearer ${token}` },
+              },
+            );
+            task = acceptRouteProbeTask(await readEnvelope(pollResponse), sessionId);
+            if (!task) throw new Error("PC 返回了无法识别的节点探测结果");
+            if (revision !== routeProbeRevision || sessionId !== activeRelaySessionId) return;
+            routeProbeByTarget.set(targetAddress, { starting: false, task, error: "" });
+            renderRouteDrawer();
+          }
+        } catch (error) {
+          if (revision !== routeProbeRevision || sessionId !== activeRelaySessionId) return;
+          routeProbeByTarget.set(targetAddress, {
+            starting: false,
+            task: null,
+            error: describeUiError(error, "节点探测失败，请稍后重试。"),
+          });
+          renderRouteDrawer();
+        }
+      }
+
+      /** Open the modal route drawer and preserve focus for dismissal. */
+      function openRouteDrawer() {
+        routeDrawerReturnFocus = document.activeElement;
+        document.body.classList.add("route-drawer-open");
+        routeDrawer.classList.add("open");
+        routeDrawerBackdrop.classList.add("open");
+        routeDrawer.removeAttribute("inert");
+        routeDrawer.setAttribute("aria-hidden", "false");
+        routeDrawerBackdrop.setAttribute("aria-hidden", "false");
+        document.querySelector(`input[name="route-preference"][value="${transportPreferenceInput.value}"]`).checked = true;
+        renderRouteDrawer();
+        document.querySelector("#close-route-drawer").focus();
+      }
+
+      /** Close the route drawer and return focus to its opener. */
+      function closeRouteDrawer() {
+        document.body.classList.remove("route-drawer-open");
+        routeDrawer.classList.remove("open");
+        routeDrawerBackdrop.classList.remove("open");
+        routeDrawer.setAttribute("inert", "");
+        routeDrawer.setAttribute("aria-hidden", "true");
+        routeDrawerBackdrop.setAttribute("aria-hidden", "true");
+        if (routeDrawerReturnFocus instanceof HTMLElement) routeDrawerReturnFocus.focus();
+        routeDrawerReturnFocus = null;
+      }
+
+      /** Forget diagnostics that belong to a previous relay lease. */
+      function resetRouteState() {
+        latestRemoteSession = null;
+        latestRouteDiagnostics = null;
+        routeProbeRevision += 1;
+        routeProbeByTarget.clear();
+        renderRouteDrawer();
+      }
+
+      /**
+       * Apply the last trusted child dimensions within the current workspace constraints.
+       * @returns {void}
+       */
+      function commitRemoteColumnWidth() {
+        remoteLayoutAnimationFrame = 0;
+        const workspaceWidth = workspace.clientWidth;
+        if (!Number.isFinite(workspaceWidth) || workspaceWidth <= 0) return;
+        const isSingleColumn = window.matchMedia("(max-width: 960px)").matches;
+        const maximumWidth = isSingleColumn
+          ? workspaceWidth
+          : Math.max(remoteColumnMinimumWidth, workspaceWidth - sideColumnMinimumWidth - workspaceColumnGap);
+        let requestedWidth = remoteColumnDefaultWidth;
+        if (remoteLayoutMetrics) {
+          const frameHeight = remoteFrame.clientHeight > 0
+            ? remoteFrame.clientHeight
+            : remoteLayoutMetrics.contentHeight;
+          const fittedVideoWidth = frameHeight * remoteLayoutMetrics.videoWidth / remoteLayoutMetrics.videoHeight;
+          requestedWidth = Math.max(
+            remoteLayoutMetrics.contentWidth + remoteCardBorderWidth,
+            fittedVideoWidth + remoteLayoutMetrics.controlsWidth + remoteCardBorderWidth,
+          );
+        }
+        const boundedWidth = Math.min(
+          maximumWidth,
+          Math.max(remoteColumnMinimumWidth, Math.ceil(requestedWidth)),
+        );
+        const currentWidthFits = committedRemoteColumnWidth <= maximumWidth
+          && committedRemoteColumnWidth >= remoteColumnMinimumWidth;
+        if (
+          remoteLayoutMetrics
+          && currentWidthFits
+          && Math.abs(boundedWidth - committedRemoteColumnWidth) <= remoteColumnResizeDeadband
+        ) {
+          return;
+        }
+        committedRemoteColumnWidth = boundedWidth;
+        workspace.style.setProperty("--remote-column-width", `${boundedWidth}px`);
+      }
+
+      /**
+       * Coalesce viewport and iframe resize work into one animation frame.
+       * @returns {void}
+       */
+      function scheduleRemoteColumnWidth() {
+        if (remoteLayoutAnimationFrame) return;
+        remoteLayoutAnimationFrame = window.requestAnimationFrame(commitRemoteColumnWidth);
+      }
+
+      /**
+       * Forget dimensions from the previous iframe document before starting another stream.
+       * @returns {void}
+       */
+      function resetRemoteLayout() {
+        remoteLayoutMetrics = null;
+        committedRemoteColumnWidth = remoteColumnDefaultWidth;
+        workspace.style.setProperty("--remote-column-width", `${remoteColumnDefaultWidth}px`);
+        scheduleRemoteColumnWidth();
+      }
+
+      /**
+       * Validate and retain one exact child layout report without trusting cross-origin dimensions.
+       * @param {unknown} message Untrusted postMessage payload from the embedded ws-scrcpy page.
+       * @returns {boolean} Whether the report passed validation and was retained.
+       */
+      function acceptRemoteLayoutMessage(message) {
+        if (!message || typeof message !== "object") return false;
+        const keys = Object.keys(message);
+        if (
+          keys.length !== 6 ||
+          !keys.includes("type") ||
+          !keys.includes("contentWidth") ||
+          !keys.includes("contentHeight") ||
+          !keys.includes("videoWidth") ||
+          !keys.includes("videoHeight") ||
+          !keys.includes("controlsWidth") ||
+          message.type !== relayLayoutMessageType ||
+          !Number.isFinite(message.contentWidth) ||
+          message.contentWidth <= 0 ||
+          message.contentWidth > 16384 ||
+          !Number.isFinite(message.contentHeight) ||
+          message.contentHeight <= 0 ||
+          message.contentHeight > 16384 ||
+          !Number.isFinite(message.videoWidth) ||
+          message.videoWidth <= 0 ||
+          message.videoWidth > 16384 ||
+          !Number.isFinite(message.videoHeight) ||
+          message.videoHeight <= 0 ||
+          message.videoHeight > 16384 ||
+          !Number.isFinite(message.controlsWidth) ||
+          message.controlsWidth < 0 ||
+          message.controlsWidth > 2048
+        ) {
+          return false;
+        }
+        remoteLayoutMetrics = {
+          contentWidth: message.contentWidth,
+          contentHeight: message.contentHeight,
+          videoWidth: message.videoWidth,
+          videoHeight: message.videoHeight,
+          controlsWidth: message.controlsWidth,
+        };
+        scheduleRemoteColumnWidth();
+        return true;
+      }
+
+      /** Force a fresh child document while the owning relay generation remains current. */
+      async function loadFreshRelayFrame(url, generation) {
+        if (generation !== relayGeneration) return false;
+        resetRemoteLayout();
+        await new Promise((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            remoteFrame.removeEventListener("load", finishWhenBlank);
+            resolve();
+          };
+          const finishWhenBlank = () => {
+            try {
+              if (remoteFrame.contentWindow?.location.href !== "about:blank") return;
+            } catch {
+              return;
+            }
+            finish();
+          };
+          const timer = window.setTimeout(finish, 750);
+          remoteFrame.addEventListener("load", finishWhenBlank);
+          remoteFrame.src = "about:blank";
+        });
+        if (generation !== relayGeneration) return false;
+        remoteFrame.src = url;
+        remoteFrame.classList.remove("hidden");
+        frameEmpty.classList.add("hidden");
+        return true;
+      }
+
+      /** Serialize lease mutations so refresh, direct mode, and connection creation cannot overlap. */
+      function enqueueRelayLifecycle(operation) {
+        const run = relayLifecycleTail.then(operation, operation);
+        relayLifecycleTail = run.catch(() => undefined);
+        return run;
+      }
+
+      /** Erase the only retained in-memory browser ticket. */
+      function clearPendingRelayBootstrap() {
+        if (pendingRelayBootstrap?.session) pendingRelayBootstrap.session.browserTicket = "";
+        pendingRelayBootstrap = null;
+      }
+
+      /** Show or clear the recovery shield that prevents iframe interaction. */
+      function setTransportRecovery(active, reasonCode = "") {
+        remoteFrame.classList.toggle("recovering", active);
+        transportOverlay.classList.toggle("hidden", !active);
+        transportOverlayDetail.textContent = active
+          ? `输入已冻结且不会补发；手机正在重新连接 scrcpy 并切换到 WSS${reasonCode ? `（${reasonCode}）` : ""}。`
+          : "输入已恢复。";
+      }
+
+      /** Latch recovery to one relay generation until the child confirms its relay route is usable. */
+      function latchTransportRecovery(generation, reasonCode = "") {
+        if (generation !== relayGeneration) return false;
+        transportRecoveryGeneration = generation;
+        activeTransport = null;
+        setTransportRecovery(true, reasonCode);
+        return true;
+      }
+
+      /** Clear the recovery latch after an authoritative child transition or explicit session reset. */
+      function resetTransportRecovery() {
+        transportRecoveryGeneration = -1;
+        setTransportRecovery(false);
+      }
+
+      /**
+       * Return whether a value is a non-array object suitable for strict message validation.
+       * @param {unknown} value Candidate value.
+       * @returns {boolean} Whether the value is a record.
+       */
+      function isStudioRecord(value) {
+        return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+      }
+
+      /**
+       * Require an object to contain exactly the named own properties.
+       * @param {unknown} value Candidate object.
+       * @param {string[]} expectedKeys Allowed and required property names.
+       * @returns {boolean} Whether the key set is an exact match.
+       */
+      function hasExactStudioKeys(value, expectedKeys) {
+        if (!isStudioRecord(value)) return false;
+        const keys = Object.keys(value);
+        return keys.length === expectedKeys.length && expectedKeys.every((key) => keys.includes(key));
+      }
+
+      /**
+       * Require all mandatory fields while rejecting every field outside a small optional allow-list.
+       * @param {unknown} value Candidate object.
+       * @param {string[]} requiredKeys Mandatory own property names.
+       * @param {string[]} optionalKeys Optional own property names.
+       * @returns {boolean} Whether the key set is bounded and complete.
+       */
+      function hasStudioKeyShape(value, requiredKeys, optionalKeys) {
+        if (!isStudioRecord(value)) return false;
+        const keys = Object.keys(value);
+        const allowed = new Set([...requiredKeys, ...optionalKeys]);
+        return requiredKeys.every((key) => keys.includes(key)) && keys.every((key) => allowed.has(key));
+      }
+
+      /**
+       * Validate one bounded user-facing string.
+       * @param {unknown} value Candidate value.
+       * @param {number} maximumLength Maximum accepted UTF-16 length.
+       * @returns {boolean} Whether the value is a bounded string.
+       */
+      function isStudioString(value, maximumLength) {
+        return typeof value === "string" && value.length <= maximumLength;
+      }
+
+      /**
+       * Validate one bounded protocol string without control characters.
+       * @param {unknown} value Candidate value.
+       * @param {number} maximumLength Maximum accepted UTF-16 length.
+       * @returns {boolean} Whether the value is safe for protocol forwarding or rendering.
+       */
+      function isStudioSafeString(value, maximumLength) {
+        return isStudioString(value, maximumLength) && !/[\u0000-\u001f\u007f]/.test(value);
+      }
+
+      /**
+       * Return whether a value is a finite non-negative number.
+       * @param {unknown} value Candidate value.
+       * @returns {boolean} Whether the value is finite and non-negative.
+       */
+      function isStudioNumber(value) {
+        return Number.isFinite(value) && value >= 0;
+      }
+
+      /**
+       * Return whether a value is a non-negative safe integer.
+       * @param {unknown} value Candidate value.
+       * @returns {boolean} Whether the value is a safe counter.
+       */
+      function isStudioInteger(value) {
+        return Number.isSafeInteger(value) && value >= 0;
+      }
+
+      /**
+       * Validate one action coordinate captured against the recorded display.
+       * @param {unknown} value Candidate capture point or null.
+       * @returns {boolean} Whether the point has the exact bounded shape.
+       */
+      function isStudioCapturePoint(value) {
+        if (value === null) return true;
+        if (!hasExactStudioKeys(value, ["x", "y", "screenWidth", "screenHeight"])) return false;
+        return Number.isSafeInteger(value.x)
+          && Number.isSafeInteger(value.y)
+          && Number.isSafeInteger(value.screenWidth)
+          && Number.isSafeInteger(value.screenHeight)
+          && value.screenWidth >= 1
+          && value.screenWidth <= 16384
+          && value.screenHeight >= 1
+          && value.screenHeight <= 16384
+          && value.x >= 0
+          && value.x < value.screenWidth
+          && value.y >= 0
+          && value.y < value.screenHeight;
+      }
+
+      /**
+       * Validate a child-provided selector summary without accepting the target or UI tree.
+       * @param {unknown} value Candidate summary or null.
+       * @returns {boolean} Whether only bounded privacy-safe selector metadata is present.
+       */
+      function isStudioSemanticSummary(value) {
+        if (!hasExactStudioKeys(
+          value,
+          ["status", "selectorKinds", "confidence", "fallbackPolicy", "sideEffect", "label"],
+        )) return false;
+        const selectorKinds = new Set(["resourceId", "description", "text", "class-bounds"]);
+        return ["none", "selector-ready", "coordinate-fallback-only"].includes(value.status)
+          && Array.isArray(value.selectorKinds)
+          && value.selectorKinds.length <= 4
+          && value.selectorKinds.every((kind) => selectorKinds.has(kind))
+          && new Set(value.selectorKinds).size === value.selectorKinds.length
+          && (value.confidence === null || ["exact-resource-id", "composite", "heuristic", "manual"].includes(value.confidence))
+          && (value.fallbackPolicy === null || ["selector-only", "selector-then-coordinate", "confirm-coordinate"].includes(value.fallbackPolicy))
+          && ["none", "external-write"].includes(value.sideEffect)
+          && value.label === null;
+      }
+
+      /**
+       * Validate a semantic string reference without interpreting or displaying its value.
+       * @param {unknown} value Candidate literal, parameter, or redacted reference.
+       * @returns {boolean} Whether the reference uses one exact supported shape.
+       */
+      function isStudioSemanticStringRef(value) {
+        if (!isStudioRecord(value)) return false;
+        if (value.mode === "literal") {
+          return hasExactStudioKeys(value, ["mode", "value", "reviewed"])
+            && isStudioSafeString(value.value, 80)
+            && value.value.length > 0
+            && value.reviewed === true;
+        }
+        if (value.mode === "parameter") {
+          return hasExactStudioKeys(value, ["mode", "key"])
+            && isStudioSafeString(value.key, 80)
+            && /^[a-z][a-z0-9_.-]*$/.test(value.key);
+        }
+        if (value.mode === "redacted") {
+          return hasExactStudioKeys(value, ["mode", "category", "length"])
+            && isStudioSafeString(value.category, 80)
+            && /^[a-z][a-z0-9-]*$/.test(value.category)
+            && Number.isSafeInteger(value.length)
+            && value.length >= 1
+            && value.length <= 4096;
+        }
+        return false;
+      }
+
+      /**
+       * Validate one bounded Android target returned by the allowlisted point lookup.
+       * @param {unknown} value Candidate target.
+       * @returns {boolean} Whether it can be forwarded without accepting raw hierarchy data.
+       */
+      function isStudioSemanticTarget(value) {
+        if (!hasStudioKeyShape(
+          value,
+          ["source", "confidence", "packageName", "activityName", "className", "bounds", "clickable", "editable"],
+          ["resourceId", "text", "description"],
+        )) return false;
+        if (
+          value.source !== "android-uiautomator"
+          || !["exact-resource-id", "composite", "heuristic"].includes(value.confidence)
+          || !(value.packageName === null || (
+            isStudioSafeString(value.packageName, 200)
+            && /^[A-Za-z0-9_.$:-]+(?:\/[A-Za-z0-9_.$:-]+)?$/.test(value.packageName)
+          ))
+          || !(value.activityName === null || (
+            isStudioSafeString(value.activityName, 200)
+            && /^[A-Za-z0-9_.$:-]+(?:\/[A-Za-z0-9_.$:-]+)?$/.test(value.activityName)
+          ))
+          || !isStudioSafeString(value.className, 200)
+          || !/^[A-Za-z0-9_.$:-]+$/.test(value.className)
+          || typeof value.clickable !== "boolean"
+          || typeof value.editable !== "boolean"
+          || !hasExactStudioKeys(value.bounds, ["left", "top", "right", "bottom", "screenWidth", "screenHeight"])
+        ) return false;
+        const bounds = value.bounds;
+        if (
+          !Number.isSafeInteger(bounds.left)
+          || !Number.isSafeInteger(bounds.top)
+          || !Number.isSafeInteger(bounds.right)
+          || !Number.isSafeInteger(bounds.bottom)
+          || !Number.isSafeInteger(bounds.screenWidth)
+          || !Number.isSafeInteger(bounds.screenHeight)
+          || bounds.screenWidth < 1
+          || bounds.screenWidth > 16384
+          || bounds.screenHeight < 1
+          || bounds.screenHeight > 16384
+          || bounds.left < 0
+          || bounds.top < 0
+          || bounds.right <= bounds.left
+          || bounds.bottom <= bounds.top
+          || bounds.right > bounds.screenWidth
+          || bounds.bottom > bounds.screenHeight
+        ) return false;
+        return (value.resourceId === undefined || (
+          isStudioSafeString(value.resourceId, 200)
+          && /^[A-Za-z0-9_.$:-]+(?:\/[A-Za-z0-9_.$:-]+)?$/.test(value.resourceId)
+        ))
+          && (value.text === undefined || isStudioSemanticStringRef(value.text))
+          && (value.description === undefined || isStudioSemanticStringRef(value.description));
+      }
+
+      /**
+       * Validate the terminal data returned by device.ui.target-at.
+       * @param {unknown} value Candidate task data.
+       * @returns {boolean} Whether the result contains only one target and bounded context metadata.
+       */
+      function isStudioTargetAtData(value) {
+        if (!hasExactStudioKeys(value, ["target", "foreground", "display", "capturedAt"])) return false;
+        const validForeground = hasExactStudioKeys(value.foreground, ["packageName", "activityName"])
+          && (value.foreground.packageName === null || (
+            isStudioSafeString(value.foreground.packageName, 200)
+            && /^[A-Za-z0-9_.$:-]+(?:\/[A-Za-z0-9_.$:-]+)?$/.test(value.foreground.packageName)
+          ))
+          && (value.foreground.activityName === null || (
+            isStudioSafeString(value.foreground.activityName, 200)
+            && /^[A-Za-z0-9_.$:-]+(?:\/[A-Za-z0-9_.$:-]+)?$/.test(value.foreground.activityName)
+          ));
+        const validDisplay = hasExactStudioKeys(value.display, ["width", "height"])
+          && Number.isSafeInteger(value.display.width)
+          && value.display.width >= 1
+          && value.display.width <= 16384
+          && Number.isSafeInteger(value.display.height)
+          && value.display.height >= 1
+          && value.display.height <= 16384;
+        return validForeground
+          && validDisplay
+          && Number.isSafeInteger(value.capturedAt)
+          && value.capturedAt >= 0
+          && (value.target === null || (
+            isStudioSemanticTarget(value.target)
+            && value.target.bounds.screenWidth === value.display.width
+            && value.target.bounds.screenHeight === value.display.height
+          ));
+      }
+
+      /**
+       * Validate one privacy-safe browser-library summary.
+       * @param {unknown} value Candidate summary.
+       * @returns {boolean} Whether the summary has the exact safe shape.
+       */
+      function isStudioLibraryItem(value) {
+        return hasExactStudioKeys(value, ["id", "title", "updatedAt", "deviceName", "eventCount", "durationMs"])
+          && isStudioString(value.id, 120)
+          && value.id.length > 0
+          && isStudioString(value.title, 120)
+          && isStudioString(value.updatedAt, 64)
+          && isStudioString(value.deviceName, 160)
+          && isStudioInteger(value.eventCount)
+          && isStudioNumber(value.durationMs);
+      }
+
+      /**
+       * Validate one privacy-safe logical action summary.
+       * @param {unknown} value Candidate action.
+       * @returns {boolean} Whether the action has the exact safe shape.
+       */
+      function isStudioAction(value) {
+        return hasExactStudioKeys(value, [
+          "id",
+          "kind",
+          "label",
+          "startMs",
+          "endMs",
+          "durationMs",
+          "deleted",
+          "selected",
+          "complete",
+          "capturePoint",
+          "semanticSummary",
+        ])
+          && isStudioString(value.id, 160)
+          && value.id.length > 0
+          && ["tap", "longPress", "swipe", "key", "text", "scroll"].includes(value.kind)
+          && isStudioString(value.label, 240)
+          && isStudioNumber(value.startMs)
+          && isStudioNumber(value.endMs)
+          && value.endMs >= value.startMs
+          && isStudioNumber(value.durationMs)
+          && typeof value.deleted === "boolean"
+          && typeof value.selected === "boolean"
+          && typeof value.complete === "boolean"
+          && isStudioCapturePoint(value.capturePoint)
+          && isStudioSemanticSummary(value.semanticSummary);
+      }
+
+      /**
+       * Validate one non-executable transport interruption marker.
+       * @param {unknown} value Candidate marker.
+       * @returns {boolean} Whether the marker has the exact safe shape.
+       */
+      function isStudioTimelineMarker(value) {
+        return hasExactStudioKeys(value, ["kind", "offsetMs", "durationMs", "from", "to", "reasonCode"])
+          && value.kind === "transport-interruption"
+          && isStudioNumber(value.offsetMs)
+          && isStudioNumber(value.durationMs)
+          && value.from === "p2p"
+          && value.to === "relay"
+          && isStudioString(value.reasonCode, 120);
+      }
+
+      /**
+       * Validate one deterministic audit finding without accepting raw input text.
+       * @param {unknown} value Candidate finding.
+       * @returns {boolean} Whether the finding has the exact safe shape.
+       */
+      function isStudioAuditFinding(value) {
+        return hasExactStudioKeys(value, ["id", "code", "severity", "actionId", "message"])
+          && isStudioString(value.id, 240)
+          && value.id.length > 0
+          && ["COORDINATE_ONLY", "WEAK_SELECTOR", "LONG_WAIT", "SENSITIVE_TEXT", "INCOMPLETE_GESTURE"].includes(value.code)
+          && ["info", "warning"].includes(value.severity)
+          && isStudioString(value.actionId, 160)
+          && value.actionId.length > 0
+          && isStudioString(value.message, 500);
+      }
+
+      /**
+       * Validate the exact child-owned recording snapshot used to render the workbench.
+       * @param {unknown} value Candidate snapshot.
+       * @returns {boolean} Whether the snapshot is safe to render.
+       */
+      function isStudioSnapshot(value) {
+        if (!hasExactStudioKeys(value, [
+          "phase",
+          "title",
+          "captureVideo",
+          "currentProjectId",
+          "library",
+          "actions",
+          "timelineMarkers",
+          "counts",
+          "audit",
+          "status",
+          "capabilities",
+        ])) return false;
+        if (
+          !studioPhases.has(value.phase)
+          || !isStudioString(value.title, 120)
+          || typeof value.captureVideo !== "boolean"
+          || !(value.currentProjectId === null || isStudioString(value.currentProjectId, 120))
+          || !Array.isArray(value.library)
+          || value.library.length > 25
+          || !value.library.every(isStudioLibraryItem)
+          || !Array.isArray(value.actions)
+          || value.actions.length > 500
+          || !value.actions.every(isStudioAction)
+          || !Array.isArray(value.timelineMarkers)
+          || value.timelineMarkers.length > 500
+          || !value.timelineMarkers.every(isStudioTimelineMarker)
+          || !Array.isArray(value.audit)
+          || value.audit.length > 500
+          || !value.audit.every(isStudioAuditFinding)
+          || !hasExactStudioKeys(value.counts, ["visibleActions", "totalActions", "deletedActions", "rawEvents", "timelineMarkers", "durationMs"])
+          || !isStudioInteger(value.counts.visibleActions)
+          || !isStudioInteger(value.counts.totalActions)
+          || !isStudioInteger(value.counts.deletedActions)
+          || !isStudioInteger(value.counts.rawEvents)
+          || !isStudioInteger(value.counts.timelineMarkers)
+          || !isStudioNumber(value.counts.durationMs)
+          || !hasExactStudioKeys(value.status, ["message", "error"])
+          || !isStudioString(value.status.message, 1000)
+          || !(value.status.error === null || isStudioString(value.status.error, 1000))
+          || !hasExactStudioKeys(value.capabilities, studioCapabilityKeys)
+          || !studioCapabilityKeys.every((key) => typeof value.capabilities[key] === "boolean")
+        ) return false;
+        return value.counts.visibleActions <= value.counts.totalActions
+          && value.counts.deletedActions <= value.counts.totalActions;
+      }
+
+      /**
+       * Validate a command result payload.
+       * @param {unknown} value Candidate result.
+       * @returns {boolean} Whether the result has the exact shape.
+       */
+      function isStudioResult(value) {
+        return hasExactStudioKeys(value, ["ok", "message"])
+          && typeof value.ok === "boolean"
+          && isStudioString(value.message, 1000);
+      }
+
+      /**
+       * Validate a bounded, locally generated download artifact.
+       * @param {unknown} value Candidate artifact.
+       * @returns {boolean} Whether the artifact is safe to download.
+       */
+      function isStudioArtifact(value) {
+        if (
+          !hasExactStudioKeys(value, ["kind", "fileName", "mimeType", "content"])
+          || !["json", "autojs6", "webm"].includes(value.kind)
+          || !isStudioString(value.fileName, 180)
+          || value.fileName.length === 0
+          || !isStudioString(value.mimeType, 120)
+        ) return false;
+        if (value.kind === "webm") {
+          return value.content instanceof Blob && value.content.size <= 128 * 1024 * 1024;
+        }
+        return typeof value.content === "string" && value.content.length <= 128 * 1024 * 1024;
+      }
+
+      /**
+       * Validate exact payload fields for one outbound recording-studio command.
+       * @param {string} command Allowlisted command name.
+       * @param {unknown} payload Candidate command payload.
+       * @returns {boolean} Whether the payload exactly matches the command.
+       */
+      function isStudioCommandPayload(command, payload) {
+        if ([
+          "subscribe",
+          "start-recording",
+          "stop-recording",
+          "export-json",
+          "save-project",
+          "delete-selected-action",
+          "undo-delete",
+          "redo-delete",
+          "start-replay",
+          "cancel-replay",
+          "export-autojs6",
+          "export-webm",
+        ].includes(command)) return hasExactStudioKeys(payload, []);
+        if (command === "set-title") {
+          return hasExactStudioKeys(payload, ["title"]) && isStudioString(payload.title, 120);
+        }
+        if (command === "set-capture-video") {
+          return hasExactStudioKeys(payload, ["enabled"]) && typeof payload.enabled === "boolean";
+        }
+        if (command === "send-text") {
+          return hasExactStudioKeys(payload, ["text"])
+            && typeof payload.text === "string"
+            && payload.text.length > 0
+            && payload.text.length <= 2000;
+        }
+        if (command === "import-json") {
+          return hasExactStudioKeys(payload, ["json"])
+            && typeof payload.json === "string"
+            && payload.json.length <= 64 * 1024 * 1024;
+        }
+        if (["load-project", "delete-project"].includes(command)) {
+          return hasExactStudioKeys(payload, ["projectId"])
+            && isStudioString(payload.projectId, 120)
+            && payload.projectId.length > 0;
+        }
+        if (command === "select-action") {
+          return hasExactStudioKeys(payload, ["actionId"])
+            && isStudioString(payload.actionId, 160)
+            && payload.actionId.length > 0;
+        }
+        if (command === "set-action-semantic-target") {
+          return hasExactStudioKeys(payload, ["actionId", "target", "fallbackPolicy", "sideEffect"])
+            && isStudioSafeString(payload.actionId, 160)
+            && payload.actionId.length > 0
+            && isStudioSemanticTarget(payload.target)
+            && ["selector-only", "selector-then-coordinate", "confirm-coordinate"].includes(payload.fallbackPolicy)
+            && ["none", "external-write"].includes(payload.sideEffect)
+            && !(payload.sideEffect === "external-write" && payload.fallbackPolicy !== "selector-only");
+        }
+        if (command === "clear-action-semantic-target") {
+          return hasExactStudioKeys(payload, ["actionId"])
+            && isStudioSafeString(payload.actionId, 160)
+            && payload.actionId.length > 0;
+        }
+        return false;
+      }
+
+      /**
+       * Update the workbench's local connection or command status.
+       * @param {string} message User-facing status message.
+       * @param {boolean} error Whether to show the error treatment.
+       * @returns {void}
+       */
+      function setStudioStatus(message, error = false) {
+        studioStatusBanner.textContent = message;
+        studioStatusBanner.classList.toggle("error", error);
+      }
+
+      /**
+       * Translate an internal recorder phase into concise Chinese.
+       * @param {string} phase Recorder phase.
+       * @returns {string} Chinese phase label.
+       */
+      function studioPhaseLabel(phase) {
+        if (phase === "recording") return "录制中";
+        if (phase === "replaying") return "回放中";
+        if (phase === "finalizing-video") return "正在生成 WebM";
+        return "就绪";
+      }
+
+      /**
+       * Return a compact millisecond time suitable for list metadata.
+       * @param {number} milliseconds Duration or offset.
+       * @returns {string} Compact time label.
+       */
+      function formatStudioTime(milliseconds) {
+        if (!Number.isFinite(milliseconds)) return "—";
+        if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+        return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)} s`;
+      }
+
+      /**
+       * Rebuild the browser-local project selector from one trusted snapshot.
+       * @param {Record<string, unknown>} snapshot Validated recorder snapshot.
+       * @returns {void}
+       */
+      function renderStudioLibrary(snapshot) {
+        const previousProjectId = studioProjectSelect.value;
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = snapshot.library.length ? "请选择已保存项目" : "尚无已保存项目";
+        const options = [placeholder];
+        snapshot.library.forEach((project) => {
+          const option = document.createElement("option");
+          option.value = project.id;
+          option.textContent = `${project.title} · ${project.eventCount} 条事件`;
+          options.push(option);
+        });
+        studioProjectSelect.replaceChildren(...options);
+        const preferredProjectId = snapshot.currentProjectId || previousProjectId;
+        if (preferredProjectId && snapshot.library.some((project) => project.id === preferredProjectId)) {
+          studioProjectSelect.value = preferredProjectId;
+        }
+      }
+
+      /**
+       * Rebuild the non-executable transport marker list.
+       * @param {Record<string, unknown>} snapshot Validated recorder snapshot.
+       * @returns {void}
+       */
+      function renderStudioTimeline(snapshot) {
+        const items = snapshot.timelineMarkers.map((marker) => {
+          const row = document.createElement("div");
+          row.className = "studio-marker";
+          const title = document.createElement("span");
+          title.className = "studio-item-title";
+          title.textContent = "P2P 中断并恢复为 WSS";
+          const meta = document.createElement("span");
+          meta.className = "studio-item-meta";
+          meta.textContent = `${formatStudioTime(marker.offsetMs)} · 持续 ${formatStudioTime(marker.durationMs)} · ${marker.reasonCode}`;
+          row.append(title, meta);
+          return row;
+        });
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "studio-list-empty";
+          empty.textContent = "当前录制没有传输中断标记。";
+          items.push(empty);
+        }
+        studioTimeline.replaceChildren(...items);
+      }
+
+      /**
+       * Build one privacy-safe selector quality badge from summary enums only.
+       * @param {Record<string, unknown>|null} summary Validated selector summary.
+       * @returns {HTMLSpanElement} Badge that never renders target text or hierarchy data.
+       */
+      function createStudioSelectorBadge(summary) {
+        const badge = document.createElement("span");
+        badge.className = "studio-selector-badge";
+        if (!summary || summary.status === "none") {
+          badge.textContent = "选择器质量：未识别";
+          return badge;
+        }
+        if (summary.status === "coordinate-fallback-only" || ["heuristic", "manual"].includes(summary.confidence)) {
+          badge.classList.add("needs-review");
+          badge.textContent = "选择器质量：待复核";
+          return badge;
+        }
+        badge.classList.add("resolved");
+        badge.textContent = summary.confidence === "exact-resource-id"
+          ? "选择器质量：高"
+          : "选择器质量：组合";
+        return badge;
+      }
+
+      /**
+       * Rebuild selectable logical actions without exposing raw control packets.
+       * @param {Record<string, unknown>} snapshot Validated recorder snapshot.
+       * @returns {void}
+       */
+      function renderStudioActions(snapshot) {
+        const items = snapshot.actions.map((action) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = [
+            "studio-action",
+            action.selected ? "selected" : "",
+            action.deleted ? "deleted" : "",
+            action.complete ? "" : "incomplete",
+          ].filter(Boolean).join(" ");
+          button.dataset.actionId = action.id;
+          button.disabled = !snapshot.capabilities.selectAction;
+          button.setAttribute("aria-pressed", String(action.selected));
+          const copy = document.createElement("span");
+          copy.className = "studio-action-copy";
+          const title = document.createElement("span");
+          title.className = "studio-item-title";
+          title.textContent = action.label;
+          const meta = document.createElement("span");
+          meta.className = "studio-item-meta";
+          meta.textContent = `${formatStudioTime(action.startMs)} · ${action.deleted ? "已删除" : "保留"}${action.complete ? "" : " · 动作不完整"}`;
+          copy.append(title, meta);
+          button.append(copy, createStudioSelectorBadge(action.semanticSummary));
+          return button;
+        });
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "studio-list-empty";
+          empty.textContent = snapshot.phase === "recording"
+            ? "正在录制；停止后会生成可编辑动作。"
+            : "尚无可编辑动作。请完成录制、导入 JSON 或载入项目。";
+          items.push(empty);
+        }
+        studioActionList.replaceChildren(...items);
+      }
+
+      /**
+       * Rebuild privacy-safe deterministic audit findings.
+       * @param {Record<string, unknown>} snapshot Validated recorder snapshot.
+       * @returns {void}
+       */
+      function renderStudioAudit(snapshot) {
+        const items = snapshot.audit.map((finding) => {
+          const row = document.createElement("div");
+          row.className = `studio-audit-item ${finding.severity}`;
+          const title = document.createElement("span");
+          title.className = "studio-item-title";
+          title.textContent = finding.message;
+          const meta = document.createElement("span");
+          meta.className = "studio-item-meta";
+          meta.textContent = `${finding.severity === "warning" ? "需要复核" : "提示"} · ${finding.code}`;
+          row.append(title, meta);
+          return row;
+        });
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "studio-list-empty";
+          empty.textContent = snapshot.counts.totalActions
+            ? "当前可见动作没有发现规则风险。"
+            : "完成一段录制后，这里会显示本地规则审计。";
+          items.push(empty);
+        }
+        studioAuditList.replaceChildren(...items);
+      }
+
+      /**
+       * Replace one workbench list with a plain local empty-state message.
+       * @param {HTMLElement} container List container to clear.
+       * @param {string} message Safe local message.
+       * @returns {void}
+       */
+      function renderStudioEmptyState(container, message) {
+        const empty = document.createElement("div");
+        empty.className = "studio-list-empty";
+        empty.textContent = message;
+        container.replaceChildren(empty);
+      }
+
+      /**
+       * Return the child-authoritative selected action, if any.
+       * @param {Record<string, unknown>|null} snapshot Validated recorder snapshot.
+       * @returns {Record<string, unknown>|null} Selected action summary.
+       */
+      function selectedStudioAction(snapshot = studioSnapshot) {
+        if (!snapshot) return null;
+        return snapshot.actions.find((action) => action.selected) || null;
+      }
+
+      /**
+       * Detect whether a retained action can cause an external write.
+       * @param {Record<string, unknown>|null} snapshot Validated recorder snapshot.
+       * @returns {boolean} Whether raw coordinate replay must remain unavailable.
+       */
+      function hasStudioExternalWriteAction(snapshot = studioSnapshot) {
+        return Boolean(snapshot?.actions.some((action) => (
+          !action.deleted && action.semanticSummary.sideEffect === "external-write"
+        )));
+      }
+
+      /**
+       * Update semantic recognition controls without retaining a raw target in parent state.
+       * @param {Record<string, unknown>|null} snapshot Validated recorder snapshot.
+       * @returns {void}
+       */
+      function updateStudioSemanticControls(snapshot = studioSnapshot) {
+        const action = selectedStudioAction(snapshot);
+        const idle = snapshot?.phase === "idle";
+        if (!studioSemanticRecognitionBusy) {
+          studioSemanticFallback.value = action?.semanticSummary?.fallbackPolicy || "selector-only";
+          studioSemanticSideEffect.value = action?.semanticSummary?.sideEffect || "none";
+        }
+        studioButtons.identifyAction.disabled = studioSemanticRecognitionBusy
+          || !idle
+          || !action
+          || action.deleted
+          || !action.capturePoint
+          || !snapshot.capabilities.setActionSemanticTarget;
+        studioButtons.clearActionSemantic.disabled = studioSemanticRecognitionBusy
+          || !idle
+          || !action
+          || action.deleted
+          || !action.semanticSummary
+          || action.semanticSummary.status === "none"
+          || !snapshot.capabilities.clearActionSemanticTarget;
+        studioSemanticFallback.disabled = studioSemanticRecognitionBusy || !idle || !action;
+        studioSemanticSideEffect.disabled = studioSemanticRecognitionBusy || !idle || !action;
+      }
+
+      /**
+       * Enable text injection only while the child confirms an active recording.
+       * @param {Record<string, unknown>|null} snapshot Validated recorder snapshot.
+       * @returns {void}
+       */
+      function updateStudioSendTextControls(snapshot = studioSnapshot) {
+        const enabled = snapshot?.phase === "recording" && snapshot.capabilities.sendText;
+        studioSendText.disabled = !enabled;
+        studioSendTextButton.disabled = !enabled || studioSendText.value.length === 0;
+        if (!enabled) studioSendText.value = "";
+      }
+
+      /**
+       * Render one child-authoritative recording snapshot into the parent workbench.
+       * @param {Record<string, unknown>} snapshot Validated recorder snapshot.
+       * @returns {void}
+       */
+      function renderStudioSnapshot(snapshot) {
+        studioSnapshot = snapshot;
+        const recording = snapshot.phase === "recording";
+        const busy = recording || snapshot.phase === "replaying" || snapshot.phase === "finalizing-video";
+        studioPhase.textContent = studioPhaseLabel(snapshot.phase);
+        recordingRoleBadge.classList.toggle("hidden", !busy);
+        recordingRoleBadge.textContent = studioPhaseLabel(snapshot.phase);
+        studioTitle.value = snapshot.title;
+        studioTitle.disabled = !snapshot.capabilities.setTitle;
+        studioCaptureVideo.checked = snapshot.captureVideo;
+        studioCaptureVideo.disabled = !snapshot.capabilities.setCaptureVideo;
+        updateStudioSendTextControls(snapshot);
+        studioRecordToggle.textContent = recording ? "停止录制" : "开始录制";
+        studioRecordToggle.disabled = recording
+          ? !snapshot.capabilities.stopRecording
+          : !snapshot.capabilities.startRecording;
+        studioButtons.importJson.disabled = !snapshot.capabilities.importJson;
+        studioImportFile.disabled = !snapshot.capabilities.importJson;
+        studioButtons.exportJson.disabled = !snapshot.capabilities.exportJson;
+        studioButtons.exportWebm.disabled = !snapshot.capabilities.exportWebm;
+        studioButtons.saveProject.disabled = !snapshot.capabilities.saveProject;
+        studioButtons.deleteSelectedAction.disabled = !snapshot.capabilities.deleteSelectedAction;
+        studioButtons.undoDelete.disabled = !snapshot.capabilities.undoDelete;
+        studioButtons.redoDelete.disabled = !snapshot.capabilities.redoDelete;
+        const rawReplayBlocked = hasStudioExternalWriteAction(snapshot);
+        studioButtons.startReplay.textContent = snapshot.phase === "replaying"
+          ? "正在按原时序回放…"
+          : rawReplayBlocked
+            ? "含外部写入，已禁用原始坐标回放"
+            : `按原时序回放（${formatStudioTime(snapshot.counts.durationMs)}）`;
+        studioButtons.startReplay.disabled = rawReplayBlocked || !snapshot.capabilities.startReplay;
+        studioButtons.cancelReplay.disabled = !snapshot.capabilities.cancelReplay;
+        studioButtons.exportAutoJs6.disabled = !snapshot.capabilities.exportAutoJs6;
+        updateStudioSemanticControls(snapshot);
+        renderStudioLibrary(snapshot);
+        const hasSelectedProject = Boolean(studioProjectSelect.value);
+        studioProjectSelect.disabled = !snapshot.library.length;
+        studioButtons.loadProject.disabled = !snapshot.capabilities.loadProject || !hasSelectedProject;
+        studioButtons.deleteProject.disabled = !snapshot.capabilities.deleteProject || !hasSelectedProject;
+        studioCounts.textContent = `${snapshot.counts.visibleActions}/${snapshot.counts.totalActions} 个动作 · ${snapshot.counts.rawEvents} 条原始事件 · ${formatStudioTime(snapshot.counts.durationMs)}`;
+        renderStudioTimeline(snapshot);
+        renderStudioActions(snapshot);
+        renderStudioAudit(snapshot);
+        setStudioStatus(snapshot.status.error || snapshot.status.message || "录制工作台已就绪。", Boolean(snapshot.status.error));
+      }
+
+      /**
+       * Disable stale controls and forget protocol counters for a previous iframe session.
+       * @param {string} message Local status shown after reset.
+       * @returns {void}
+       */
+      function resetRecordingStudioBridge(message = "连接远控后即可录制、剪辑和回放。") {
+        studioBridgeSessionId = "";
+        studioRequestId = 0;
+        studioEventRevision = 0;
+        studioSnapshot = null;
+        studioSemanticRecognitionGeneration += 1;
+        studioSemanticRecognitionBusy = false;
+        studioPhase.textContent = "等待连接";
+        recordingRoleBadge.classList.add("hidden");
+        studioTitle.value = "";
+        studioTitle.disabled = true;
+        studioCaptureVideo.checked = false;
+        studioCaptureVideo.disabled = true;
+        studioRecordToggle.disabled = true;
+        studioImportFile.disabled = true;
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "尚未连接项目库";
+        studioProjectSelect.replaceChildren(placeholder);
+        studioProjectSelect.disabled = true;
+        studioCounts.textContent = "尚无动作";
+        studioSendText.value = "";
+        studioSendText.disabled = true;
+        studioSendTextButton.disabled = true;
+        studioSemanticFallback.disabled = true;
+        studioSemanticSideEffect.disabled = true;
+        studioButtons.startReplay.textContent = "按原时序回放";
+        renderStudioEmptyState(studioTimeline, "连接后会在这里显示非执行型传输中断标记。");
+        renderStudioEmptyState(studioActionList, "连接后可录制、导入或载入动作。");
+        renderStudioEmptyState(studioAuditList, "完成一段录制后，这里会显示本地规则审计。");
+        Object.values(studioButtons).forEach((button) => { button.disabled = true; });
+        setStudioStatus(message);
+      }
+
+      /**
+       * Post one exact, non-secret command to the authenticated recorder child.
+       * @param {string} command Allowlisted command name.
+       * @param {Record<string, unknown>} payload Exact command payload.
+       * @returns {number} Allocated request identifier, or zero when not sent.
+       */
+      function sendStudioCommand(command, payload = {}) {
+        if (command === "start-replay" && hasStudioExternalWriteAction()) {
+          setStudioStatus("录制包含外部写入动作，已禁止原始坐标回放；请导出并复核选择器优先代码。", true);
+          return 0;
+        }
+        if (
+          !studioCommands.has(command)
+          || !isStudioCommandPayload(command, payload)
+          || !remoteFrame.contentWindow
+          || currentStreamMode !== "relay"
+          || relayLifecyclePhase !== "active"
+          || !activeRelaySessionId
+          || studioBridgeSessionId !== activeRelaySessionId
+        ) {
+          setStudioStatus("录制工作台尚未连接，请先等待远控建立。", true);
+          return 0;
+        }
+        studioRequestId += 1;
+        remoteFrame.contentWindow.postMessage({
+          type: studioCommandMessageType,
+          sessionId: studioBridgeSessionId,
+          requestId: studioRequestId,
+          command,
+          payload,
+        }, scrcpyOrigin);
+        return studioRequestId;
+      }
+
+      /**
+       * Subscribe the visible parent workbench to the active child recording session.
+       * @returns {boolean} Whether the subscription command was sent.
+       */
+      function subscribeRecordingStudio() {
+        if (
+          !recordingStudioVisible
+          || !remoteFrame.contentWindow
+          || currentStreamMode !== "relay"
+          || relayLifecyclePhase !== "active"
+          || !activeRelaySessionId
+        ) return false;
+        if (studioBridgeSessionId !== activeRelaySessionId) {
+          resetRecordingStudioBridge("正在同步录制工作台状态…");
+          studioBridgeSessionId = activeRelaySessionId;
+        }
+        const requestId = sendStudioCommand("subscribe", {});
+        if (!requestId) return false;
+        setStudioStatus("正在同步录制工作台状态…");
+        return true;
+      }
+
+      /**
+       * Sanitize a child-provided basename before assigning it to a download.
+       * @param {string} fileName Child-provided basename.
+       * @param {string} kind Artifact kind used to select a fallback extension.
+       * @returns {string} Safe download basename.
+       */
+      function safeStudioFileName(fileName, kind) {
+        const fallback = kind === "webm" ? "recording.webm" : kind === "autojs6" ? "recording.autojs6.js" : "recording.json";
+        const sanitized = fileName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim().slice(0, 160);
+        return sanitized || fallback;
+      }
+
+      /**
+       * Download one validated child-generated artifact without navigating the page.
+       * @param {Record<string, unknown>} artifact Validated artifact payload.
+       * @returns {void}
+       */
+      function downloadStudioArtifact(artifact) {
+        const blob = artifact.content instanceof Blob
+          ? artifact.content
+          : new Blob([artifact.content], { type: artifact.mimeType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = safeStudioFileName(artifact.fileName, artifact.kind);
+        link.rel = "noopener";
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        setStudioStatus(`已生成下载：${link.download}`);
+      }
+
+      /**
+       * Validate and apply one child event in strictly increasing revision order.
+       * @param {unknown} message Untrusted postMessage payload.
+       * @returns {boolean} Whether the event was accepted.
+       */
+      function acceptRecordingStudioEvent(message) {
+        if (
+          !hasExactStudioKeys(message, ["type", "sessionId", "revision", "requestId", "event", "payload"])
+          || message.type !== studioEventMessageType
+          || message.sessionId !== activeRelaySessionId
+          || message.sessionId !== studioBridgeSessionId
+          || !Number.isSafeInteger(message.revision)
+          || message.revision <= studioEventRevision
+          || !Number.isSafeInteger(message.requestId)
+          || message.requestId < 1
+          || message.requestId > studioRequestId
+          || !["snapshot", "result", "artifact"].includes(message.event)
+        ) return false;
+        if (message.event === "snapshot" && !isStudioSnapshot(message.payload)) return false;
+        if (message.event === "result" && !isStudioResult(message.payload)) return false;
+        if (message.event === "artifact" && !isStudioArtifact(message.payload)) return false;
+        studioEventRevision = message.revision;
+        if (message.event === "snapshot") {
+          renderStudioSnapshot(message.payload);
+        } else if (message.event === "result") {
+          setStudioStatus(message.payload.message, !message.payload.ok);
+        } else {
+          downloadStudioArtifact(message.payload);
+        }
+        return true;
+      }
+
+      /**
+       * Focus the requested workbench area without covering the remote iframe.
+       * @param {string} target Workbench focus target.
+       * @returns {void}
+       */
+      function focusRecordingStudio(target = recordingStudioFocusTarget) {
+        const element = target === "autojs6"
+          ? document.querySelector("#studio-autojs6")
+          : target === "audit"
+            ? document.querySelector("#studio-audit-section")
+            : document.querySelector("#studio-overview");
+        if (!(element instanceof HTMLElement)) return;
+        element.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        element.focus({ preventScroll: true });
+      }
+
+      /**
+       * Return whether the child reports work that must be stopped before collapsing the UI.
+       * @returns {boolean} Whether recording, replay, or video finalization is active.
+       */
+      function isRecordingStudioBusy() {
+        return Boolean(studioSnapshot && studioSnapshot.phase !== "idle");
+      }
+
+      /**
+       * Invalidate one current terminal relay without sending another close request.
+       * @param {string} sessionId Terminal relay session identifier.
+       * @param {number} generation Relay lifecycle generation that observed the terminal state.
+       * @returns {boolean} Whether the current relay was invalidated.
+       */
+      function finalizeTerminalRelay(sessionId, generation) {
+        if (generation !== relayGeneration || sessionId !== activeRelaySessionId) return false;
+        clearPendingRelayBootstrap();
+        recordingStudioOpenIntent = false;
+        activeRelaySessionId = "";
+        activeTransport = null;
+        resetRecordingStudioBridge("远控会话已结束；重新连接后可继续使用工作台。");
+        resetTransportRecovery();
+        relayLifecyclePhase = "idle";
+        relayGeneration += 1;
+        resetRouteState();
+        return true;
+      }
+
+      /**
+       * Show the parent-side workbench, then reuse or establish a relay before subscribing.
+       * @param {Event} event CTA activation event.
+       * @returns {void}
+       */
+      function openRecordingStudio(event) {
+        const requestedTarget = event?.currentTarget?.dataset?.studioFocus;
+        recordingStudioFocusTarget = ["overview", "autojs6", "audit"].includes(requestedTarget)
+          ? requestedTarget
+          : "overview";
+        recordingStudioVisible = true;
+        recordingStudioOpenIntent = true;
+        productIntro.classList.add("hidden");
+        recordingStudio.classList.remove("hidden");
+        switchRole("product", true);
+        window.setTimeout(() => focusRecordingStudio(recordingStudioFocusTarget), 0);
+        if (subscribeRecordingStudio()) {
+          recordingStudioOpenIntent = false;
+          return;
+        }
+        setStudioStatus("正在通过服务端建立远控；连接成功后会自动同步工作台。",
+          false);
+        if (!activeRelaySessionId && !pendingRelayBootstrap) requestRelayConnection(false);
+      }
+
+      /**
+       * Collapse an idle workbench while keeping the remote connection and recorder state intact.
+       * @returns {void}
+       */
+      function closeRecordingStudio() {
+        if (isRecordingStudioBusy()) {
+          const instruction = studioSnapshot.phase === "recording"
+            ? "请先停止录制，再收起工作台。"
+            : studioSnapshot.phase === "replaying"
+              ? "请先取消回放，再收起工作台。"
+              : "请等待 WebM 生成完成，再收起工作台。";
+          setStudioStatus(instruction, true);
+          return;
+        }
+        recordingStudioVisible = false;
+        recordingStudioOpenIntent = false;
+        recordingStudio.classList.add("hidden");
+        productIntro.classList.remove("hidden");
+        const opener = productIntro.querySelector(".open-studio");
+        if (opener instanceof HTMLElement) opener.focus();
+      }
+
+      /** Return required local connection values without persisting the secret. */
+      function connectionInput() {
+        const clientId = clientIdInput.value.trim();
+        const token = tokenInput.value.trim();
+        if (!clientId) throw new Error("请先填写手机 Client ID");
+        if (token.length < 16) throw new Error("请填写至少 16 位的 PC API Token");
+        sessionStorage.setItem("remote-studio.client-id", clientId);
+        return { clientId, token };
+      }
+
+      /** Build a direct loopback ws-scrcpy URL for the selected ADB serial. */
+      function buildStreamUrl(serial) {
+        const proxy = new URL(scrcpyOrigin);
+        proxy.searchParams.set("action", "proxy-adb");
+        proxy.searchParams.set("remote", "tcp:8886");
+        proxy.searchParams.set("udid", serial);
+        const params = new URLSearchParams({
+          action: "stream",
+          udid: serial,
+          player: "webcodecs",
+          ws: proxy.toString(),
+          captureKeyboard: "true",
+          fitToScreen: "true",
+        });
+        return `${scrcpyOrigin}/#!${params.toString()}`;
+      }
+
+      /** Build a credential-free ws-scrcpy page that accepts its ticket from this exact parent origin. */
+      function buildRelayStreamUrl(clientId) {
+        const params = new URLSearchParams({
+          action: "stream",
+          udid: clientId,
+          player: "webcodecs",
+          relayParentOrigin: window.location.origin,
+          captureKeyboard: "true",
+          fitToScreen: "true",
+        });
+        return `${scrcpyOrigin}/#!${params.toString()}`;
+      }
+
+      /** Update connection feedback without claiming device reachability prematurely. */
+      function setConnectionState(state, message) {
+        connectionDot.classList.toggle("online", state === "online");
+        connectionLabel.textContent = message;
+      }
+
+      /** Display one result with a compact status style. */
+      function setResult(status, value, style = "") {
+        resultStatus.textContent = status;
+        resultStatus.className = `result-status ${style}`.trim();
+        resultOutput.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      }
+
+      /** Remove artifact bodies and semantic target literals from the visible result panel. */
+      function printableTask(task) {
+        if (task?.operation === "device.ui.target-at") {
+          const data = isStudioRecord(task.data) ? task.data : null;
+          const target = data && isStudioRecord(data.target) ? data.target : null;
+          return {
+            taskId: task.taskId,
+            sessionId: task.sessionId,
+            clientId: task.clientId,
+            operation: task.operation,
+            status: task.status,
+            code: task.code,
+            message: task.message,
+            data: data
+              ? {
+                  target: target
+                    ? {
+                        source: target.source,
+                        confidence: target.confidence,
+                        selectorKinds: [
+                          target.resourceId ? "resourceId" : "",
+                          target.description ? "description" : "",
+                          target.text ? "text" : "",
+                          target.className ? "class-bounds" : "",
+                        ].filter(Boolean),
+                        bounds: target.bounds,
+                        clickable: target.clickable,
+                        editable: target.editable,
+                      }
+                    : null,
+                  foreground: data.foreground,
+                  display: data.display,
+                  capturedAt: data.capturedAt,
+                }
+              : "<invalid semantic target data>",
+            artifact: null,
+            createTimeUtc: task.createTimeUtc,
+            expiresAtUtc: task.expiresAtUtc,
+            startedAtUtc: task.startedAtUtc,
+            finishedAtUtc: task.finishedAtUtc,
+          };
+        }
+        if (!task || !task.artifact) return task;
+        return {
+          ...task,
+          artifact: {
+            ...task.artifact,
+            contentBase64: `<${task.artifact.sizeBytes || 0} bytes shown below>`,
+          },
+        };
+      }
+
+      /**
+       * Convert server, network, and browser exceptions into bounded Chinese UI text.
+       * @param {unknown} error Untrusted exception or response message.
+       * @param {string} fallback Context-specific Chinese fallback.
+       * @returns {string} Privacy-safe Chinese message suitable for the visible UI.
+       */
+      function describeUiError(error, fallback = "操作未完成，请稍后重试。") {
+        const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+        const message = raw.trim().slice(0, 300);
+        if (!message) return fallback;
+        if (/[\u3400-\u9fff]/u.test(message)) return message;
+        if (/unauthorized|authentication|invalid (?:api )?token|\b401\b/i.test(message)) {
+          return "身份验证失败，请检查 PC API Token。";
+        }
+        if (/remote-control relay is disabled/i.test(message)) {
+          return "当前 PC 服务未启用远控中继，请使用本地远控调试参数重启服务。";
+        }
+        if (/device operations gateway is disabled/i.test(message)) {
+          return "当前 PC 服务未启用设备运维网关。";
+        }
+        if (/forbidden|permission denied|\b403\b/i.test(message)) {
+          return "当前凭据没有执行该操作的权限。";
+        }
+        if (/not found|\b404\b/i.test(message)) {
+          return "服务端没有找到请求的资源。";
+        }
+        if (/conflict|already (?:active|exists)|\b409\b/i.test(message)) {
+          return "当前状态与该操作冲突，请刷新状态后重试。";
+        }
+        if (/failed to fetch|fetch failed|networkerror|econnrefused|enotfound|socket hang up/i.test(message)) {
+          return "无法连接本地服务，请确认 PC 与 ws-scrcpy 服务已启动。";
+        }
+        if (/timeout|timed out|aborterror|\b408\b|\b504\b/i.test(message)) {
+          return "请求超时，请检查连接后重试。";
+        }
+        const httpStatus = message.match(/\bHTTP\s+(\d{3})\b/i)?.[1];
+        return httpStatus ? `服务端请求失败（HTTP ${httpStatus}）。` : fallback;
+      }
+
+      /**
+       * Read a standard response envelope and reject it with localized UI text.
+       * @param {Response} response Fetch response using the project envelope contract.
+       * @returns {Promise<Record<string, unknown>>} Successful response data.
+       */
+      async function readEnvelope(response) {
+        const envelope = await response.json().catch(() => null);
+        if (!response.ok || !envelope || envelope.ok !== true) {
+          throw new Error(describeUiError(envelope?.message || `HTTP ${response.status}`, "服务端请求失败。"));
+        }
+        return envelope.data;
+      }
+
+      /** Remove any credential fields before a remote-session state reaches the UI. */
+      function printableRemoteSession(session) {
+        if (!session || typeof session !== "object") return session;
+        const safe = { ...session };
+        delete safe.browserTicket;
+        delete safe.deviceTicket;
+        return safe;
+      }
+
+      /** Close one known relay lease and require the standard successful response envelope. */
+      async function closeRelaySession(sessionId, token) {
+        if (!sessionId) return {};
+        if (token.length < 16) throw new Error("关闭远控租约需要当前有效的 PC API Token");
+        const response = await fetch(`/api/remote/sessions/${encodeURIComponent(sessionId)}/close`, {
+          method: "POST",
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        return readEnvelope(response);
+      }
+
+      /** Best-effort cleanup for a lease created by a request that became stale. */
+      async function closeStaleRelaySession(sessionId, token) {
+        try {
+          await closeRelaySession(sessionId, token);
+        } catch {
+          // The stale request must never regain ownership of current UI state.
+        }
+      }
+
+      /**
+       * Invalidate the current bootstrap and close its server lease without losing its handle on failure.
+       * @param {string} token Current PC API token retained only in memory.
+       * @param {boolean} clearOpenIntent Whether to cancel an automatic Recording Studio open request.
+       * @returns {Promise<number>} Relay lifecycle generation allocated to the release.
+       */
+      async function releaseCurrentRelay(token = tokenInput.value.trim(), clearOpenIntent = false) {
+        const sessionId = activeRelaySessionId;
+        const generation = relayGeneration + 1;
+        relayGeneration = generation;
+        resetTransportRecovery();
+        clearPendingRelayBootstrap();
+        if (clearOpenIntent) recordingStudioOpenIntent = false;
+        resetRecordingStudioBridge(recordingStudioVisible
+          ? "远控正在切换；工作台会在新连接建立后重新同步。"
+          : "连接远控后即可录制、剪辑和回放。");
+        if (!sessionId) {
+          relayLifecyclePhase = "idle";
+          activeTransport = null;
+          resetRouteState();
+          return generation;
+        }
+        relayLifecyclePhase = "closing";
+        try {
+          await closeRelaySession(sessionId, token);
+        } catch (error) {
+          if (generation === relayGeneration && sessionId === activeRelaySessionId) {
+            relayLifecyclePhase = "close-failed";
+          }
+          throw error;
+        }
+        if (generation !== relayGeneration) return generation;
+        if (sessionId === activeRelaySessionId) activeRelaySessionId = "";
+        activeTransport = null;
+        relayLifecyclePhase = "idle";
+        resetRouteState();
+        return generation;
+      }
+
+      /** Poll ticket-free relay state; the GET contract must never reveal either peer ticket. */
+      async function pollRemoteSession(sessionId, token, generation) {
+        let lastSignature = "";
+        while (generation === relayGeneration && sessionId === activeRelaySessionId) {
+          const pollTransportRevision = transportStateRevision;
+          const response = await fetch(`/api/remote/sessions/${encodeURIComponent(sessionId)}`, {
+            cache: "no-store",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (generation !== relayGeneration || sessionId !== activeRelaySessionId) return;
+          const session = await readEnvelope(response);
+          if (generation !== relayGeneration || sessionId !== activeRelaySessionId) return;
+          if (
+            Object.prototype.hasOwnProperty.call(session, "browserTicket") ||
+            Object.prototype.hasOwnProperty.call(session, "deviceTicket")
+          ) {
+            throw new Error("服务端错误地在查询接口返回了远控票据");
+          }
+          if (pollTransportRevision !== transportStateRevision) {
+            await delay(50);
+            continue;
+          }
+          latestRemoteSession = session;
+          const signature = [
+            session.sessionState,
+            session.controllerConnected,
+            session.deviceConnected,
+            session.selectedTransport,
+            session.code,
+          ].join(":");
+          if (signature !== lastSignature) {
+            lastSignature = signature;
+            setResult(`远控会话 · ${session.sessionState}`, printableRemoteSession(session), session.sessionState === "ACTIVE" ? "success" : "busy");
+          }
+          if (session.sessionState === "ACTIVE") {
+            if (transportRecoveryGeneration === generation) {
+              setConnectionState("waiting", "P2P 中断，等待网页确认 WSS 数据通道已恢复");
+              await delay(350);
+              continue;
+            }
+            if (session.selectedTransport === "p2p" || session.selectedTransport === "relay") {
+              activeTransport = session.selectedTransport;
+            }
+            resetTransportRecovery();
+            setConnectionState(
+              "online",
+              activeTransport === "p2p" ? "WebRTC P2P 直连已建立" : "WSS 服务器中继已就绪",
+            );
+          } else if (session.sessionState === "SELECTING_TRANSPORT") {
+            activeTransport = null;
+            setConnectionState("waiting", "正在协商 WebRTC P2P；超时将自动回退 WSS");
+          } else if (session.sessionState === "RECOVERING_TRANSPORT") {
+            latchTransportRecovery(generation, session.code || "P2P_INTERRUPTED");
+            setConnectionState("waiting", "P2P 中断，正在恢复 WSS 数据通道");
+          } else if (remoteTerminalStates.has(session.sessionState)) {
+            setConnectionState("waiting", `中继已结束 · ${session.code || session.sessionState}`);
+            finalizeTerminalRelay(sessionId, generation);
+            return;
+          } else {
+            setConnectionState("waiting", session.deviceConnected ? "等待网页控制端" : "等待手机接入中继");
+          }
+          renderRouteDrawer();
+          await delay(session.sessionState === "ACTIVE" ? 2000 : 350);
+        }
+      }
+
+      /**
+       * Create a server-mediated lease and hand its one-time browser ticket to the iframe in memory.
+       * @returns {Promise<void>} Completion after the relay is bootstrapped or safely rejected.
+       */
+      async function connectRelayStream() {
+        let clientId;
+        let token;
+        try {
+          ({ clientId, token } = connectionInput());
+        } catch (error) {
+          recordingStudioOpenIntent = false;
+          const message = describeUiError(error, "远控参数不完整。");
+          setResult("远控会话 · 参数不完整", message, "error");
+          setConnectionState("waiting", "等待远控参数");
+          if (recordingStudioVisible) {
+            setStudioStatus(message, true);
+          }
+          return;
+        }
+        const generation = relayGeneration + 1;
+        let releaseCompleted = false;
+        let issuedSessionId = "";
+        try {
+          await releaseCurrentRelay(token);
+          if (generation !== relayGeneration) return;
+          releaseCompleted = true;
+          relayLifecyclePhase = "connecting";
+          setConnectionState("waiting", "正在创建服务端会合租约");
+          const transportPreference = transportPreferenceInput.value;
+          setResult(
+            "远控会话 · 提交中",
+            transportPreference === "p2p-preferred"
+              ? "服务端将通过 WSS 完成鉴权与信令，优先建立 WebRTC P2P 数据通道。"
+              : "服务端将通过 MQTT 邀请手机主动连接同一个 WSS 中继。",
+            "busy",
+          );
+          const response = await fetch("/api/remote/sessions", {
+            method: "POST",
+            cache: "no-store",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ clientId, transportPreference }),
+          });
+          const responseBecameStale = generation !== relayGeneration;
+          const issued = await readEnvelope(response);
+          issuedSessionId = typeof issued.sessionId === "string" ? issued.sessionId : "";
+          let browserTicket = typeof issued.browserTicket === "string" ? issued.browserTicket : "";
+          issued.browserTicket = "";
+          if (responseBecameStale || generation !== relayGeneration) {
+            browserTicket = "";
+            if (issuedSessionId) await closeStaleRelaySession(issuedSessionId, token);
+            return;
+          }
+          if (issued.status !== "EXECUTING" || !issuedSessionId || !browserTicket || !issued.relayWsUrl) {
+            throw new Error("服务端没有返回完整的异步远控租约");
+          }
+          activeRelaySessionId = issuedSessionId;
+          latestRemoteSession = issued;
+          latestRouteDiagnostics = null;
+          renderRouteDrawer();
+          pendingRelayBootstrap = {
+            generation,
+            sent: false,
+            session: {
+              sessionId: issuedSessionId,
+              browserTicket,
+              relayWsUrl: issued.relayWsUrl,
+              expiresAt: issued.expiresAtUtc,
+            },
+          };
+          browserTicket = "";
+          const url = buildRelayStreamUrl(clientId);
+          currentStreamMode = "relay";
+          currentStreamUrl = url;
+          relayLifecyclePhase = "bootstrapping";
+          const loaded = await loadFreshRelayFrame(url, generation);
+          if (generation !== relayGeneration || !loaded) {
+            await closeStaleRelaySession(issuedSessionId, token);
+            return;
+          }
+          setResult("远控会话 · EXECUTING", printableRemoteSession(issued), "busy");
+          void pollRemoteSession(issuedSessionId, token, generation).catch((error) => {
+            if (generation !== relayGeneration) return;
+            setResult("远控会话 · 查询失败", describeUiError(error, "远控会话查询失败。"), "error");
+            setConnectionState("waiting", "中继状态查询失败");
+          });
+        } catch (error) {
+          if (generation !== relayGeneration) {
+            if (issuedSessionId) await closeStaleRelaySession(issuedSessionId, token);
+            return;
+          }
+          if (!releaseCompleted) {
+            recordingStudioOpenIntent = false;
+            setResult("远控会话 · 关闭旧租约失败", describeUiError(error, "关闭旧远控租约失败。"), "error");
+            setConnectionState("waiting", "旧租约仍保留，请检查 Token 或网络后刷新");
+            if (recordingStudioVisible) setStudioStatus("旧租约关闭失败，工作台未连接。", true);
+            return;
+          }
+          if (issuedSessionId) {
+            try {
+              await closeRelaySession(issuedSessionId, token);
+            } catch (cleanupError) {
+              if (generation !== relayGeneration) return;
+              clearPendingRelayBootstrap();
+              activeRelaySessionId = issuedSessionId;
+              recordingStudioOpenIntent = false;
+              relayLifecyclePhase = "close-failed";
+              setResult(
+                "远控会话 · 清理失败",
+                describeUiError(cleanupError, "远控清理失败。"),
+                "error",
+              );
+              setConnectionState("waiting", "新租约句柄已保留，请检查 Token 或网络后刷新");
+              if (recordingStudioVisible) setStudioStatus("远控清理失败，工作台未连接。", true);
+              return;
+            }
+            if (generation !== relayGeneration) return;
+          }
+          clearPendingRelayBootstrap();
+          if (activeRelaySessionId === issuedSessionId) activeRelaySessionId = "";
+          recordingStudioOpenIntent = false;
+          relayLifecyclePhase = "idle";
+          relayGeneration += 1;
+          const message = describeUiError(error, "远控会话创建失败。");
+          setResult("远控会话 · 创建失败", message, "error");
+          setConnectionState("waiting", "服务端会合失败");
+          if (recordingStudioVisible) {
+            setStudioStatus(message, true);
+          }
+        }
+      }
+
+      /** Deduplicate ordinary connects while allowing explicit refreshes to run serially. */
+      function requestRelayConnection(forceRefresh) {
+        if (
+          !forceRefresh &&
+          (
+            ordinaryRelayConnectPending ||
+            explicitRelayRefreshPending > 0 ||
+            (
+              currentStreamMode === "relay" &&
+              (activeRelaySessionId || pendingRelayBootstrap || relayLifecyclePhase !== "idle")
+            )
+          )
+        ) {
+          remoteFrame.scrollIntoView({ behavior: "smooth", block: "center" });
+          remoteFrame.focus();
+          return;
+        }
+        if (!forceRefresh) ordinaryRelayConnectPending = true;
+        if (forceRefresh) explicitRelayRefreshPending += 1;
+        const operation = enqueueRelayLifecycle(connectRelayStream);
+        void operation.then(
+          () => {
+            if (!forceRefresh) ordinaryRelayConnectPending = false;
+            if (forceRefresh) explicitRelayRefreshPending = Math.max(0, explicitRelayRefreshPending - 1);
+          },
+          () => {
+            if (!forceRefresh) ordinaryRelayConnectPending = false;
+            if (forceRefresh) explicitRelayRefreshPending = Math.max(0, explicitRelayRefreshPending - 1);
+          },
+        );
+      }
+
+      /** Poll a previously accepted asynchronous task until terminal or locally timed out. */
+      async function pollTask(taskId, token) {
+        const deadline = Date.now() + 20000;
+        while (Date.now() < deadline) {
+          const response = await fetch(`/api/ops/tasks/${encodeURIComponent(taskId)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const task = await readEnvelope(response);
+          setResult(`${task.operation} · ${task.status}`, printableTask(task), task.status === "EXECUTING" ? "busy" : "");
+          if (terminalStates.has(task.status)) return task;
+          await delay(250);
+        }
+        throw new Error("浏览器轮询超过 20 秒；任务仍可通过 taskId 继续查询");
+      }
+
+      /** Submit one allowlisted operation and wait only in the browser polling layer. */
+      async function runOperation(operation, params = {}, options = {}) {
+        const { clientId, token } = connectionInput();
+        busyCount += 1;
+        setResult(`${operation} · 提交中`, "HTTP 接口将立即返回 EXECUTING；随后由本页轮询结果。", "busy");
+        screenshot.classList.remove("visible");
+        try {
+          const response = await fetch("/api/ops/tasks", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ clientId, operation, params, timeoutMs: options.timeoutMs || 10000 }),
+          });
+          const accepted = await readEnvelope(response);
+          if (accepted.status !== "EXECUTING") throw new Error("服务端未按异步契约返回 EXECUTING");
+          const task = await pollTask(accepted.taskId, token);
+          const success = task.status === "SUCCESS";
+          setResult(`${operation} · ${task.status}`, printableTask(task), success ? "success" : "error");
+          if (task.artifact?.contentBase64) {
+            screenshot.src = `data:${task.artifact.mimeType};base64,${task.artifact.contentBase64}`;
+            screenshot.classList.add("visible");
+          }
+          setConnectionState(success ? "online" : "waiting", success ? "真机已响应" : "任务未成功");
+          return task;
+        } catch (error) {
+          setResult(`${operation} · 错误`, describeUiError(error, "设备操作失败。"), "error");
+          setConnectionState("waiting", "连接异常");
+          throw error;
+        } finally {
+          busyCount = Math.max(0, busyCount - 1);
+          document.querySelectorAll("[data-operation], [data-bundle], #set-brightness").forEach((button) => {
+            button.disabled = busyCount > 0;
+          });
+        }
+      }
+
+      /** Run the three read-only overview calls and display their combined terminal data. */
+      async function runOverview() {
+        const operations = ["device.network.get", "device.telephony.get", "device.screen.brightness.get"];
+        const results = [];
+        for (const operation of operations) {
+          const task = await runOperation(operation);
+          results.push({ operation, status: task.status, data: task.data });
+        }
+        setResult("设备概览 · 完成", results, results.every((item) => item.status === "SUCCESS") ? "success" : "error");
+      }
+
+      /**
+       * Close any relay first, then activate one prepared local ADB view.
+       * @param {string} url Credential-free local ws-scrcpy URL.
+       * @param {boolean} deviceList Whether the target is the local device chooser.
+       * @returns {Promise<void>} Completion after switching or rejecting the direct view.
+       */
+      async function activateDirectStream(url, deviceList) {
+        const generation = relayGeneration + 1;
+        try {
+          await releaseCurrentRelay(tokenInput.value.trim(), true);
+        } catch (error) {
+          if (generation !== relayGeneration) return;
+          setResult("画面连接 · 关闭旧租约失败", describeUiError(error, "关闭旧远控租约失败。"), "error");
+          setConnectionState("waiting", "旧中继仍保留，未切换本机画面");
+          return;
+        }
+        if (generation !== relayGeneration) return;
+        currentStreamMode = "direct";
+        activeTransport = null;
+        resetRecordingStudioBridge("本机 ADB 调试画面暂不接入父页录制工作台；请使用服务端远控。");
+        resetRouteState();
+        resetTransportRecovery();
+        resetRemoteLayout();
+        currentStreamUrl = url;
+        remoteFrame.src = url;
+        remoteFrame.classList.remove("hidden");
+        frameEmpty.classList.add("hidden");
+        setConnectionState("waiting", deviceList ? "正在读取本机设备列表" : "正在连接本机 ADB 调试画面");
+      }
+
+      /**
+       * Queue the explicitly local ADB debug stream or ws-scrcpy device chooser.
+       * @param {boolean} deviceList Whether to open the local device chooser.
+       * @returns {void}
+       */
+      function loadStream(deviceList = false) {
+        let url = `${scrcpyOrigin}/`;
+        if (!deviceList) {
+          const serial = adbSerialInput.value.trim();
+          if (!serial) {
+            setResult("画面连接 · 缺少 ADB Serial", "请填写与 adb devices 一致的手机序列号。", "error");
+            return;
+          }
+          sessionStorage.setItem("remote-studio.adb-serial", serial);
+          url = buildStreamUrl(serial);
+        }
+        recordingStudioOpenIntent = false;
+        const operation = enqueueRelayLifecycle(() => activateDirectStream(url, deviceList));
+        void operation.catch((error) => {
+          setResult("画面连接 · 切换失败", describeUiError(error, "本机画面切换失败。"), "error");
+          setConnectionState("waiting", "本机画面切换失败");
+        });
+      }
+
+      /**
+       * Switch the explanatory role panel without stopping an active recording.
+       * @param {string} role Role panel name.
+       * @param {boolean} scrollOnNarrow Whether a narrow layout should reveal the selected panel.
+       * @returns {void}
+       */
+      function switchRole(role, scrollOnNarrow = false) {
+        document.querySelectorAll(".role-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.role === role));
+        document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.panel !== role));
+        if (scrollOnNarrow && window.matchMedia("(max-width: 960px)").matches) {
+          const panel = document.querySelector(`[data-panel="${role}"]`);
+          if (panel instanceof HTMLElement) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }
+
+      /**
+       * Send a title update after the user commits the field.
+       * @returns {void}
+       */
+      function handleStudioTitleChange() {
+        sendStudioCommand("set-title", { title: studioTitle.value.slice(0, 120) });
+      }
+
+      /**
+       * Send the user's explicit rendered-video capture preference.
+       * @returns {void}
+       */
+      function handleStudioCaptureVideoChange() {
+        sendStudioCommand("set-capture-video", { enabled: studioCaptureVideo.checked });
+      }
+
+      /**
+       * Refresh the text-action submit button without copying the input elsewhere.
+       * @returns {void}
+       */
+      function handleStudioSendTextInput() {
+        updateStudioSendTextControls(studioSnapshot);
+      }
+
+      /**
+       * Send text to the current device focus and record the same child-owned text action.
+       * @returns {void}
+       */
+      function handleStudioSendText() {
+        if (studioSnapshot?.phase !== "recording" || !studioSnapshot.capabilities.sendText) {
+          setStudioStatus("只有正在录制时才能输入并记录文本动作。", true);
+          return;
+        }
+        const text = studioSendText.value;
+        if (!text) {
+          setStudioStatus("请先输入要写入当前焦点的文本。", true);
+          return;
+        }
+        if (!sendStudioCommand("send-text", { text })) return;
+        studioSendText.value = "";
+        studioSendTextButton.disabled = true;
+        setStudioStatus("文本动作已提交，输入框已清空；正在等待录制工作台确认。项目 JSON 与生成代码仍可能包含该输入值。");
+      }
+
+      /**
+       * Enforce selector-only execution whenever the product marks an external write.
+       * @returns {void}
+       */
+      function handleStudioSemanticSafetyChange() {
+        if (studioSemanticSideEffect.value === "external-write") {
+          studioSemanticFallback.value = "selector-only";
+          setStudioStatus("已选择“外部写入”：该动作将强制仅使用选择器，并在识别时再次确认。");
+          return;
+        }
+        setStudioStatus("控件识别安全设置将在下次识别所选控件时应用。");
+      }
+
+      /**
+       * Resolve one selected recorded coordinate through the allowlisted asynchronous device operation.
+       * @returns {Promise<void>} Completion after a target is forwarded or a safe failure is shown.
+       */
+      async function handleStudioActionIdentification() {
+        if (studioSemanticRecognitionBusy) return;
+        const action = selectedStudioAction();
+        if (!action) {
+          setStudioStatus("请先在时间线中选择一个动作，再识别控件。", true);
+          return;
+        }
+        if (!action.capturePoint) {
+          setStudioStatus("所选动作没有可用于控件识别的录制坐标，原有识别未更改。", true);
+          return;
+        }
+        const sideEffect = studioSemanticSideEffect.value;
+        const fallbackPolicy = sideEffect === "external-write"
+          ? "selector-only"
+          : studioSemanticFallback.value;
+        if (sideEffect === "external-write" && !window.confirm(
+          "确认将所选动作标记为“外部写入”吗？该动作会强制仅使用选择器，识别失败时不会点击坐标。",
+        )) {
+          setStudioStatus("已取消外部写入控件识别，原有识别未更改。");
+          return;
+        }
+        const actionId = action.id;
+        const bridgeSessionId = studioBridgeSessionId;
+        const eventRevision = studioEventRevision;
+        const remoteGeneration = relayGeneration;
+        const recognitionGeneration = ++studioSemanticRecognitionGeneration;
+        const capturePoint = {
+          x: action.capturePoint.x,
+          y: action.capturePoint.y,
+          screenWidth: action.capturePoint.screenWidth,
+          screenHeight: action.capturePoint.screenHeight,
+        };
+        studioSemanticRecognitionBusy = true;
+        updateStudioSemanticControls();
+        setStudioStatus("正在识别所选坐标对应的控件…");
+        try {
+          const task = await runOperation("device.ui.target-at", capturePoint);
+          if (
+            studioBridgeSessionId !== bridgeSessionId
+            || studioEventRevision !== eventRevision
+            || relayGeneration !== remoteGeneration
+          ) {
+            setStudioStatus("录制内容在控件识别期间已变化，旧识别结果已丢弃。", true);
+            return;
+          }
+          if (task.status !== "SUCCESS") {
+            setStudioStatus(`控件识别未成功（${task.status}），原有识别未更改。`, true);
+            return;
+          }
+          if (task.operation !== "device.ui.target-at" || !isStudioTargetAtData(task.data)) {
+            setStudioStatus("控件识别返回了不受支持的数据，原有识别未更改。", true);
+            return;
+          }
+          if (!task.data.target) {
+            setStudioStatus("当前坐标没有识别到可用控件，原有识别未更改。", true);
+            return;
+          }
+          const latestAction = studioSnapshot?.actions.find((candidate) => candidate.id === actionId);
+          if (
+            !latestAction
+            || latestAction.deleted
+            || !latestAction.capturePoint
+            || latestAction.capturePoint.x !== capturePoint.x
+            || latestAction.capturePoint.y !== capturePoint.y
+            || latestAction.capturePoint.screenWidth !== capturePoint.screenWidth
+            || latestAction.capturePoint.screenHeight !== capturePoint.screenHeight
+          ) {
+            setStudioStatus("识别期间所选动作已发生变化，结果未写入。", true);
+            return;
+          }
+          const requestId = sendStudioCommand("set-action-semantic-target", {
+            actionId,
+            target: task.data.target,
+            fallbackPolicy,
+            sideEffect,
+          });
+          if (requestId) setStudioStatus("控件识别已提交，正在等待录制工作台确认。");
+        } catch {
+          setStudioStatus("控件识别失败，原有识别未更改。请确认手机在线后重试。", true);
+        } finally {
+          if (studioSemanticRecognitionGeneration === recognitionGeneration) {
+            studioSemanticRecognitionBusy = false;
+            updateStudioSemanticControls();
+          }
+        }
+      }
+
+      /**
+       * Clear only the selected action's child-owned semantic target.
+       * @returns {void}
+       */
+      function handleStudioClearActionSemantic() {
+        const action = selectedStudioAction();
+        if (!action) {
+          setStudioStatus("请先选择要清除控件识别的动作。", true);
+          return;
+        }
+        if (!action.semanticSummary || action.semanticSummary.status === "none") {
+          setStudioStatus("所选动作当前没有可清除的控件识别。", true);
+          return;
+        }
+        if (sendStudioCommand("clear-action-semantic-target", { actionId: action.id })) {
+          setStudioStatus("正在清除所选动作的控件识别…");
+        }
+      }
+
+      /**
+       * Start or stop recording according to the latest child-owned phase.
+       * @returns {void}
+       */
+      function handleStudioRecordToggle() {
+        const command = studioSnapshot?.phase === "recording" ? "stop-recording" : "start-recording";
+        if (sendStudioCommand(command, {})) {
+          setStudioStatus(command === "stop-recording" ? "正在停止录制…" : "正在开始录制…");
+        }
+      }
+
+      /**
+       * Forward one empty-payload command declared by a trusted workbench button.
+       * @param {Event} event Button activation event.
+       * @returns {void}
+       */
+      function handleEmptyStudioCommand(event) {
+        const command = event.currentTarget?.dataset?.studioCommand;
+        if (studioCommands.has(command)) sendStudioCommand(command, {});
+      }
+
+      /**
+       * Open the local JSON chooser only when import is currently supported.
+       * @returns {void}
+       */
+      function handleStudioImportClick() {
+        if (!studioImportFile.disabled) studioImportFile.click();
+      }
+
+      /**
+       * Read one selected local JSON file, then pass only its text to the child recorder.
+       * @returns {Promise<void>} Completion after local file reading and command dispatch.
+       */
+      async function handleStudioImportFile() {
+        const file = studioImportFile.files?.[0];
+        studioImportFile.value = "";
+        if (!file) return;
+        if (file.size > 64 * 1024 * 1024) {
+          setStudioStatus("JSON 文件超过 64 MiB，已拒绝导入。", true);
+          return;
+        }
+        try {
+          const json = await file.text();
+          if (!sendStudioCommand("import-json", { json })) return;
+          setStudioStatus(`正在导入 ${file.name}…`);
+        } catch (error) {
+          setStudioStatus(describeUiError(error, "读取 JSON 文件失败。"), true);
+        }
+      }
+
+      /**
+       * Refresh load and delete availability after the user selects a library entry.
+       * @returns {void}
+       */
+      function handleStudioProjectSelection() {
+        const selected = Boolean(studioProjectSelect.value);
+        studioButtons.loadProject.disabled = !selected || !studioSnapshot?.capabilities.loadProject;
+        studioButtons.deleteProject.disabled = !selected || !studioSnapshot?.capabilities.deleteProject;
+      }
+
+      /**
+       * Send a project command using the selected browser-local project identifier.
+       * @param {string} command Project command name.
+       * @returns {void}
+       */
+      function sendSelectedStudioProject(command) {
+        const projectId = studioProjectSelect.value;
+        if (!projectId) {
+          setStudioStatus("请先选择一个已保存项目。", true);
+          return;
+        }
+        sendStudioCommand(command, { projectId });
+      }
+
+      /**
+       * Load the selected browser-local recording project.
+       * @returns {void}
+       */
+      function handleStudioLoadProject() {
+        sendSelectedStudioProject("load-project");
+      }
+
+      /**
+       * Confirm and delete the selected browser-local recording project.
+       * @returns {void}
+       */
+      function handleStudioDeleteProject() {
+        const projectId = studioProjectSelect.value;
+        const project = studioSnapshot?.library.find((candidate) => candidate.id === projectId);
+        if (!project) {
+          setStudioStatus("请先选择一个已保存项目。", true);
+          return;
+        }
+        if (!window.confirm(`确定删除浏览器项目“${project.title}”吗？此操作不能撤销。`)) return;
+        sendStudioCommand("delete-project", { projectId });
+      }
+
+      /**
+       * Select one privacy-safe logical action using delegated list handling.
+       * @param {MouseEvent} event Delegated action-list click.
+       * @returns {void}
+       */
+      function handleStudioActionSelection(event) {
+        const target = event.target instanceof Element ? event.target.closest("[data-action-id]") : null;
+        if (!(target instanceof HTMLButtonElement) || target.disabled) return;
+        sendStudioCommand("select-action", { actionId: target.dataset.actionId });
+      }
+
+      /** Initialize local defaults and non-secret server configuration. */
+      async function initialize() {
+        sessionStorage.removeItem("remote-studio.api-token");
+        clientIdInput.value = sessionStorage.getItem("remote-studio.client-id") || "";
+        adbSerialInput.value = sessionStorage.getItem("remote-studio.adb-serial") || "";
+        try {
+          const response = await fetch("/api/config");
+          const config = await readEnvelope(response);
+          if (config.scrcpyOrigin) scrcpyOrigin = new URL(config.scrcpyOrigin).origin;
+          if (!clientIdInput.value && config.defaultClientId) clientIdInput.value = config.defaultClientId;
+          if (!adbSerialInput.value && config.defaultAdbSerial) adbSerialInput.value = config.defaultAdbSerial;
+        } catch {
+          setConnectionState("waiting", "PC 配置待就绪");
+        }
+      }
+
+      document.querySelectorAll(".role-tab").forEach((tab) => tab.addEventListener("click", () => switchRole(tab.dataset.role, true)));
+      document.querySelectorAll("[data-operation]").forEach((button) => button.addEventListener("click", () => {
+        const params = button.dataset.params ? JSON.parse(button.dataset.params) : {};
+        void runOperation(button.dataset.operation, params).catch(() => undefined);
+      }));
+      document.querySelector("[data-bundle='overview']").addEventListener("click", () => void runOverview().catch(() => undefined));
+      document.querySelector("#set-brightness").addEventListener("click", () => {
+        const level = Number(document.querySelector("#brightness").value);
+        void runOperation("device.screen.brightness.set", { level }).catch(() => undefined);
+      });
+      routeButton.addEventListener("click", openRouteDrawer);
+      document.querySelector("#close-route-drawer").addEventListener("click", closeRouteDrawer);
+      routeDrawerBackdrop.addEventListener("click", closeRouteDrawer);
+      applyRoutePreferenceButton.addEventListener("click", () => {
+        const selected = document.querySelector('input[name="route-preference"]:checked');
+        if (selected) transportPreferenceInput.value = selected.value;
+        const refresh = currentStreamMode === "relay" && Boolean(activeRelaySessionId || pendingRelayBootstrap);
+        closeRouteDrawer();
+        requestRelayConnection(refresh);
+      });
+      document.addEventListener("keydown", (event) => {
+        if (!routeDrawer.classList.contains("open")) return;
+        if (event.key === "Escape") {
+          closeRouteDrawer();
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const focusable = Array.from(routeDrawer.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'));
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
+      document.querySelector("#connect-relay").addEventListener("click", () => {
+        requestRelayConnection(false);
+      });
+      document.querySelector("#connect-stream").addEventListener("click", () => loadStream(false));
+      document.querySelector("#show-devices").addEventListener("click", () => loadStream(true));
+      document.querySelector("#open-stream").addEventListener("click", () => {
+        if (currentStreamMode === "relay") {
+          setResult("独立窗口 · 未打开", "中继票据只通过当前父页面内存交付。独立窗口请重新设计安全交付流程；本轮不把票据放入 URL。", "error");
+          return;
+        }
+        const serial = adbSerialInput.value.trim();
+        window.open(currentStreamUrl || (serial ? buildStreamUrl(serial) : `${scrcpyOrigin}/`), "_blank", "noopener,noreferrer");
+      });
+      document.querySelector("#reload-stream").addEventListener("click", () => {
+        if (currentStreamMode === "relay") {
+          requestRelayConnection(true);
+        } else if (remoteFrame.src) {
+          resetRemoteLayout();
+          remoteFrame.src = remoteFrame.src;
+        }
+      });
+      document.querySelectorAll(".open-studio").forEach((button) => button.addEventListener("click", openRecordingStudio));
+      document.querySelector("#close-recording-studio").addEventListener("click", closeRecordingStudio);
+      studioTitle.addEventListener("change", handleStudioTitleChange);
+      studioCaptureVideo.addEventListener("change", handleStudioCaptureVideoChange);
+      studioSendText.addEventListener("input", handleStudioSendTextInput);
+      studioSendTextButton.addEventListener("click", handleStudioSendText);
+      studioRecordToggle.addEventListener("click", handleStudioRecordToggle);
+      studioButtons.importJson.addEventListener("click", handleStudioImportClick);
+      studioImportFile.addEventListener("change", () => void handleStudioImportFile());
+      studioProjectSelect.addEventListener("change", handleStudioProjectSelection);
+      studioButtons.loadProject.addEventListener("click", handleStudioLoadProject);
+      studioButtons.deleteProject.addEventListener("click", handleStudioDeleteProject);
+      studioButtons.identifyAction.addEventListener("click", () => void handleStudioActionIdentification());
+      studioButtons.clearActionSemantic.addEventListener("click", handleStudioClearActionSemantic);
+      studioSemanticFallback.addEventListener("change", handleStudioSemanticSafetyChange);
+      studioSemanticSideEffect.addEventListener("change", handleStudioSemanticSafetyChange);
+      studioActionList.addEventListener("click", handleStudioActionSelection);
+      document.querySelectorAll("[data-studio-command]").forEach((button) => {
+        button.addEventListener("click", handleEmptyStudioCommand);
+      });
+      window.addEventListener("message", (event) => {
+        const bootstrap = pendingRelayBootstrap;
+        if (
+          event.origin !== scrcpyOrigin ||
+          event.source !== remoteFrame.contentWindow ||
+          !event.data
+        ) {
+          return;
+        }
+        if (event.data.type === relayLayoutMessageType) {
+          acceptRemoteLayoutMessage(event.data);
+          return;
+        }
+        if (event.data.type === relayDiagnosticsMessageType) {
+          acceptRouteDiagnosticsMessage(event.data);
+          return;
+        }
+        if (event.data.type === studioEventMessageType) {
+          acceptRecordingStudioEvent(event.data);
+          return;
+        }
+        if (event.data.type !== relayStateMessageType) return;
+        if (event.data.state === "bootstrap-ready" && bootstrap && bootstrap.generation === relayGeneration && !bootstrap.sent) {
+          bootstrap.sent = true;
+          remoteFrame.contentWindow.postMessage(
+            { type: relayConnectMessageType, payload: bootstrap.session },
+            scrcpyOrigin,
+          );
+          setConnectionState("waiting", "网页已收到一次性中继票据");
+        } else if (event.data.state === "session-accepted" && bootstrap && bootstrap.generation === relayGeneration) {
+          bootstrap.session.browserTicket = "";
+          pendingRelayBootstrap = null;
+          relayLifecyclePhase = "active";
+          setConnectionState("waiting", "等待手机与网页在服务端配对");
+          if (recordingStudioVisible || recordingStudioOpenIntent) {
+            recordingStudioOpenIntent = false;
+            window.setTimeout(subscribeRecordingStudio, 0);
+          }
+        } else if (event.data.sessionId === activeRelaySessionId) {
+          if (event.data.state === "recording-studio-ready") {
+            if (
+              relayLifecyclePhase === "active"
+              && (recordingStudioVisible || recordingStudioOpenIntent)
+            ) {
+              recordingStudioOpenIntent = false;
+              subscribeRecordingStudio();
+            }
+          } else if (event.data.state === "transport-selecting") {
+            transportStateRevision += 1;
+            activeTransport = null;
+            setConnectionState("waiting", "正在协商 WebRTC P2P；超时将自动回退 WSS");
+          } else if (event.data.state === "transport-p2p") {
+            transportStateRevision += 1;
+            if (transportRecoveryGeneration !== relayGeneration) {
+              activeTransport = "p2p";
+              resetTransportRecovery();
+              setConnectionState("online", "WebRTC P2P 直连已建立");
+            }
+          } else if (event.data.state === "transport-recovering") {
+            transportStateRevision += 1;
+            latchTransportRecovery(relayGeneration, event.data.reasonCode || "P2P_INTERRUPTED");
+            setConnectionState("waiting", "P2P 中断，正在恢复 WSS 数据通道");
+          } else if (event.data.state === "transport-relay") {
+            transportStateRevision += 1;
+            activeTransport = "relay";
+            resetTransportRecovery();
+            setConnectionState("online", "WSS 服务器中继已就绪");
+          }
+          renderRouteDrawer();
+        }
+      });
+      window.addEventListener("pagehide", () => {
+        const sessionId = activeRelaySessionId;
+        const token = tokenInput.value.trim();
+        if (pendingRelayBootstrap?.session) pendingRelayBootstrap.session.browserTicket = "";
+        pendingRelayBootstrap = null;
+        recordingStudioOpenIntent = false;
+        activeRelaySessionId = "";
+        activeTransport = null;
+        latestRemoteSession = null;
+        latestRouteDiagnostics = null;
+        routeProbeRevision += 1;
+        routeProbeByTarget.clear();
+        resetRecordingStudioBridge();
+        resetTransportRecovery();
+        relayLifecyclePhase = "idle";
+        relayGeneration += 1;
+        if (sessionId && token.length >= 16) {
+          void fetch(`/api/remote/sessions/${encodeURIComponent(sessionId)}/close`, {
+            method: "POST",
+            keepalive: true,
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        }
+      });
+      remoteFrame.addEventListener("load", () => {
+        if (currentStreamMode !== "relay") {
+          resetRecordingStudioBridge("本机 ADB 调试画面暂不接入父页录制工作台；请使用服务端远控。");
+        }
+        setConnectionState(
+          currentStreamMode === "relay" ? "waiting" : "online",
+          currentStreamMode === "relay" ? "中继画面页已载入，正在安全交付票据" : "本机画面页已载入",
+        );
+      });
+      const remoteLayoutResizeObserver = typeof ResizeObserver === "function"
+        ? new ResizeObserver(scheduleRemoteColumnWidth)
+        : null;
+      remoteLayoutResizeObserver?.observe(workspace);
+      window.addEventListener("resize", scheduleRemoteColumnWidth);
+      scheduleRemoteColumnWidth();
+      renderRouteDrawer();
+      resetRecordingStudioBridge();
+      void initialize();
+    </script>
+  </body>
+</html>

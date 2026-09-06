@@ -8,6 +8,7 @@ import zlib from "node:zlib";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const mobileRoot = path.join(repositoryRoot, "mobile");
+const rtcSidecarRoot = path.join(mobileRoot, "rtc-sidecar");
 const outputDirectory = path.resolve(
   process.env.AUTOJS6_RELEASE_OUTPUT ||
     path.join(repositoryRoot, ".tmp", "releases"),
@@ -129,6 +130,36 @@ const temporaryRoot = fs.mkdtempSync(
 const releaseRoot = path.join(temporaryRoot, "root");
 fs.mkdirSync(releaseRoot, { recursive: true });
 try {
+  const builtSidecarPath = path.join(
+    temporaryRoot,
+    "rtc-datachannel-android-arm64",
+  );
+  execFileSync("go", ["test", "./..."], {
+    cwd: rtcSidecarRoot,
+    stdio: "inherit",
+  });
+  execFileSync(
+    "go",
+    [
+      "build",
+      "-buildvcs=false",
+      "-trimpath",
+      "-ldflags=-checklinkname=0 -s -w",
+      "-o",
+      builtSidecarPath,
+      ".",
+    ],
+    {
+      cwd: rtcSidecarRoot,
+      env: {
+        ...process.env,
+        GOOS: "android",
+        GOARCH: "arm64",
+        CGO_ENABLED: "0",
+      },
+      stdio: "inherit",
+    },
+  );
   const preparedNodeModules =
     process.env.AUTOJS6_RELEASE_PRODUCTION_NODE_MODULES;
   if (preparedNodeModules) {
@@ -176,6 +207,7 @@ try {
   for (const removable of [
     "src",
     "test",
+    "rtc-sidecar",
     "bootstrap",
     "logs",
     "state",
@@ -231,6 +263,13 @@ try {
     path.join(releaseRoot, "task-scripts"),
     { recursive: true },
   );
+  const packagedSidecarPath = path.join(
+    releaseRoot,
+    "bin",
+    "rtc-datachannel-android-arm64",
+  );
+  fs.mkdirSync(path.dirname(packagedSidecarPath), { recursive: true });
+  fs.copyFileSync(builtSidecarPath, packagedSidecarPath);
   const forbidden = listFiles(releaseRoot).filter(
     (filePath) =>
       /^(\.env|logs|state|test|src)(\/|$)/.test(filePath) ||
