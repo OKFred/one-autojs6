@@ -50,6 +50,16 @@ export interface RemoteControlConfig {
   localScrcpyUrl: string;
 }
 
+/** 独立的一分钟手机健康遥测配置。 */
+export interface PhoneHealthTelemetryConfig {
+  enabled: boolean;
+  siteId: string;
+  gatewayId: string;
+  deviceId: string;
+  intervalSeconds: number;
+  outboxLimit: number;
+}
+
 /** 手机守护进程配置。 */
 export interface Autojs6Config {
   deviceId?: string;
@@ -75,6 +85,7 @@ export interface Autojs6Config {
   };
   ops: DeviceOpsConfig;
   remoteControl: RemoteControlConfig;
+  phoneHealthTelemetry: PhoneHealthTelemetryConfig;
   tiktok: TikTokConfig;
   events: Record<
     "battery" | "network" | "sms" | "notification",
@@ -133,6 +144,14 @@ export const DEFAULT_CONFIG: Autojs6Config = {
     enabled: false,
     allowedRelayOrigins: ["wss://hodor.this-time.com"],
     localScrcpyUrl: DEFAULT_LOCAL_SCRCPY_URL,
+  },
+  phoneHealthTelemetry: {
+    enabled: false,
+    siteId: "",
+    gatewayId: "mobile",
+    deviceId: "",
+    intervalSeconds: 60,
+    outboxLimit: 180,
   },
   tiktok: {
     allowedMaterialRoots: [
@@ -239,6 +258,13 @@ function boundedInteger(
   return Math.max(minimum, Math.min(Math.trunc(value), maximum));
 }
 
+/** 返回严格限定的遥测主题标识，非法值退化为空字符串。 */
+function telemetryIdentifier(value: unknown): string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+    ? value
+    : "";
+}
+
 /** 合并单个事件配置。 */
 function mergeEventConfig(
   value: unknown,
@@ -286,6 +312,9 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
   const ops = isRecord(parsed.ops) ? parsed.ops : {};
   const remoteControl = isRecord(parsed.remoteControl)
     ? parsed.remoteControl
+    : {};
+  const phoneHealthTelemetry = isRecord(parsed.phoneHealthTelemetry)
+    ? parsed.phoneHealthTelemetry
     : {};
   const tiktok = isRecord(parsed.tiktok) ? parsed.tiktok : {};
   const events = isRecord(parsed.events) ? parsed.events : {};
@@ -401,6 +430,28 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
         localScrcpyUrl: localScrcpyUrl(
           remoteControl.localScrcpyUrl,
           DEFAULT_CONFIG.remoteControl.localScrcpyUrl,
+        ),
+      },
+      phoneHealthTelemetry: {
+        enabled:
+          phoneHealthTelemetry.enabled === true &&
+          Boolean(telemetryIdentifier(phoneHealthTelemetry.siteId)) &&
+          Boolean(telemetryIdentifier(phoneHealthTelemetry.deviceId)),
+        siteId: telemetryIdentifier(phoneHealthTelemetry.siteId),
+        gatewayId:
+          telemetryIdentifier(phoneHealthTelemetry.gatewayId) || "mobile",
+        deviceId: telemetryIdentifier(phoneHealthTelemetry.deviceId),
+        intervalSeconds: boundedInteger(
+          phoneHealthTelemetry.intervalSeconds,
+          DEFAULT_CONFIG.phoneHealthTelemetry.intervalSeconds,
+          60,
+          300,
+        ),
+        outboxLimit: boundedInteger(
+          phoneHealthTelemetry.outboxLimit,
+          DEFAULT_CONFIG.phoneHealthTelemetry.outboxLimit,
+          10,
+          1440,
         ),
       },
       tiktok: {

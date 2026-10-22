@@ -235,3 +235,11 @@ manifest；调试 helper 时可将构建产物临时放到 `/data/local/tmp` 做
 ## Node 与 Worker 结果回传
 
 任务包含 `callbackUrl` 时，手机会同时发送 MQTT 结果和 HTTP 结果。Node Server 通过 taskId、deviceId、scriptId、traceId 幂等落库：Node 运行时可依赖 MQTT Listener，Worker 运行时通过 HTTP callback 收取结果。
+
+## 手机健康遥测
+
+`phoneHealthTelemetry` 使用独立的不透明 `siteId/gatewayId/deviceId`，不会复用或输出 IMEI、序列号、手机号及 RPA 任务内容。默认关闭；部署配置显式启用后，每 60 秒向以下主题发布一次 QoS 1、非 retained 的 schema v2 遥测：
+
+`iot/v1/<siteId>/<gatewayId>/devices/<deviceId>/telemetry`
+
+首版仅使用固定 Android/sysfs 接口采集电池温度、电量、充电、电池电压、系统热状态、数据分区可用空间、系统可用内存、系统 uptime 和采集进程 uptime。读取失败时省略指标，并在 `source.metric_status` 中写入有限原因枚举；不会补零或记录原始命令输出。采集防重叠，消息在发送前写入共享状态 outbox，收到 PUBACK 后删除；断网和进程重启补报保留原 `message_id` 与 `read_time_utc`。outbox 默认最多 180 条、最长保留 24 小时。

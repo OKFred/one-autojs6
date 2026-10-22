@@ -74,6 +74,7 @@ import { forceReconnectMqtt } from "./mqtt-reconnect.js";
 import { AndroidNetworkChangeMonitor } from "./network-change-monitor.js";
 import type { NetworkRoutingStatus } from "./network-routing.js";
 import { createHttpReportError } from "./report-error.js";
+import { PhoneHealthReporter } from "./phone-health.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
@@ -659,6 +660,32 @@ function publishMqttWithAck(
     );
   });
 }
+
+/** 通过固定 MQTT QoS 1 发布独立健康遥测并等待 PUBACK。 */
+function publishPhoneHealthMqtt(
+  topic: string,
+  payload: unknown,
+): Promise<void> {
+  if (!mqttClient.connected)
+    return Promise.reject(new Error("MQTT client is disconnected"));
+  return new Promise((resolve, reject) => {
+    mqttClient.publish(
+      topic,
+      JSON.stringify(payload),
+      { qos: 1, retain: false },
+      (error) => {
+        if (error) reject(error);
+        else resolve();
+      },
+    );
+  });
+}
+
+const phoneHealthReporter = new PhoneHealthReporter(
+  config.phoneHealthTelemetry,
+  sharedStateDirectory,
+  publishPhoneHealthMqtt,
+);
 
 /** 通过带设备令牌的 HTTP callback 发送任务结果。 */
 async function postTaskResult(entry: TaskResultOutboxEntry): Promise<void> {
@@ -2093,6 +2120,7 @@ function handleMqttConnect(): void {
         `[MQTT] Management subscriptions ready device=${deviceLogId}`,
       );
       void replayDeploymentOutcomes();
+      void phoneHealthReporter.replay();
       void reportDeploymentReady().catch((readyError) =>
         console.error("[DEPLOYMENT] Health report failed", readyError),
       );
@@ -2194,7 +2222,10 @@ function startDeviceReporting(): void {
     30_000,
   );
   void replayTaskResultOutbox();
+  phoneHealthReporter.start();
 }
+
+process.once("exit", () => phoneHealthReporter.stop());
 
 mqttClient.connect();
 startDeviceReporting();

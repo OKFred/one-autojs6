@@ -10,6 +10,14 @@
     "requestTimeoutMs": 15000,
     "heartbeatSeconds": 60
   },
+  "phoneHealthTelemetry": {
+    "enabled": false,
+    "siteId": "",
+    "gatewayId": "mobile",
+    "deviceId": "",
+    "intervalSeconds": 60,
+    "outboxLimit": 180
+  },
   "security": {
     "allowedScriptIds": [
       "device.apps.list",
