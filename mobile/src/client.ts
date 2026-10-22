@@ -73,6 +73,7 @@ import { curlProbe, NetworkRoutingManager } from "./network-routing.js";
 import { forceReconnectMqtt } from "./mqtt-reconnect.js";
 import { AndroidNetworkChangeMonitor } from "./network-change-monitor.js";
 import type { NetworkRoutingStatus } from "./network-routing.js";
+import { createHttpReportError } from "./report-error.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
@@ -429,7 +430,7 @@ async function postReport(
   });
   const responseBody: unknown = await response.json().catch(() => null);
   if (!response.ok || !isRecord(responseBody) || responseBody.ok !== true) {
-    throw new Error(`HTTP report rejected (${response.status})`);
+    throw createHttpReportError(response.status, responseBody);
   }
 }
 
