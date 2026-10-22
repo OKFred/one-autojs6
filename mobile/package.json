@@ -1,6 +1,6 @@
 {
   "name": "one-autojs6-mobile",
-  "version": "2.1.23-semantic-canary.1",
+  "version": "2.1.24",
   "type": "module",
   "main": "src/client.ts",
   "scripts": {
