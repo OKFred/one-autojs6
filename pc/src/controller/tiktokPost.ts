@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { AutojsService } from "../service/autojs.service.js";
+import { assertedTikTokTarget } from "../tiktok-device-assertion.js";
 import {
   normalizeTikTokRequest,
   TikTokContractError,
@@ -61,6 +62,12 @@ function readLegacyQuery(c: Context): TikTokLegacyQuery {
  *       按 publicationId 补链或状态查询。publish 未提供 publicationId 时由 PC 生成 UUID；
  *       recover/status 必须复用原 UUID。响应仅表示任务已异步受理，调用方应轮询 resultUrl。
  *       兼容旧版扁平发布字段；旧 linkOnly=true 必须同时提供 publicationId。
+ *     parameters:
+ *       - in: header
+ *         name: X-Device-Assertion
+ *         required: false
+ *         schema: { type: string }
+ *         description: Optional assertion against configured AUTOJS6_CLIENT_ID; cannot select or override another device
  *     requestBody:
  *       required: false
  *       content:
@@ -109,6 +116,22 @@ function readLegacyQuery(c: Context): TikTokLegacyQuery {
  *                   directory:
  *                     type: string
  *                     description: pool 模式的候选目录；与 paths 二选一
+ *                   expectedSha256:
+ *                     type: string
+ *                     pattern: '^[a-f0-9]{64}$'
+ *                     description: Optional approved file hash; direct media only, verified again on mobile before execution
+ *               postSettings:
+ *                 type: object
+ *                 additionalProperties: false
+ *                 required: [audience, commercialDisclosure]
+ *                 description: Optional per-post UI requirements; no global account settings are changed
+ *                 properties:
+ *                   audience:
+ *                     type: string
+ *                     enum: [PUBLIC]
+ *                   commercialDisclosure:
+ *                     type: string
+ *                     enum: [YOUR_BRAND]
  *               content:
  *                 type: object
  *                 properties:
@@ -274,6 +297,12 @@ function readLegacyQuery(c: Context): TikTokLegacyQuery {
  * @returns 统一响应信封中的异步任务受理结果。
  */
 export async function tiktokPost(c: Context) {
+  let pinnedTarget: string | undefined;
+  try {
+    pinnedTarget = assertedTikTokTarget(c.req.header("X-Device-Assertion"), process.env.AUTOJS6_CLIENT_ID);
+  } catch {
+    return c.json({ ok: false, message: "Pinned device assertion does not match the configured PC target", data: {} }, 400);
+  }
   let normalized;
   try {
     normalized = normalizeTikTokRequest(await readBody(c), readLegacyQuery(c));
@@ -292,6 +321,7 @@ export async function tiktokPost(c: Context) {
       "tiktok.post",
       normalized.params,
       normalized.timeoutSeconds,
+      pinnedTarget,
     );
     return c.json({
       ok: true,

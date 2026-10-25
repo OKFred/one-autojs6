@@ -10,6 +10,8 @@ import {
   type TikTokLedgerMedia,
   type TikTokPublicationPhase,
   type TikTokPublicationRecord,
+  type TikTokPostSettings,
+  type TikTokPostSettingsEvidence,
 } from "./tiktok-ledger.js";
 
 /** TikTok 任务动作。 */
@@ -32,6 +34,7 @@ export interface NormalizedTikTokMedia {
   kind?: TikTokMediaKind;
   paths: string[];
   directories: string[];
+  expectedSha256?: string;
 }
 
 /** 规范化后的 TikTok v2 请求。 */
@@ -43,6 +46,7 @@ export interface NormalizedTikTokRequest {
   expectedHandle?: string;
   warnings: string[];
   media?: NormalizedTikTokMedia;
+  postSettings?: TikTokPostSettings;
   content: {
     titles: string[];
     details: string[];
@@ -106,6 +110,7 @@ export interface TikTokPublicationCheckpoint {
   postUrl?: string;
   canonicalUrl?: string;
   shareUrl?: string;
+  postSettingsEvidence?: unknown;
 }
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
@@ -316,6 +321,92 @@ export function tightenTikTokPolicy(
   };
 }
 
+/**
+ * Validate explicit commercial post settings without assigning defaults.
+ * @param value Optional canonical request settings.
+ * @returns Validated settings or undefined for a legacy request.
+ */
+function normalizePostSettings(value: unknown): TikTokPostSettings | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("POST_SETTINGS_INVALID");
+  assertKnownKeys(value, ["audience", "commercialDisclosure"], "postSettings");
+  if (value.audience !== "PUBLIC" || value.commercialDisclosure !== "YOUR_BRAND") {
+    throw new Error("POST_SETTINGS_INVALID");
+  }
+  return { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND" };
+}
+
+/**
+ * Validate a trusted-script readback against the immutable publication context.
+ * @param value Unknown checkpoint proof, never inferred from requested settings.
+ * @param publication Original publication record.
+ * @param now Current mobile-client time.
+ * @returns Normalized original readback or undefined when no proof was supplied.
+ */
+export function validateTikTokPostSettingsEvidence(
+  value: unknown,
+  publication: TikTokPublicationRecord,
+  now = Date.now(),
+): TikTokPostSettingsEvidence | undefined {
+  if (value === undefined) return undefined;
+  if (!publication.postSettings || !isRecord(value) ||
+      Object.keys(value).some((key) => !["audience", "commercialDisclosure", "verified", "verifiedAt"].includes(key)) ||
+      value.audience !== publication.postSettings.audience ||
+      value.commercialDisclosure !== publication.postSettings.commercialDisclosure ||
+      value.verified !== true || !Number.isSafeInteger(value.verifiedAt) ||
+      Number(value.verifiedAt) < publication.createdAt || Number(value.verifiedAt) > now) {
+    throw new Error("POST_SETTINGS_NOT_VERIFIED");
+  }
+  const evidence: TikTokPostSettingsEvidence = {
+    audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND", verified: true,
+    verifiedAt: Number(value.verifiedAt),
+  };
+  if (publication.postSettingsEvidence &&
+      JSON.stringify(publication.postSettingsEvidence) !== JSON.stringify(evidence)) {
+    throw new Error("POST_SETTINGS_EVIDENCE_CONFLICT");
+  }
+  return evidence;
+}
+
+/**
+ * Return only requested settings and validated original proof for public results.
+ * @param publication Private publication record, absent for a pure preflight.
+ * @param now Current mobile-client time.
+ * @returns Optional safe fields; legacy publications never acquire proof flags.
+ */
+export function tikTokPostSettingsSummary(
+  publication: TikTokPublicationRecord | undefined,
+  now = Date.now(),
+): { postSettings?: TikTokPostSettings; postSettingsEvidence?: TikTokPostSettingsEvidence } {
+  if (!publication?.postSettings) return {};
+  const postSettings = normalizePostSettings(publication.postSettings);
+  try {
+    const proof = validateTikTokPostSettingsEvidence(publication.postSettingsEvidence, publication, now);
+    return { postSettings, ...(proof ? { postSettingsEvidence: proof } : {}) };
+  } catch {
+    return { postSettings };
+  }
+}
+
+/**
+ * Expose hashes for a selected, explicitly hash-bound creative without private text.
+ * @param publication Original persisted media and caption selection.
+ * @returns Optional media, canonical caption and original request fingerprints.
+ */
+export function tikTokCreativeEvidenceSummary(publication: TikTokPublicationRecord | undefined): {
+  creativeEvidence?: { mediaSha256: string; captionSha256: string; requestFingerprint: string };
+} {
+  if (!publication?.media.expectedSha256 ||
+      !/^[a-f0-9]{64}$/.test(publication.media.expectedSha256) ||
+      publication.media.fingerprint !== publication.media.expectedSha256 ||
+      !/^[a-f0-9]{64}$/.test(publication.requestFingerprint)) return {};
+  return { creativeEvidence: {
+    mediaSha256: publication.media.fingerprint,
+    captionSha256: sha256(JSON.stringify({ title: publication.caption.title, details: publication.caption.details })),
+    requestFingerprint: publication.requestFingerprint,
+  } };
+}
+
 /** 将媒体对象规范化为候选路径和目录。 */
 function normalizeV2Media(
   value: unknown,
@@ -325,11 +416,19 @@ function normalizeV2Media(
   if (!isRecord(value)) throw new Error("INVALID_MEDIA");
   assertKnownKeys(
     value,
-    ["mode", "kind", "path", "paths", "directory", "directories"],
+    ["mode", "kind", "path", "paths", "directory", "directories", "expectedSha256"],
     "media",
   );
   if (value.mode !== "direct" && value.mode !== "pool") {
     throw new Error("INVALID_MEDIA_MODE");
+  }
+  const expectedSha256 = value.expectedSha256;
+  if (expectedSha256 !== undefined &&
+      (typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedSha256))) {
+    throw new Error("INVALID_MEDIA_SHA256");
+  }
+  if (expectedSha256 !== undefined && value.mode !== "direct") {
+    throw new Error("MEDIA_SHA256_REQUIRES_DIRECT");
   }
   const kind =
     value.kind === "image" || value.kind === "video" ? value.kind : undefined;
@@ -372,6 +471,7 @@ function normalizeV2Media(
     kind,
     paths: uniquePaths,
     directories: uniqueDirectories,
+    ...(expectedSha256 !== undefined ? { expectedSha256 } : {}),
   };
 }
 
@@ -473,6 +573,7 @@ export function normalizeTikTokRequest(
         "publicationId",
         "expectedHandle",
         "media",
+        "postSettings",
         "content",
         "policy",
         "link",
@@ -520,6 +621,7 @@ export function normalizeTikTokRequest(
   const media = legacy
     ? normalizeLegacyMedia(input, config.allowedMaterialRoots)
     : normalizeV2Media(input.media, config.allowedMaterialRoots);
+  const postSettings = legacy ? undefined : normalizePostSettings(input.postSettings);
   if (action === "publish" && !media) throw new Error("MEDIA_REQUIRED");
   const content = normalizeContent(input, legacy);
   if (action === "publish" && !content.titles.length && !content.details.length) {
@@ -564,6 +666,7 @@ export function normalizeTikTokRequest(
         ? ["LEGACY_EXPECTED_HANDLE_MISSING"]
         : [],
     media,
+    ...(postSettings ? { postSettings } : {}),
     content,
     policy,
     link: {
@@ -804,6 +907,8 @@ function buildScriptParams(
   publication?: TikTokPublicationRecord,
 ): Record<string, unknown> {
   const record = publication;
+  const postSettings = record ? record.postSettings : request.postSettings;
+  const expectedSha256 = record ? record.media.expectedSha256 : request.media?.expectedSha256;
   return {
     contractVersion: 2,
     action: request.action,
@@ -812,6 +917,8 @@ function buildScriptParams(
     linkOnly: request.action === "recover",
     ...(record?.media.kind === "image" ? { imagePath: record.media.path } : {}),
     ...(record?.media.kind === "video" ? { videoPath: record.media.path } : {}),
+    ...(expectedSha256 ? { media: { expectedSha256 } } : {}),
+    ...(postSettings ? { postSettings: { ...postSettings } } : {}),
     title: record?.caption.title ?? request.content.titles[0] ?? "",
     details: record?.caption.details ?? request.content.details[0] ?? "",
     minIntervalSeconds: request.policy.minIntervalSeconds,
@@ -832,6 +939,9 @@ function buildScriptParams(
             baselineTileCount: record.baselineTileCount,
             postId: record.postId,
             canonicalUrl: record.canonicalUrl,
+            ...(record.postSettings ? { postSettings: { ...record.postSettings } } : {}),
+            ...(record.postSettingsEvidence
+              ? { postSettingsEvidence: { ...record.postSettingsEvidence } } : {}),
           },
         }
       : {}),
@@ -861,6 +971,19 @@ export function prepareTikTokTask(
   if (request.action === "status") {
     const publication = ledger.get(request.publicationId);
     if (!publication) throw new Error("PUBLICATION_NOT_FOUND");
+    if (publication.postSettings || publication.media.expectedSha256 ||
+        request.postSettings || request.media?.expectedSha256) {
+      if (!request.expectedHandle) throw new Error("EXPECTED_HANDLE_REQUIRED");
+      if (publication.account !== request.expectedHandle) throw new Error("EXPECTED_ACCOUNT_MISMATCH");
+      if (request.postSettings &&
+          JSON.stringify(request.postSettings) !== JSON.stringify(publication.postSettings)) {
+        throw new Error("POST_SETTINGS_RECOVERY_MISMATCH");
+      }
+      if (request.media?.expectedSha256 &&
+          request.media.expectedSha256 !== publication.media.expectedSha256) {
+        throw new Error("MEDIA_SHA256_RECOVERY_MISMATCH");
+      }
+    }
     return { request, ledger, decision: "STATUS", publication, scriptParams: null };
   }
   if (request.action === "recover") {
@@ -868,6 +991,14 @@ export function prepareTikTokTask(
     if (!publication) throw new Error("PUBLICATION_NOT_FOUND");
     if (publication.account !== request.expectedHandle) {
       throw new Error("EXPECTED_ACCOUNT_MISMATCH");
+    }
+    if (request.postSettings &&
+        JSON.stringify(request.postSettings) !== JSON.stringify(publication.postSettings)) {
+      throw new Error("POST_SETTINGS_RECOVERY_MISMATCH");
+    }
+    if (request.media?.expectedSha256 &&
+        request.media.expectedSha256 !== publication.media.expectedSha256) {
+      throw new Error("MEDIA_SHA256_RECOVERY_MISMATCH");
     }
     return {
       request,
@@ -884,16 +1015,23 @@ export function prepareTikTokTask(
   const candidates = request.media
     ? inspectMediaCandidates(request.media, config.allowedMaterialRoots)
     : [];
+  if (request.media?.expectedSha256 &&
+      (candidates.length !== 1 || candidates[0]?.fingerprint !== request.media.expectedSha256)) {
+    throw new Error("MEDIA_HASH_MISMATCH");
+  }
   if (
     request.action === "preflight" &&
     !request.content.titles.length &&
     !request.content.details.length
   ) {
+    const scriptParams = buildScriptParams(request);
+    const firstMedia = candidates[0];
+    if (firstMedia) scriptParams[firstMedia.kind === "image" ? "imagePath" : "videoPath"] = firstMedia.path;
     return {
       request,
       ledger,
       decision: "PREFLIGHT",
-      scriptParams: buildScriptParams(request),
+      scriptParams,
     };
   }
   const captionCandidates = buildCaptionCandidates(
@@ -906,6 +1044,8 @@ export function prepareTikTokTask(
       account: request.expectedHandle,
       media: candidates.map((candidate) => candidate.fingerprint).sort(),
       captions: captionCandidates.map((candidate) => candidate.fingerprint).sort(),
+      ...(request.media?.expectedSha256 ? { expectedSha256: request.media.expectedSha256 } : {}),
+      ...(request.postSettings ? { postSettings: request.postSettings } : {}),
     }),
   );
   const existing = ledger.get(request.publicationId);
@@ -913,9 +1053,13 @@ export function prepareTikTokTask(
     if (existing.requestFingerprint !== requestFingerprint) {
       throw new Error("PUBLICATION_ID_CONFLICT");
     }
+    if (existing.postSettingsEvidence && PHASE_ORDER[existing.phase] < PHASE_ORDER.COMMITTING) {
+      throw new Error("POST_SETTINGS_REVIEW_REQUIRED");
+    }
     let decision: PreparedTikTokTask["decision"] = "RESUME";
     if (existing.phase === "LINK_CONFIRMED") decision = "CACHED";
-    else if (PHASE_ORDER[existing.phase] >= PHASE_ORDER.COMMITTING) {
+    else if (PHASE_ORDER[existing.phase] >= PHASE_ORDER.COMMITTING ||
+        (existing.postSettings && existing.outcome === "PUBLISH_OUTCOME_UNKNOWN")) {
       decision = "RECOVER";
     }
     const executionRequest =
@@ -969,8 +1113,10 @@ export function prepareTikTokTask(
       publicationId: request.publicationId,
       requestFingerprint,
       account: request.expectedHandle ?? "LEGACY_UNVERIFIED",
-      media,
+      media: { ...media, ...(request.media?.expectedSha256
+        ? { expectedSha256: request.media.expectedSha256 } : {}) },
       caption,
+      ...(request.postSettings ? { postSettings: request.postSettings } : {}),
     },
     now,
   );
@@ -997,6 +1143,11 @@ export function markTikTokPublicationPhase(
   phase: TikTokPublicationPhase,
   now = Date.now(),
 ): TikTokPublicationRecord {
+  const publication = prepared.ledger.get(prepared.request.publicationId);
+  if (publication?.postSettings && PHASE_ORDER[phase] >= PHASE_ORDER.COMMITTING &&
+      !validateTikTokPostSettingsEvidence(publication.postSettingsEvidence, publication, now)) {
+    throw new Error("POST_SETTINGS_NOT_VERIFIED");
+  }
   const patch =
     phase === "COMMITTING" || phase === "SUBMITTED"
       ? ({ outcome: "PENDING", errorCode: undefined } as const)
@@ -1029,7 +1180,11 @@ export function applyTikTokPublicationCheckpoint(
     checkpoint.postId && /^\d{1,32}$/.test(checkpoint.postId)
       ? checkpoint.postId
       : undefined;
-  const patch: TikTokPublicationCheckpoint = {};
+  const patch: Parameters<TikTokLedger["checkpoint"]>[1] = {};
+  const publication = prepared.ledger.get(prepared.request.publicationId);
+  if (!publication) throw new Error("PUBLICATION_NOT_FOUND");
+  const evidence = validateTikTokPostSettingsEvidence(checkpoint.postSettingsEvidence, publication, now);
+  if (evidence) patch.postSettingsEvidence = evidence;
   if (baselinePostIds !== undefined) patch.baselinePostIds = baselinePostIds;
   if (
     checkpoint.baselineTileCount !== undefined &&
@@ -1087,6 +1242,29 @@ export function applyTikTokScriptResult(
       now,
     );
   }
+  const original = prepared.ledger.get(prepared.request.publicationId);
+  if (original?.postSettings &&
+      (result.publicationId !== original.publicationId || result.contractVersion !== 2)) {
+    return prepared.ledger.setOutcome(original.publicationId,
+      result.published === true || PHASE_ORDER[original.phase] >= PHASE_ORDER.COMMITTING
+        ? "PUBLISH_OUTCOME_UNKNOWN" : "FAILURE",
+      "PUBLICATION_RESULT_MISMATCH", now);
+  }
+  if (result.postSettingsEvidence !== undefined) {
+    try {
+      applyTikTokPublicationCheckpoint(prepared, {
+        postSettingsEvidence: result.postSettingsEvidence,
+      }, now);
+    } catch {
+      const current = prepared.ledger.get(prepared.request.publicationId);
+      return prepared.ledger.setOutcome(
+        prepared.request.publicationId,
+        result.published === true || (current && PHASE_ORDER[current.phase] >= PHASE_ORDER.COMMITTING)
+          ? "PUBLISH_OUTCOME_UNKNOWN" : "FAILURE",
+        "POST_SETTINGS_NOT_VERIFIED", now,
+      );
+    }
+  }
   if (Array.isArray(result.baselinePostIds)) {
     applyTikTokPublicationCheckpoint(
       prepared,
@@ -1109,6 +1287,12 @@ export function applyTikTokScriptResult(
   const postUrl =
     canonicalUrl || (typeof result.postUrl === "string" ? result.postUrl : "");
   const postId = postIdFromUrl(postUrl);
+  const publication = prepared.ledger.get(prepared.request.publicationId);
+  if (published && publication?.postSettings &&
+      !validateTikTokPostSettingsEvidence(publication.postSettingsEvidence, publication, now)) {
+    return prepared.ledger.setOutcome(prepared.request.publicationId,
+      "PUBLISH_OUTCOME_UNKNOWN", "POST_SETTINGS_NOT_VERIFIED", now);
+  }
   if (published && postId) {
     return prepared.ledger.advance(
       prepared.request.publicationId,

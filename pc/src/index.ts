@@ -3,6 +3,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import dotenv from "dotenv";
+import { startCampaignWorker } from "./tiktok-campaign-runner.js";
 import { MqttService } from "./service/mqtt.service.js";
 import { registerSwagger } from "./swagger.js";
 import { WebSocketServer } from "ws";
@@ -107,6 +108,7 @@ const MQTT_PORT = parseInt(process.env.MQTT_PORT, 10);
 // 1. 初始化 MQTT Broker 服务
 // ==========================================
 MqttService.getInstance().init(MQTT_PORT);
+startCampaignWorker();
 
 // ==========================================
 // 2. 初始化 Hono HTTP 服务与绑定路由
@@ -259,6 +261,7 @@ const server = serve(
   {
     fetch: app.fetch,
     port: PORT,
+    hostname: process.env.ONE_AUTOJS6_HTTP_HOST || undefined,
   },
   (info) => {
     console.log(`[HTTP] Server is running on http://localhost:${info.port}`);

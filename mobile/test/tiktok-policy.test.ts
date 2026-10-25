@@ -22,6 +22,9 @@ import {
   sha256,
   sha256File,
   tightenTikTokPolicy,
+  tikTokPostSettingsSummary,
+  tikTokCreativeEvidenceSummary,
+  validateTikTokPostSettingsEvidence,
   type TikTokMediaCandidate,
 } from "../src/tiktok-policy.js";
 
@@ -462,6 +465,123 @@ assert.equal(fs.existsSync(legacyStatePath), false);
 const importedSnapshot = importLedger.snapshot();
 assert.equal(importedSnapshot.legacyImport?.status, "LEGACY_UNVERIFIED");
 assert.deepEqual(importedSnapshot.publications, {});
+
+const approvedSettings = { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND" } as const;
+const approvedHash = sha256File(imagePath);
+const approvedRequest = {
+  contractVersion: 2, action: "publish", publicationId: "approved_creative_001",
+  media: { mode: "direct", kind: "image", path: imagePath, expectedSha256: approvedHash },
+  content: { title: "Approved style", details: "Availability confirmed manually." },
+  postSettings: approvedSettings,
+};
+const approvedState = path.join(temporaryRoot, "approved-state");
+const approved = prepareTikTokTask(approvedRequest, config, { stateDirectory: approvedState, now });
+assert.deepEqual(approved.publication?.postSettings, approvedSettings);
+assert.equal(approved.publication?.media.expectedSha256, approvedHash);
+assert.deepEqual(approved.scriptParams?.postSettings, approvedSettings);
+assert.deepEqual(approved.scriptParams?.media, { expectedSha256: approvedHash });
+assert.deepEqual(tikTokCreativeEvidenceSummary(approved.publication), { creativeEvidence: {
+  mediaSha256: approvedHash,
+  captionSha256: sha256(JSON.stringify(approvedRequest.content)),
+  requestFingerprint: approved.publication?.requestFingerprint,
+} });
+assert.deepEqual(tikTokPostSettingsSummary(approved.publication, now), { postSettings: approvedSettings });
+assert.throws(() => markTikTokPublicationPhase(approved, "COMMITTING", now + 100), /POST_SETTINGS_NOT_VERIFIED/);
+assert.equal(approved.ledger.get(approvedRequest.publicationId)?.phase, "PRECHECKED");
+for (const proof of [null, { ...approvedSettings, verified: false, verifiedAt: now },
+  { ...approvedSettings, verified: true, verifiedAt: now - 1 },
+  { ...approvedSettings, verified: true, verifiedAt: now + 101 },
+  { ...approvedSettings, verified: true, verifiedAt: now, extra: true }]) {
+  assert.throws(() => applyTikTokPublicationCheckpoint(approved, { postSettingsEvidence: proof }, now + 100), /POST_SETTINGS_NOT_VERIFIED/);
+}
+const settingsProof = { ...approvedSettings, verified: true, verifiedAt: now + 100 } as const;
+applyTikTokPublicationCheckpoint(approved, { postSettingsEvidence: settingsProof }, now + 100);
+assert.deepEqual(tikTokPostSettingsSummary(approved.ledger.get(approvedRequest.publicationId), now + 100), {
+  postSettings: approvedSettings, postSettingsEvidence: settingsProof,
+});
+assert.throws(() => prepareTikTokTask(approvedRequest, config, { stateDirectory: approvedState, now: now + 200 }), /POST_SETTINGS_REVIEW_REQUIRED/);
+assert.throws(() => applyTikTokPublicationCheckpoint(approved, {
+  postSettingsEvidence: { ...settingsProof, verifiedAt: now + 200 },
+}, now + 200), /POST_SETTINGS_EVIDENCE_CONFLICT/);
+markTikTokPublicationPhase(approved, "COMMITTING", now + 300);
+const recoveredApproved = prepareTikTokTask({ contractVersion: 2, action: "recover", publicationId: approvedRequest.publicationId },
+  config, { stateDirectory: approvedState, now: now + 400 });
+assert.deepEqual(recoveredApproved.scriptParams?.postSettings, approvedSettings);
+assert.deepEqual((recoveredApproved.scriptParams?.recoveryContext as Record<string, unknown>).postSettingsEvidence, settingsProof);
+assert.equal(applyTikTokScriptResult(recoveredApproved, {
+  contractVersion: 2, publicationId: approvedRequest.publicationId,
+  published: true, postUrl: "https://www.tiktok.com/@example.creator/photo/1234567891",
+  postSettingsEvidence: settingsProof,
+}, now + 500)?.outcome, "SUCCESS");
+assert.throws(() => prepareTikTokTask({ contractVersion: 2, action: "status", publicationId: approvedRequest.publicationId },
+  { ...config, expectedHandle: "another.account" }, { stateDirectory: approvedState, now: now + 600 }), /EXPECTED_ACCOUNT_MISMATCH/);
+assert.throws(() => prepareTikTokTask({ contractVersion: 2, action: "status", publicationId: approvedRequest.publicationId },
+  { ...config, expectedHandle: undefined }, { stateDirectory: approvedState, now: now + 600 }), /EXPECTED_HANDLE_REQUIRED/);
+assert.throws(() => prepareTikTokTask({ contractVersion: 2, action: "status", publicationId: approvedRequest.publicationId,
+  media: { ...approvedRequest.media, expectedSha256: "0".repeat(64) },
+}, config, { stateDirectory: approvedState, now: now + 600 }), /MEDIA_SHA256_RECOVERY_MISMATCH/);
+assert.equal(prepareTikTokTask({ contractVersion: 2, action: "status", publicationId: approvedRequest.publicationId,
+  media: approvedRequest.media, postSettings: approvedSettings,
+}, config, { stateDirectory: approvedState, now: now + 600 }).decision, "STATUS");
+
+const mismatchedHashState = path.join(temporaryRoot, "hash-mismatch-state");
+assert.throws(() => prepareTikTokTask({ ...approvedRequest,
+  media: { ...approvedRequest.media, expectedSha256: "0".repeat(64) },
+}, config, { stateDirectory: mismatchedHashState, now }), /MEDIA_HASH_MISMATCH/);
+assert.deepEqual(new TikTokLedger(mismatchedHashState).snapshot().publications, {});
+for (const expectedSha256 of ["A".repeat(64), "bad", null]) {
+  assert.throws(() => normalizeTikTokRequest({ ...approvedRequest,
+    media: { ...approvedRequest.media, expectedSha256 },
+  }, config), /INVALID_MEDIA_SHA256/);
+}
+assert.throws(() => normalizeTikTokRequest({ ...approvedRequest,
+  media: { mode: "pool", paths: [imagePath], expectedSha256: approvedHash },
+}, config), /MEDIA_SHA256_REQUIRES_DIRECT/);
+for (const postSettings of [null, {}, { ...approvedSettings, verified: true },
+  { audience: "FRIENDS", commercialDisclosure: "YOUR_BRAND" }]) {
+  assert.throws(() => normalizeTikTokRequest({ ...approvedRequest, postSettings }, config), /POST_SETTINGS_INVALID|UNKNOWN_POSTSETTINGS_FIELD/);
+}
+const noProofState = path.join(temporaryRoot, "missing-proof-state");
+const missingProof = prepareTikTokTask(approvedRequest, config, { stateDirectory: noProofState, now });
+assert.equal(applyTikTokScriptResult(missingProof, {
+  contractVersion: 2, publicationId: approvedRequest.publicationId,
+  published: true, postUrl: "https://www.tiktok.com/@example.creator/photo/1234567892",
+}, now + 100)?.outcome, "PUBLISH_OUTCOME_UNKNOWN");
+assert.equal(missingProof.ledger.get(approvedRequest.publicationId)?.phase, "PRECHECKED");
+assert.equal(missingProof.ledger.get(approvedRequest.publicationId)?.errorCode, "POST_SETTINGS_NOT_VERIFIED");
+const mismatchedResultState = path.join(temporaryRoot, "mismatched-result-state");
+const mismatchedResult = prepareTikTokTask(approvedRequest, config, { stateDirectory: mismatchedResultState, now });
+assert.equal(applyTikTokScriptResult(mismatchedResult, {
+  contractVersion: 2, publicationId: "another_publication", published: true,
+  postSettingsEvidence: settingsProof,
+  postUrl: "https://www.tiktok.com/@example.creator/photo/1234567893",
+}, now + 200)?.errorCode, "PUBLICATION_RESULT_MISMATCH");
+assert.equal(mismatchedResult.ledger.get(approvedRequest.publicationId)?.postSettingsEvidence, undefined);
+assert.equal(prepareTikTokTask(approvedRequest, config, {
+  stateDirectory: noProofState, now: now + 200,
+}).decision, "RECOVER", "An unproved claimed publication may recover links but never republish");
+assert.throws(() => prepareTikTokTask({ ...approvedRequest, postSettings: undefined }, config,
+  { stateDirectory: noProofState, now: now + 200 }), /PUBLICATION_ID_CONFLICT/);
+assert.throws(() => prepareTikTokTask({ ...approvedRequest,
+  media: { ...approvedRequest.media, expectedSha256: undefined },
+}, config, { stateDirectory: noProofState, now: now + 200 }), /PUBLICATION_ID_CONFLICT/);
+
+const historical = prepared.ledger.get("prepared_publication_001");
+assert.ok(historical);
+assert.deepEqual(tikTokPostSettingsSummary(historical, now + 10000), {});
+assert.deepEqual(tikTokCreativeEvidenceSummary(historical), {});
+assert.equal(prepareTikTokTask({ contractVersion: 2, action: "status", publicationId: historical.publicationId },
+  { ...config, expectedHandle: "another.account" }, { stateDirectory: stateRoot, now: now + 10000 }).decision, "STATUS",
+  "Legacy status without new binding fields keeps its original behavior");
+assert.equal(historical.requestFingerprint, sha256(JSON.stringify({
+  account: "example.creator", media: [sha256File(imagePath)],
+  captions: buildCaptionCandidates({ titles: ["Prepared"], details: ["Details"] }, ["image"]).map((item) => item.fingerprint).sort(),
+})));
+assert.throws(() => validateTikTokPostSettingsEvidence(settingsProof, historical, now + 10000), /POST_SETTINGS_NOT_VERIFIED/);
+assert.throws(() => prepareTikTokTask({ contractVersion: 2, action: "recover", publicationId: historical.publicationId,
+  postSettings: approvedSettings,
+}, config, { stateDirectory: stateRoot, now: now + 10000 }), /POST_SETTINGS_RECOVERY_MISMATCH/);
+assert.equal(cached.scriptParams, null);
 
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
 console.log("TikTok policy and ledger tests passed");

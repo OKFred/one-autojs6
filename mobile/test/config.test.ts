@@ -30,6 +30,7 @@ assert.deepEqual(resolveReportChannels("both"), {
 });
 
 assert.equal(DEFAULT_CONFIG.phoneHealthTelemetry.enabled, false);
+assert.deepEqual(DEFAULT_CONFIG.tiktok.commitReview, { required: false, timeoutSeconds: 180 });
 
 const temporaryRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), "autojs6-config-test-"),
@@ -64,6 +65,7 @@ try {
   process.env.AUTOJS6_CONFIG_PATH = configPath;
   const loaded = loadConfig().config;
   const allowed = loaded.security.allowedScriptIds;
+  assert.deepEqual(loaded.tiktok.commitReview, { required: false, timeoutSeconds: 180 });
   assert.equal(allowed.includes("device.network.routing.apply"), true);
   assert.equal(allowed.includes("device.network.routing.disable"), true);
   assert.equal(loaded.remoteControl.enabled, true);
@@ -80,6 +82,15 @@ try {
     intervalSeconds: 60,
     outboxLimit: 1440,
   });
+  for (const [input, expected] of [
+    [{ required: true, timeoutSeconds: 180 }, { required: true, timeoutSeconds: 180 }],
+    [{ required: "true", timeoutSeconds: 999 }, { required: false, timeoutSeconds: 180 }],
+    [{ required: true, timeoutSeconds: 1 }, { required: true, timeoutSeconds: 30 }],
+    [{ required: false, timeoutSeconds: 60 }, { required: false, timeoutSeconds: 60 }],
+  ]) {
+    fs.writeFileSync(configPath, JSON.stringify({ tiktok: { commitReview: input } }));
+    assert.deepEqual(loadConfig().config.tiktok.commitReview, expected);
+  }
 } finally {
   if (previousConfigPath === undefined) delete process.env.AUTOJS6_CONFIG_PATH;
   else process.env.AUTOJS6_CONFIG_PATH = previousConfigPath;

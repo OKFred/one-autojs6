@@ -24,6 +24,19 @@ export interface TikTokLedgerMedia {
   kind: "image" | "video";
   fingerprint: string;
   size: number;
+  expectedSha256?: string;
+}
+
+/** Requested per-post settings bound to a publication fingerprint. */
+export interface TikTokPostSettings {
+  audience: "PUBLIC";
+  commercialDisclosure: "YOUR_BRAND";
+}
+
+/** Original trusted-script UI readback; absent for historical publications. */
+export interface TikTokPostSettingsEvidence extends TikTokPostSettings {
+  verified: true;
+  verifiedAt: number;
 }
 
 /** 发布账本中的文案快照。 */
@@ -43,6 +56,8 @@ export interface TikTokPublicationRecord {
   outcome: TikTokPublicationOutcome;
   media: TikTokLedgerMedia;
   caption: TikTokLedgerCaption;
+  postSettings?: TikTokPostSettings;
+  postSettingsEvidence?: TikTokPostSettingsEvidence;
   createdAt: number;
   updatedAt: number;
   committedAt?: number;
@@ -64,6 +79,7 @@ export interface NewTikTokPublication {
   account: string;
   media: TikTokLedgerMedia;
   caption: TikTokLedgerCaption;
+  postSettings?: TikTokPostSettings;
 }
 
 /** TikTok 发布账本的磁盘结构。 */
@@ -314,6 +330,7 @@ export class TikTokLedger {
         | "postUrl"
         | "canonicalUrl"
         | "shareUrl"
+        | "postSettingsEvidence"
       >
     >,
     now = Date.now(),
