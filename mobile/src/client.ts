@@ -49,6 +49,8 @@ import {
   importLegacyTikTokState,
   markTikTokPublicationPhase,
   prepareTikTokTask,
+  tikTokPostSettingsSummary,
+  tikTokCreativeEvidenceSummary,
   type PreparedTikTokTask,
 } from "./tiktok-policy.js";
 import {
@@ -850,12 +852,18 @@ function tikTokNetworkPolicyError(error: unknown): string {
     : "TIKTOK_NETWORK_PROBE_FAILED";
 }
 
-/** 移除 TikTok 结果中的账号、素材路径和完整文案，只保留运行状态与已验证链接。 */
-function sanitizeTikTokResult(value: unknown): unknown {
+/**
+ * Remove private account, material paths and captions from a script result.
+ * @param value Original script result.
+ * @param prepared Bound publication whose persisted proof may be exposed.
+ * @returns Sanitized status, links and optional validated post settings.
+ */
+function sanitizeTikTokResult(value: unknown, prepared?: PreparedTikTokTask): unknown {
   if (!isRecord(value)) return value;
   const account = isRecord(value.account) ? value.account : {};
   const media = isRecord(value.media) ? value.media : {};
   const post = isRecord(value.post) ? value.post : {};
+  const record = prepared?.ledger.get(prepared.request.publicationId);
   return {
     contractVersion: value.contractVersion,
     action: value.action,
@@ -889,6 +897,19 @@ function sanitizeTikTokResult(value: unknown): unknown {
     success: value.success === true,
     postUrl: value.postUrl,
     mediaType: value.mediaType,
+    ...tikTokPostSettingsSummary(record),
+    ...tikTokCreativeEvidenceSummary(record),
+    ...(record?.postSettings ? {
+      phase: record.phase,
+      outcome: record.outcome,
+      published: ["POST_CONFIRMED", "LINK_CONFIRMED"].includes(record.phase),
+      success: record.outcome === "SUCCESS",
+      retrySafe: record.outcome !== "PUBLISH_OUTCOME_UNKNOWN" &&
+        !["COMMITTING", "SUBMITTED", "POST_CONFIRMED", "LINK_CONFIRMED"].includes(record.phase),
+      nextAction: record.phase === "LINK_CONFIRMED" ? "none" :
+        record.outcome === "PUBLISH_OUTCOME_UNKNOWN" ||
+        ["COMMITTING", "SUBMITTED", "POST_CONFIRMED"].includes(record.phase) ? "recover" : "publish",
+    } : {}),
   };
 }
 
@@ -914,6 +935,7 @@ function tikTokPublicationResult(prepared: PreparedTikTokTask): unknown {
     "POST_CONFIRMED",
     "LINK_CONFIRMED",
   ].includes(record.phase);
+  const uncertain = record.outcome === "PUBLISH_OUTCOME_UNKNOWN";
   const published = ["POST_CONFIRMED", "LINK_CONFIRMED"].includes(record.phase);
   const canonicalUrl = record.canonicalUrl || record.postUrl || "";
   return {
@@ -923,11 +945,11 @@ function tikTokPublicationResult(prepared: PreparedTikTokTask): unknown {
     phase: record.phase,
     outcome: record.outcome,
     published,
-    retrySafe: !committed,
+    retrySafe: !committed && !uncertain,
     nextAction:
       record.phase === "LINK_CONFIRMED"
         ? "none"
-        : committed
+        : committed || uncertain
           ? "recover"
           : "publish",
     account: {
@@ -954,6 +976,8 @@ function tikTokPublicationResult(prepared: PreparedTikTokTask): unknown {
     success: record.phase === "LINK_CONFIRMED",
     postUrl: canonicalUrl,
     mediaType: record.media.kind,
+    ...tikTokPostSettingsSummary(record),
+    ...tikTokCreativeEvidenceSummary(record),
   };
 }
 
@@ -987,7 +1011,12 @@ function recordTikTokFailure(
 ): void {
   if (!prepared?.publication) return;
   try {
-    applyTikTokScriptResult(prepared, { code, published });
+    applyTikTokScriptResult(prepared, {
+      contractVersion: 2,
+      publicationId: prepared.request.publicationId,
+      code,
+      published,
+    });
   } catch (error) {
     console.warn(
       "[TikTok] Failed to update the private publication ledger",
@@ -1681,8 +1710,16 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
           }
           const checkpointChanged =
             current.checkpointPhase !== checkpoint.phase;
-          current.checkpointPhase = checkpoint.phase;
           if (checkpoint.phase === "EDITOR_READY") {
+            if (current.tiktok) {
+              applyTikTokPublicationCheckpoint(current.tiktok, {
+                postSettingsEvidence: checkpoint.postSettingsEvidence,
+              });
+              const publication = current.tiktok.ledger.get(current.tiktok.request.publicationId);
+              if (publication?.postSettings && !tikTokPostSettingsSummary(publication).postSettingsEvidence) {
+                throw new Error("POST_SETTINGS_NOT_VERIFIED");
+              }
+            }
             fs.writeFileSync(checkpointAckPath, checkpoint.phase, "utf8");
           }
           if (
@@ -1711,11 +1748,13 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
                   typeof checkpoint.canonicalUrl === "string"
                     ? checkpoint.canonicalUrl
                     : undefined,
+                postSettingsEvidence: checkpoint.postSettingsEvidence,
               });
               markTikTokPublicationPhase(current.tiktok, checkpoint.phase);
             }
             fs.writeFileSync(checkpointAckPath, checkpoint.phase, "utf8");
           }
+          current.checkpointPhase = checkpoint.phase;
         }
       } catch (error) {
         console.warn(`[TASK] Ignored malformed TikTok checkpoint`, error);
@@ -1732,7 +1771,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         result.status,
         result.code,
         result.message,
-        tiktok ? sanitizeTikTokResult(result.data) : result.data,
+        tiktok ? sanitizeTikTokResult(result.data, tiktok) : result.data,
       );
       await cleanupActiveTask();
     } catch (error) {

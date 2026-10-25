@@ -8,6 +8,36 @@ import {
 
 const PUBLICATION_ID = "8fa04e65-0c0c-46ca-bdb2-00bd21e53c28";
 
+test("preserves optional approved direct media hash and commercial settings", () => {
+  const result = normalizeTikTokRequest({
+    contractVersion: 2, action: "publish", publicationId: PUBLICATION_ID,
+    expectedHandle: "creator.account",
+    media: { mode: "direct", kind: "image", path: "/sdcard/approved.jpg", expectedSha256: "a".repeat(64) },
+    content: { title: "Approved creative" },
+    postSettings: { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND" },
+  });
+  assert.equal(result.params.media?.expectedSha256, "a".repeat(64));
+  assert.deepEqual(result.params.postSettings, { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND" });
+  assert.equal(result.timeoutSeconds, 420);
+});
+
+test("rejects unsupported post settings and unbound or malformed hashes", () => {
+  const base = { contractVersion: 2, action: "preflight" };
+  for (const postSettings of [null, {}, { audience: "FRIENDS", commercialDisclosure: "YOUR_BRAND" },
+    { audience: "PUBLIC", commercialDisclosure: "PAID_PARTNERSHIP" },
+    { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND", verified: true }]) {
+    assertContractError(() => normalizeTikTokRequest({ ...base, postSettings }), /postSettings/);
+  }
+  for (const expectedSha256 of [null, "bad", "A".repeat(64), "a".repeat(63), 1]) {
+    assertContractError(() => normalizeTikTokRequest({ ...base,
+      media: { mode: "direct", kind: "image", path: "/sdcard/a.jpg", expectedSha256 },
+    }), /expectedSha256/);
+  }
+  assertContractError(() => normalizeTikTokRequest({ ...base,
+    media: { mode: "pool", kind: "image", paths: ["/sdcard/a.jpg"], expectedSha256: "a".repeat(64) },
+  }), /requires direct/);
+});
+
 /** 断言调用因 TikTok 契约错误失败。 */
 function assertContractError(callback: () => unknown, pattern: RegExp): void {
   assert.throws(callback, (error: unknown) => {

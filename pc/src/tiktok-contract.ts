@@ -13,6 +13,13 @@ export interface TikTokMediaContract {
   path?: string;
   paths?: string[];
   directory?: string;
+  expectedSha256?: string;
+}
+
+/** Explicit per-post settings required by an approved commercial creative. */
+export interface TikTokPostSettingsContract {
+  audience: "PUBLIC";
+  commercialDisclosure: "YOUR_BRAND";
 }
 
 /** TikTok v2 文案参数。 */
@@ -44,6 +51,7 @@ export interface TikTokTaskContract extends Record<string, unknown> {
   publicationId: string;
   expectedHandle?: string;
   media?: TikTokMediaContract;
+  postSettings?: TikTokPostSettingsContract;
   content: TikTokContentContract;
   policy: TikTokPolicyContract;
   link: TikTokLinkContract;
@@ -355,7 +363,7 @@ function normalizeMedia(value: unknown): TikTokMediaContract | undefined {
   if (!isRecord(value)) throw new TikTokContractError("media must be an object");
   assertKnownKeys(
     value,
-    ["mode", "kind", "path", "paths", "directory"],
+    ["mode", "kind", "path", "paths", "directory", "expectedSha256"],
     "media",
   );
   const mode = optionalString(value.mode, "media.mode");
@@ -365,6 +373,14 @@ function normalizeMedia(value: unknown): TikTokMediaContract | undefined {
   const kind = optionalString(value.kind, "media.kind") as
     | TikTokMediaKind
     | undefined;
+  const expectedSha256 = value.expectedSha256;
+  if (expectedSha256 !== undefined &&
+      (typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedSha256))) {
+    throw new TikTokContractError("media.expectedSha256 must be lowercase SHA-256");
+  }
+  if (expectedSha256 !== undefined && mode !== "direct") {
+    throw new TikTokContractError("media.expectedSha256 requires direct media");
+  }
   if (!kind || !MEDIA_KINDS.has(kind) || (mode === "direct" && kind === "auto")) {
     throw new TikTokContractError(
       "media.kind must be image or video; pool also accepts auto",
@@ -376,7 +392,8 @@ function normalizeMedia(value: unknown): TikTokMediaContract | undefined {
         "direct media accepts path only, not paths or directory",
       );
     }
-    return { mode, kind, path: androidPath(value.path, "media.path") };
+    return { mode, kind, path: androidPath(value.path, "media.path"),
+      ...(expectedSha256 !== undefined ? { expectedSha256 } : {}) };
   }
   if (value.path !== undefined) {
     throw new TikTokContractError("pool media does not accept path");
@@ -402,6 +419,21 @@ function normalizeMedia(value: unknown): TikTokMediaContract | undefined {
     ...(paths.length > 0 ? { paths } : {}),
     ...(directory ? { directory } : {}),
   };
+}
+
+/**
+ * Validate an optional explicit per-post commercial settings request.
+ * @param value Optional canonical JSON settings.
+ * @returns Validated settings or undefined when omitted.
+ */
+function normalizePostSettings(value: unknown): TikTokPostSettingsContract | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new TikTokContractError("postSettings must be an object");
+  assertKnownKeys(value, ["audience", "commercialDisclosure"], "postSettings");
+  if (value.audience !== "PUBLIC" || value.commercialDisclosure !== "YOUR_BRAND") {
+    throw new TikTokContractError("postSettings requires PUBLIC and YOUR_BRAND");
+  }
+  return { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND" };
 }
 
 /** 从旧版扁平字段生成 v2 媒体对象。 */
@@ -589,6 +621,7 @@ export function normalizeTikTokRequest(
       "publicationId",
       "expectedHandle",
       "media",
+      "postSettings",
       "content",
       "policy",
       "link",
@@ -608,6 +641,7 @@ export function normalizeTikTokRequest(
   const action = actionValue as TikTokAction;
   const publicationId = normalizePublicationId(body.publicationId, action);
   const media = normalizeMedia(body.media);
+  const postSettings = normalizePostSettings(body.postSettings);
   const content = normalizeContent(body.content);
   if (action === "publish" && !media) {
     throw new TikTokContractError("media is required when action is publish");
@@ -650,6 +684,7 @@ export function normalizeTikTokRequest(
       publicationId,
       expectedHandle: normalizeExpectedHandle(body.expectedHandle),
       ...(media ? { media } : {}),
+      ...(postSettings ? { postSettings } : {}),
       content,
       policy,
       link,

@@ -14,6 +14,9 @@ var selectedTitle = "";
 var selectedDetails = "";
 var selectedCaption = "";
 var selectedMediaMetadata = null;
+var selectedExpectedSha256 = "";
+var requestedPostSettings = null;
+var postSettingsEvidence = null;
 var profileHandle = "";
 var baselinePostIds = [];
 var baselineTileCount = null;
@@ -66,6 +69,10 @@ function classifyUiErrorText(value) {
       "RISK_CHALLENGE",
       "TikTok requires manual security verification; automation stopped"
     );
+  } else if (
+    /(music usage confirmation|by posting.{0,60}agree|confirm.{0,35}music rights|音乐使用确认|发布即表示.{0,35}同意|确认.{0,20}音乐.{0,10}权利)/i.test(text)
+  ) {
+    signalUiError("RIGHTS_CONFIRMATION_REQUIRED", "TikTok requires a manual rights confirmation before publishing");
   } else if (
     /(使\s*TikTok Shop\s*更加贴合|更加个性化的\s*TikTok Shop|更普通的\s*TikTok Shop|personal(?:ise|ize|ized).*TikTok Shop|TikTok Shop.*personal(?:isation|ization))/i.test(
       text
@@ -429,6 +436,16 @@ function findAndClick(keywords, timeoutMs, exact) {
  */
 function assertNoBlockingChallenge() {
   throwDetectedUiError();
+  var accountPrivacyPattern = "(?i).*(switch to a public account|change to a public account|make your account public|切换为公开账号|切换为公开帐号|将账号设为公开|将账户设为公开).*";
+  if (tikTokTextSelector(accountPrivacyPattern).exists() || tikTokDescSelector(accountPrivacyPattern).exists()) {
+    throw taskError("ACCOUNT_PRIVACY_ACTION_REQUIRED", "Changing account-wide privacy requires the account owner");
+  }
+  var rightsPattern = "(?i).*(music usage confirmation|by posting.{0,60}agree|confirm.{0,35}music rights|音乐使用确认|发布即表示.{0,35}同意|确认.{0,20}音乐.{0,10}权利).*";
+  var rightsActionPattern = "(?i)^(Continue|Agree|I agree|Agree and continue|继续|同意|我同意|同意并继续)$";
+  if ((tikTokTextSelector(rightsPattern).exists() || tikTokDescSelector(rightsPattern).exists()) &&
+      (tikTokTextSelector(rightsActionPattern).exists() || tikTokDescSelector(rightsActionPattern).exists())) {
+    throw taskError("RIGHTS_CONFIRMATION_REQUIRED", "TikTok requires a manual rights confirmation before publishing");
+  }
   var consentPattern =
     "(?i).*(使\\s*TikTok Shop\\s*更加贴合|更加个性化的\\s*TikTok Shop|更普通的\\s*TikTok Shop|" +
     "personal(?:ise|ize|ized).*TikTok Shop|TikTok Shop.*personal(?:isation|ization)).*";
@@ -694,6 +711,303 @@ function readSelectedMediaMetadata() {
 }
 
 /**
+ * 仅接受本期显式支持的逐作品设置，不改变账号级隐私。
+ * @param {*} value - 可选的逐作品设置
+ * @returns {Object|null} 已校验设置或未请求
+ */
+function normalizeRequestedPostSettings(value) {
+  if (typeof value === "undefined") return null;
+  if (!value || typeof value !== "object" || value instanceof Array ||
+      Object.keys(value).sort().join(",") !== "audience,commercialDisclosure" ||
+      value.audience !== "PUBLIC" || value.commercialDisclosure !== "YOUR_BRAND") {
+    throw taskError("POST_SETTINGS_INVALID", "Requested post settings are unsupported");
+  }
+  return { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND" };
+}
+
+/**
+ * 从已保存恢复上下文读取历史核验证据；不生成新的核验时间。
+ * @param {*} value - 历史证据
+ * @returns {Object|null} 结构有效的原证据
+ */
+function validatedPostSettingsEvidence(value) {
+  if (typeof value === "undefined" || value === null) return null;
+  if (!value || typeof value !== "object" || value instanceof Array ||
+      Object.keys(value).sort().join(",") !== "audience,commercialDisclosure,verified,verifiedAt" ||
+      value.audience !== "PUBLIC" || value.commercialDisclosure !== "YOUR_BRAND" ||
+      value.verified !== true || typeof value.verifiedAt !== "number" ||
+      !isFinite(value.verifiedAt) || value.verifiedAt <= 0 ||
+      Math.floor(value.verifiedAt) !== value.verifiedAt || value.verifiedAt > Date.now()) {
+    throw taskError("POST_SETTINGS_NOT_VERIFIED", "Saved post settings evidence is invalid");
+  }
+  return value;
+}
+
+/**
+ * 在 Android 上逐块计算实际素材字节摘要。
+ * @param {string} filePath - 已选素材路径
+ * @returns {string} 小写 SHA256
+ */
+function sha256SelectedFile(filePath) {
+  var stream = null;
+  try {
+    var digest = java.security.MessageDigest.getInstance("SHA-256");
+    stream = new java.io.FileInputStream(new java.io.File(filePath));
+    var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 65536);
+    var length;
+    while ((length = stream.read(buffer)) !== -1) {
+      if (remainingTaskMs() <= 0) throw taskError("TASK_DEADLINE", "Task deadline reached");
+      digest.update(buffer, 0, length);
+    }
+    var result = digest.digest();
+    var hex = "";
+    for (var i = 0; i < result.length; i++) {
+      var part = (Number(result[i]) & 255).toString(16);
+      hex += part.length === 1 ? "0" + part : part;
+    }
+    return hex;
+  } catch (error) {
+    if (error && error.code) throw error;
+    throw taskError("MEDIA_HASH_UNREADABLE", "Selected media digest could not be verified");
+  } finally {
+    if (stream) stream.close();
+  }
+}
+
+/**
+ * 重新核对待分享文件，阻止审批后替换素材。
+ * @returns {void}
+ */
+function assertSelectedMediaIntegrity() {
+  if (selectedExpectedSha256 && sha256SelectedFile(selectedMediaPath) !== selectedExpectedSha256) {
+    throw taskError("MEDIA_HASH_MISMATCH", "Selected media differs from the approved digest");
+  }
+}
+
+/**
+ * 查找唯一可见语义设置，拒绝同名控件歧义。
+ * @param {string[]} labels - 精确可见标签
+ * @param {number} timeoutMs - 最大等待时间
+ * @returns {UiObject|null} 唯一节点
+ */
+function findUniqueSettingNode(labels, timeoutMs) {
+  var endAt = Date.now() + Math.min(timeoutMs, remainingTaskMs());
+  do {
+    assertNoBlockingChallenge();
+    var found = [];
+    var seen = {};
+    for (var i = 0; i < labels.length; i++) {
+      var pattern = "(?i)^" + escapeRegex(labels[i]) + "(?:[,， ]+(?:selected|not selected|checked|unchecked|已选中|未选中|已勾选|未勾选))?$";
+      var collections = [tikTokTextSelector(pattern).find(), tikTokDescSelector(pattern).find()];
+      for (var c = 0; c < collections.length; c++) {
+        var nodes = collections[c];
+        for (var j = 0; nodes && j < nodes.length; j++) {
+          var node = nodes[j];
+          if (accessibleBoolean(node, ["visibleToUser", "isVisibleToUser"]) === false) continue;
+          var bounds = node.bounds();
+          if (!bounds || bounds.width() <= 0 || bounds.height() <= 0) continue;
+          var key = bounds.left + ":" + bounds.top + ":" + bounds.right + ":" + bounds.bottom;
+          if (!seen[key]) { seen[key] = true; found.push(node); }
+        }
+      }
+    }
+    if (found.length > 1) throw taskError("POST_SETTINGS_AMBIGUOUS", "A post setting could not be identified uniquely");
+    if (found.length === 1) return found[0];
+    if (Date.now() < endAt) sleep(150);
+  } while (Date.now() < endAt);
+  return null;
+}
+
+/**
+ * 安全读取可选无障碍布尔属性。
+ * @param {UiObject} node - 设置节点
+ * @param {string[]} names - 兼容属性方法名
+ * @returns {boolean|null} 读取值或未知
+ */
+function accessibleBoolean(node, names) {
+  for (var i = 0; node && i < names.length; i++) {
+    try {
+      if (typeof node[names[i]] === "function") {
+        var value = node[names[i]]();
+        if (typeof value === "boolean") return value;
+      }
+    } catch (ignored) {}
+  }
+  return null;
+}
+
+/**
+ * 读取节点明确的选中状态，不把普通文本的默认 false 当作开关状态。
+ * @param {UiObject} node - 设置节点
+ * @returns {boolean|null} 选中状态或未知
+ */
+function directChoiceState(node) {
+  var checkable = accessibleBoolean(node, ["checkable", "isCheckable"]);
+  var className = "";
+  try { className = String(node.className()); } catch (ignoredClass) {}
+  if (checkable === true || /(?:Switch|CheckBox|RadioButton)$/.test(className)) {
+    return accessibleBoolean(node, ["checked", "isChecked"]);
+  }
+  if (accessibleBoolean(node, ["selected", "isSelected"]) === true) return true;
+  var description = "";
+  try { description = normalizeText(node.desc()); } catch (ignoredDescription) {}
+  if (/(?:,|，)\s*(?:not selected|unchecked|未选中|未勾选)$/i.test(description)) return false;
+  if (/(?:,|，)\s*(?:selected|checked|已选中|已勾选)$/i.test(description)) return true;
+  return null;
+}
+
+/**
+ * 在标签所在行内寻找唯一开关/单选控件，禁止跨行猜测。
+ * @param {UiObject} label - 精确标签
+ * @returns {boolean|null} 可证明的设置状态
+ */
+function settingChoiceState(label) {
+  var direct = directChoiceState(label);
+  if (direct !== null) return direct;
+  var origin = label.bounds();
+  var container = label;
+  for (var level = 0; container && level < 3; level++) {
+    var queue = [{ node: container, depth: 0 }];
+    var states = [];
+    var seen = {};
+    for (var index = 0; index < queue.length && index < 40; index++) {
+      var item = queue[index];
+      var bounds = item.node.bounds();
+      if (bounds && Math.abs(bounds.centerY() - origin.centerY()) <= Math.max(36, origin.height() * 1.5)) {
+        var state = directChoiceState(item.node);
+        var key = bounds.left + ":" + bounds.top + ":" + bounds.right + ":" + bounds.bottom;
+        if (state !== null && !seen[key]) { seen[key] = true; states.push(state); }
+      }
+      if (item.depth < 2) {
+        var count = Number(item.node.childCount());
+        for (var i = 0; i < count && queue.length < 40; i++) queue.push({ node: item.node.child(i), depth: item.depth + 1 });
+      }
+    }
+    if (states.length > 1) return null;
+    if (states.length === 1) return states[0];
+    container = container.parent();
+  }
+  return null;
+}
+
+/**
+ * 设置或只读核对一项明确可访问的开关/单选状态。
+ * @param {string[]} labels - 精确标签
+ * @param {boolean} desired - 期望状态
+ * @param {boolean} readOnly - 是否禁止修改
+ * @param {string} code - 无法核实时的错误码
+ * @returns {void}
+ */
+function requireSettingChoice(labels, desired, readOnly, code) {
+  var node = findUniqueSettingNode(labels, 2000);
+  var state = node ? settingChoiceState(node) : null;
+  if (state === null || (readOnly && state !== desired)) throw taskError(code, "Required post setting could not be verified");
+  if (state !== desired) {
+    if (accessibleBoolean(node, ["enabled", "isEnabled"]) === false) throw taskError(code, "Required post setting is unavailable");
+    if (!performSemanticClick(node)) throw taskError(code, "Required post setting could not be changed");
+    pause(600, 850);
+    assertNoBlockingChallenge();
+    node = findUniqueSettingNode(labels, 1500);
+    if (!node || settingChoiceState(node) !== desired) throw taskError(code, "Required post setting readback did not match");
+  }
+}
+
+/**
+ * 从作品设置页返回文案编辑器，绝不确认账号隐私或权利协议。
+ * @returns {void}
+ */
+function returnToPostEditor() {
+  for (var i = 0; i < 3; i++) {
+    assertNoBlockingChallenge();
+    if (getDistinctInputs().length && findSemanticNode(["发布", "Post"], 250, true)) return;
+    back();
+    pause(550, 800);
+  }
+  throw taskError("POST_SETTINGS_NOT_VERIFIED", "Could not return to the post editor safely");
+}
+
+/**
+ * 从文案编辑器打开逐作品受众选项，不进入账号级隐私设置。
+ * @returns {void}
+ */
+function openPublicAudienceChoices() {
+  var entry = findUniqueSettingNode(["谁可以观看此视频", "谁可以观看此作品", "谁可以观看", "Who can watch this video", "Who can view this post", "Everyone", "所有人", "公开", "Friends", "好友", "Only you", "仅自己"], 3000);
+  if (!entry || !performSemanticClick(entry)) throw taskError("AUDIENCE_PUBLIC_UNAVAILABLE", "Public post audience is unavailable");
+  pause(550, 850);
+  assertNoBlockingChallenge();
+  var privateOption = findUniqueSettingNode(["Only you", "仅自己", "Only me", "仅限自己"], 1500);
+  var friendsOption = findUniqueSettingNode(["Friends", "好友", "互相关注的好友"], 500);
+  if (!privateOption && !friendsOption) throw taskError("AUDIENCE_PUBLIC_UNAVAILABLE", "Per-post audience choices were not identified");
+}
+
+/**
+ * 核对当前作品的公开受众；缺少 Everyone 时不进入账号隐私设置。
+ * @param {boolean} readOnly - 是否仅核对现有选择
+ * @returns {void}
+ */
+function configurePublicAudience(readOnly) {
+  openPublicAudienceChoices();
+  var publicLabels = ["Everyone", "所有人", "公开"];
+  var choice = findUniqueSettingNode(publicLabels, 1500);
+  var selected = choice ? settingChoiceState(choice) : null;
+  if (selected === null || (readOnly && !selected)) throw taskError("AUDIENCE_PUBLIC_UNAVAILABLE", "Public post audience could not be verified");
+  if (!selected) {
+    if (accessibleBoolean(choice, ["enabled", "isEnabled"]) === false || !performSemanticClick(choice)) throw taskError("AUDIENCE_PUBLIC_UNAVAILABLE", "Public post audience is unavailable");
+    pause(600, 850);
+    assertNoBlockingChallenge();
+    if (getDistinctInputs().length && findSemanticNode(["发布", "Post"], 200, true)) openPublicAudienceChoices();
+  }
+  requireSettingChoice(publicLabels, true, true, "AUDIENCE_PUBLIC_UNAVAILABLE");
+  var done = findUniqueSettingNode(["Done", "完成", "Save", "保存"], 500);
+  if (done) {
+    if (!performSemanticClick(done)) throw taskError("AUDIENCE_PUBLIC_UNAVAILABLE", "Public audience could not be saved");
+    pause(500, 750);
+  }
+  returnToPostEditor();
+}
+
+/**
+ * 设置并核对自有品牌商业披露，权利确认弹窗必须由人处理。
+ * @param {boolean} readOnly - 是否仅核对现有选择
+ * @returns {void}
+ */
+function configureCommercialDisclosure(readOnly) {
+  var labels = ["Content disclosure and ads", "内容披露和广告", "内容披露与广告", "商业内容披露"];
+  var entry = findUniqueSettingNode(labels, 1000);
+  if (!entry) {
+    if (!findAndClick(["More options", "更多选项", "更多设置"], 1500, true)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Commercial disclosure settings are unavailable");
+    entry = findUniqueSettingNode(labels, 2000);
+  }
+  if (!entry || !performSemanticClick(entry)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Commercial disclosure settings are unavailable");
+  pause(550, 850);
+  requireSettingChoice(["Disclose commercial content", "披露商业内容", "商业内容披露"], true, readOnly, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
+  requireSettingChoice(["Your brand", "你的品牌", "您的品牌", "自己的品牌", "自有品牌"], true, readOnly, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
+  requireSettingChoice(["Branded content", "品牌内容", "品牌合作内容"], false, readOnly, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
+  var save = findUniqueSettingNode(["Save", "保存", "Done", "完成"], 1000);
+  if (save) {
+    if (!performSemanticClick(save)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Commercial disclosure could not be saved");
+    pause(550, 850);
+  }
+  returnToPostEditor();
+}
+
+/**
+ * 在首次核验后冻结证据，提交前复查不能替换原证据时间。
+ * @param {boolean} readOnly - 提交前必须使用只读复查
+ * @returns {void}
+ */
+function applyRequestedPostSettings(readOnly) {
+  if (!requestedPostSettings) return;
+  configurePublicAudience(readOnly);
+  configureCommercialDisclosure(readOnly);
+  assertNoBlockingChallenge();
+  if (!postSettingsEvidence) {
+    if (readOnly) throw taskError("POST_SETTINGS_NOT_VERIFIED", "An original settings readback is required");
+    postSettingsEvidence = { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND", verified: true, verifiedAt: Date.now() };
+  }
+}
+
+/**
  * 从新版或旧版参数中读取已选定的单个素材。
  *
  * @returns {void}
@@ -701,6 +1015,11 @@ function readSelectedMediaMetadata() {
 function prepareSelectedContent() {
   var media = request.media || {};
   var content = request.content || {};
+  requestedPostSettings = normalizeRequestedPostSettings(request.postSettings);
+  selectedExpectedSha256 = String(media.expectedSha256 || "");
+  if (selectedExpectedSha256 && !/^[a-f0-9]{64}$/.test(selectedExpectedSha256)) {
+    throw taskError("MEDIA_HASH_INVALID", "Expected media digest is invalid");
+  }
   selectedMediaPath = String(
     media.path || request.selectedMediaPath || request.videoPath || request.imagePath || ""
   ).trim();
@@ -734,7 +1053,10 @@ function prepareSelectedContent() {
       throw taskError("MEDIA_TYPE_INVALID", "Selected TikTok media type is invalid");
     }
   }
-  if (selectedMediaPath) selectedMediaMetadata = readSelectedMediaMetadata();
+  if (selectedMediaPath) {
+    selectedMediaMetadata = readSelectedMediaMetadata();
+    assertSelectedMediaIntegrity();
+  }
 }
 
 /**
@@ -761,6 +1083,7 @@ function writeCheckpoint(checkpointPhase, extra) {
     baselinePostIds: baselinePostIds,
     baselineTileCount: baselineTileCount
   };
+  if (postSettingsEvidence) data.postSettingsEvidence = postSettingsEvidence;
   if (extra) {
     for (var key in extra) {
       if (Object.prototype.hasOwnProperty.call(extra, key)) data[key] = extra[key];
@@ -874,20 +1197,48 @@ function getSelectedMediaContentUri() {
 }
 
 /**
+ * 对摘要绑定任务核对分享 URI 的实际文件身份，禁止选择图库中的近似素材。
+ * @param {android.net.Uri} uri - 本次唯一分享 URI
+ * @returns {void}
+ */
+function verifySelectedMediaContentUri(uri) {
+  if (!selectedExpectedSha256) return;
+  var cursor = null;
+  try {
+    var columns = android.provider.MediaStore.MediaColumns;
+    cursor = context.getContentResolver().query(uri, [columns.DATA, columns.SIZE], null, null, null);
+    if (!cursor || Number(cursor.getCount()) !== 1 || !cursor.moveToFirst()) throw new Error("identity unavailable");
+    var actual = new java.io.File(String(cursor.getString(0))).getCanonicalPath();
+    var selected = new java.io.File(selectedMediaPath);
+    if (String(actual) !== String(selected.getCanonicalPath()) || Number(cursor.getLong(1)) !== Number(selected.length())) {
+      throw new Error("identity differs");
+    }
+  } catch (error) {
+    throw taskError("MEDIA_URI_IDENTITY_UNVERIFIED", "The selected media URI identity could not be verified");
+  } finally {
+    if (cursor) cursor.close();
+  }
+}
+
+/**
  * 通过 Android 分享 Intent 打开单个图片或视频编辑器。
  *
  * @returns {void}
  */
 function openSelectedMediaInTikTok() {
+  assertSelectedMediaIntegrity();
   var builder = new android.os.StrictMode.VmPolicy.Builder();
   android.os.StrictMode.setVmPolicy(builder.build());
   var intent = new android.content.Intent(android.content.Intent.ACTION_SEND);
   intent.setType(selectedMediaType === "video" ? "video/*" : "image/*");
   var mediaUri = getSelectedMediaContentUri();
   if (!mediaUri) {
+    if (selectedExpectedSha256) throw taskError("MEDIA_URI_IDENTITY_UNVERIFIED", "Approved media needs a verifiable content URI");
     mediaUri = android.net.Uri.fromFile(new java.io.File(selectedMediaPath));
     warnings.push("LEGACY_FILE_URI_FALLBACK");
   }
+  verifySelectedMediaContentUri(mediaUri);
+  assertSelectedMediaIntegrity();
   intent.putExtra(android.content.Intent.EXTRA_STREAM, mediaUri);
   intent.setClipData(android.content.ClipData.newRawUri("TikTok media", mediaUri));
   intent.setPackage(TIKTOK_PACKAGE);
@@ -1425,6 +1776,11 @@ function loadRecoveryContext() {
     );
   }
   publicationId = publicationId || contextPublicationId;
+  requestedPostSettings = normalizeRequestedPostSettings(contextValue.postSettings);
+  postSettingsEvidence = validatedPostSettingsEvidence(contextValue.postSettingsEvidence);
+  if (postSettingsEvidence && (!requestedPostSettings || !contextPublicationId)) {
+    throw taskError("POST_SETTINGS_NOT_VERIFIED", "Settings evidence needs the original publication context");
+  }
   selectedTitle = String(
     contextValue.title != null
       ? contextValue.title
@@ -1717,7 +2073,7 @@ function buildResult(outcome, wasPublished, retrySafe, nextAction, post, error) 
         postType: selectedMediaType === "image" ? "photo" : selectedMediaType,
         verified: false
       };
-  return {
+  var result = {
     contractVersion: contractVersion >= 2 ? 2 : 1,
     action: action,
     publicationId: publicationId,
@@ -1740,6 +2096,8 @@ function buildResult(outcome, wasPublished, retrySafe, nextAction, post, error) 
     postUrl: normalizedPost.canonicalUrl,
     mediaType: selectedMediaType
   };
+  if (postSettingsEvidence) result.postSettingsEvidence = postSettingsEvidence;
+  return result;
 }
 
 /**
@@ -1814,8 +2172,12 @@ function runPublish() {
   phase = "EDITOR_READY";
   enterAndVerifyCaption();
   assertNoBlockingChallenge();
+  applyRequestedPostSettings(false);
   writeCheckpoint("EDITOR_READY", null);
   waitForCheckpointAck("EDITOR_READY");
+  applyRequestedPostSettings(true);
+  assertSelectedMediaIntegrity();
+  assertNoBlockingChallenge();
   var postButton = findSemanticNode(["发布", "Post"], 8000, true);
   if (!postButton) throw taskError("POST_ACTION_MISSING", "TikTok Post action was not found");
   if (remainingTaskMs() < 120000) {
