@@ -159,9 +159,11 @@ export function validateCampaign(manifest: CampaignManifest): void {
     assert(!previous || slot - previous >= 2 * 86400000, "Pilot slots must be at least two days apart"); previous = slot;
     const verifiedAt = Date.parse(creative.sourceVerifiedAt);
     assert(Number.isFinite(verifiedAt) && verifiedAt <= slot, "Invalid source verification time");
-    normalizeTikTokRequest({ contractVersion: 2, action: "publish", publicationId: creative.publicationId,
+    const normalized = normalizeTikTokRequest({ contractVersion: 2, action: "publish", publicationId: creative.publicationId,
       expectedHandle: manifest.expectedHandle, media: { mode: "direct", kind: "video", path: creative.devicePath, expectedSha256: creative.sha256 },
-      content: { title: creative.title, details: creative.caption }, postSettings: creative.postSettings }, {});
+      content: { title: creative.title, details: creative.caption }, postSettings: creative.postSettings }, {}).params;
+    assert(creative.publicationId === normalized.publicationId, "Canonical lowercase publication UUID required before review");
+    assert(creative.title === normalized.content.title && creative.caption === normalized.content.details, "Reviewed title and caption must already be trimmed");
     assert(creative.postSettings?.audience === "PUBLIC" && creative.postSettings.commercialDisclosure === "YOUR_BRAND", "Commercial post settings required");
     assert(creative.title.length > 0 && creative.caption.length > 0, "A single reviewed caption is required");
   }

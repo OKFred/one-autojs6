@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { TikTokCampaign, manifestDigest, type CampaignManifest, type CampaignTransport } from "../src/tiktok-campaign.js";
+import { TikTokCampaign, manifestDigest, validateCampaign, type CampaignManifest, type CampaignTransport } from "../src/tiktok-campaign.js";
 
 /** Private synthetic fixture never contacts a phone or provider. */
 async function fixture(t: any, failDelivery = false) {
@@ -109,4 +109,46 @@ test("mutating device/account after dispatch cannot redirect original-ID recover
   f.manifest.deviceClientId="other-device"; await fs.writeFile(path.join(f.dir,"manifest.json"),JSON.stringify(f.manifest));
   await assert.rejects(f.campaign.recover(f.manifest.creatives[0].publicationId,"recover"),/Original approved/);
   assert.equal(f.calls.length,1);
+});
+
+test("canonical campaign validation preserves reviewed bytes and permits approval", async t => {
+  const f = await fixture(t); const original = JSON.stringify(f.manifest); const digest = manifestDigest(f.manifest);
+  validateCampaign(f.manifest);
+  assert.equal(JSON.stringify(f.manifest), original); assert.equal(manifestDigest(f.manifest), digest);
+  await f.campaign.approve(digest, "merchant", new Date("2026-10-25T13:00Z"));
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.dir, "approval.json"), "utf8")).manifestSha256, digest);
+  assert.equal(f.calls.length, 0);
+});
+
+test("uppercase or whitespace publication UUIDs are rejected before approval", async t => {
+  for (const id of ["6D0A0D9A-1122-4344-8556-778899AABBCC", " 6d0a0d9a-1122-4344-8556-778899aabbcc "]) {
+    const f = await fixture(t); f.manifest.creatives[0].publicationId = id;
+    await fs.writeFile(path.join(f.dir, "manifest.json"), JSON.stringify(f.manifest));
+    await assert.rejects(f.campaign.approve(manifestDigest(f.manifest), "merchant"), /Canonical lowercase/);
+    await assert.rejects(fs.access(path.join(f.dir, "approval.json")), { code: "ENOENT" });
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("case-only UUID duplicates cannot become two reviewed publications", async t => {
+  const f = await fixture(t);
+  f.manifest.creatives[0].publicationId = "6d0a0d9a-1122-4344-8556-778899aabbcc";
+  f.manifest.creatives[1].publicationId = f.manifest.creatives[0].publicationId.toUpperCase();
+  await fs.writeFile(path.join(f.dir, "manifest.json"), JSON.stringify(f.manifest));
+  await assert.rejects(f.campaign.approve(manifestDigest(f.manifest), "merchant"), /Canonical lowercase|Duplicate publication/);
+  await assert.rejects(fs.access(path.join(f.dir, "approval.json")), { code: "ENOENT" });
+  assert.equal(f.calls.length, 0);
+});
+
+test("copy requiring dispatch trimming is rejected before merchant approval", async t => {
+  for (const mutate of [
+    (manifest: CampaignManifest) => { manifest.creatives[0].title = " " + manifest.creatives[0].title; },
+    (manifest: CampaignManifest) => { manifest.creatives[0].caption += "\n"; },
+  ]) {
+    const f = await fixture(t); mutate(f.manifest);
+    await fs.writeFile(path.join(f.dir, "manifest.json"), JSON.stringify(f.manifest));
+    await assert.rejects(f.campaign.approve(manifestDigest(f.manifest), "merchant"), /must already be trimmed/);
+    await assert.rejects(fs.access(path.join(f.dir, "approval.json")), { code: "ENOENT" });
+    assert.equal(f.calls.length, 0);
+  }
 });
