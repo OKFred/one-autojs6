@@ -24,6 +24,10 @@ export interface TikTokConfig {
   maxPostsPerDay: number;
   materialReuseSeconds: number;
   captionReuseSeconds: number;
+  commitReview?: {
+    required: boolean;
+    timeoutSeconds: number;
+  };
   adbKeyboard: {
     enabled: boolean;
     apkSha256: string;
@@ -154,6 +158,7 @@ export const DEFAULT_CONFIG: Autojs6Config = {
     outboxLimit: 180,
   },
   tiktok: {
+    commitReview: { required: false, timeoutSeconds: 180 },
     allowedMaterialRoots: [
       "/sdcard/Download/tiktok-materials",
       "/sdcard/Download",
@@ -455,6 +460,15 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
         ),
       },
       tiktok: {
+        commitReview: {
+          required: isRecord(tiktok.commitReview) && tiktok.commitReview.required === true,
+          timeoutSeconds: boundedInteger(
+            isRecord(tiktok.commitReview) ? tiktok.commitReview.timeoutSeconds : undefined,
+            180,
+            30,
+            180,
+          ),
+        },
         expectedHandle:
           typeof tiktok.expectedHandle === "string" &&
           tiktok.expectedHandle.trim()

@@ -261,6 +261,7 @@ const server = serve(
   {
     fetch: app.fetch,
     port: PORT,
+    hostname: process.env.ONE_AUTOJS6_HTTP_HOST || undefined,
   },
   (info) => {
     console.log(`[HTTP] Server is running on http://localhost:${info.port}`);

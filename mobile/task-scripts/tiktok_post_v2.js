@@ -17,6 +17,7 @@ var selectedMediaMetadata = null;
 var selectedExpectedSha256 = "";
 var requestedPostSettings = null;
 var postSettingsEvidence = null;
+var committingCheckpointNonce = "";
 var profileHandle = "";
 var baselinePostIds = [];
 var baselineTileCount = null;
@@ -1084,6 +1085,11 @@ function writeCheckpoint(checkpointPhase, extra) {
     baselineTileCount: baselineTileCount
   };
   if (postSettingsEvidence) data.postSettingsEvidence = postSettingsEvidence;
+  if (checkpointPhase === "COMMITTING" && committingReviewTimeoutMs() > 0) {
+    if (!committingCheckpointNonce) committingCheckpointNonce = String(java.util.UUID.randomUUID().toString());
+    if (!/^[0-9a-f-]{36}$/i.test(committingCheckpointNonce)) throw taskError("COMMIT_REVIEW_INVALID_CONTEXT", "Same-draft checkpoint nonce is unavailable");
+    data.checkpointNonce = committingCheckpointNonce;
+  }
   if (extra) {
     for (var key in extra) {
       if (Object.prototype.hasOwnProperty.call(extra, key)) data[key] = extra[key];
@@ -1125,6 +1131,7 @@ function waitForCheckpointAck(expectedPhase) {
   }
   var configured = request.taskCheckpointAckTimeoutMs || request.checkpointAckTimeoutMs;
   var timeoutMs = boundedNumber(configured, 1000, 30000, 10000);
+  if (expectedPhase === "COMMITTING") timeoutMs = Math.max(timeoutMs, committingReviewTimeoutMs());
   var endAt = Date.now() + Math.min(timeoutMs, remainingTaskMs());
   while (Date.now() < endAt) {
     if (files.exists(String(taskCheckpointAckPath))) {
@@ -1134,6 +1141,32 @@ function waitForCheckpointAck(expectedPhase) {
     sleep(100);
   }
   throw taskError("CHECKPOINT_ACK_TIMEOUT", "Publish checkpoint was not acknowledged");
+}
+
+/**
+ * 只读取客户端包装器注入的本机等待期限；远程请求字段不能延长人工审核。
+ * @returns {number} 本机逐草稿审核期限或零
+ */
+function committingReviewTimeoutMs() {
+  if (typeof taskCommittingReviewTimeoutMs === "undefined") return 0;
+  return boundedNumber(taskCommittingReviewTimeoutMs, 0, 180000, 0);
+}
+
+/**
+ * 人工查看同一草稿后只读核对原文案，不自动改回被修改的内容。
+ * @returns {void}
+ */
+function assertReviewedCaptionUnchanged() {
+  var inputs = getDistinctInputs();
+  var unchanged = false;
+  if (inputs.length >= 2 && (selectedTitle || selectedDetails)) {
+    var fields = identifyPhotoCaptionFields(inputs);
+    unchanged = Boolean(fields) && (!selectedTitle || inputContainsExactText(fields.title, selectedTitle)) &&
+      (!selectedDetails || inputContainsExactText(fields.details, selectedDetails));
+  } else if (inputs.length === 1) {
+    unchanged = inputContainsExactText(inputs[0], selectedCaption);
+  }
+  if (!unchanged) throw taskError("CAPTION_CHANGED_AFTER_REVIEW", "The reviewed draft caption no longer matches the approved creative");
 }
 
 /**
@@ -2180,15 +2213,26 @@ function runPublish() {
   assertNoBlockingChallenge();
   var postButton = findSemanticNode(["发布", "Post"], 8000, true);
   if (!postButton) throw taskError("POST_ACTION_MISSING", "TikTok Post action was not found");
-  if (remainingTaskMs() < 120000) {
+  if (remainingTaskMs() < 120000 + committingReviewTimeoutMs()) {
     throw taskError(
       "INSUFFICIENT_COMMIT_TIME",
-      "Less than 120 seconds remain; publish was not started"
+      committingReviewTimeoutMs() > 0
+        ? "Insufficient time remains for local draft review and publish verification"
+        : "Less than 120 seconds remain; publish was not started"
     );
   }
   phase = "COMMITTING";
   writeCheckpoint("COMMITTING", null);
   waitForCheckpointAck("COMMITTING");
+  if (committingReviewTimeoutMs() > 0) {
+    if (currentPackage() !== TIKTOK_PACKAGE) throw taskError("EDITOR_NOT_READY", "The reviewed draft is not in TikTok");
+    assertNoBlockingChallenge();
+    applyRequestedPostSettings(true);
+    assertSelectedMediaIntegrity();
+    assertReviewedCaptionUnchanged();
+    postButton = findSemanticNode(["发布", "Post"], 3000, true);
+    if (!postButton || !getDistinctInputs().length) throw taskError("POST_ACTION_MISSING", "The reviewed draft is no longer at its post editor");
+  }
   if (!clickSemanticCenterOnce(postButton)) {
     throw taskError("POST_ACTION_FAILED", "TikTok Post action could not be activated");
   }

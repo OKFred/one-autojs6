@@ -73,7 +73,7 @@ function fixture(options = {}) {
       return rows;
     }
     return [
-      node("Approved caption", 10, { className: "android.widget.EditText" }),
+      node(state.captionText || "Approved caption", 10, { className: "android.widget.EditText" }),
       node("Post", 600, { click: () => state.posts++ }),
       node(state.public ? "Everyone" : "Only you", 180, { click: () => { state.screen = state.privateAccountPrompt ? "account-privacy" : "audience"; } }),
       ...(state.noCommercialEntry ? [] : [node("Content disclosure and ads", 240, { click: () => { state.screen = "commercial"; } })]),
@@ -115,11 +115,13 @@ function fixture(options = {}) {
     sleep: ms => { clock += Math.max(Number(ms), 1); },
     random: minimum => minimum,
     packageName: () => selector(),
+    currentPackage: () => state.wrongPackage ? "synthetic.other.app" : "com.zhiliaoapp.musically",
     back: () => { state.screen = "editor"; },
     files: { exists: p => disk.has(p), ensureDir() {}, write: (p, text) => disk.set(p, Buffer.from(text)), read: p => disk.get(p)?.toString() || "" },
     java: {
+      util: { UUID: { randomUUID: () => ({ toString: () => "1bfc9614-cac0-4c64-8bcc-a4d7fb66c7dc" }) } },
       io: { File, FileInputStream: InputStream },
-      lang: { Byte: { TYPE: "byte" }, reflect: { Array: { newInstance: (_type, size) => new Uint8Array(size) } } },
+      lang: { String: function(value) { this.length = () => value.length; this.codePointCount = (start, end) => Array.from(value.slice(start, end)).length; }, Byte: { TYPE: "byte" }, reflect: { Array: { newInstance: (_type, size) => new Uint8Array(size) } } },
       security: { MessageDigest: { getInstance: () => { const d = crypto.createHash("sha256"); return { update: (buffer, offset, length) => d.update(buffer.slice(offset, offset + length)), digest: () => Array.from(d.digest(), n => n > 127 ? n - 256 : n) }; } } },
     },
     android: {
@@ -131,7 +133,7 @@ function fixture(options = {}) {
   });
   vm.runInContext(source.slice(0, entrypoint), context, { filename: scriptUrl.pathname });
   context.requestedPostSettings = { audience: "PUBLIC", commercialDisclosure: "YOUR_BRAND" };
-  return { context, state, disk, checkpoints, node, setResolver: value => { resolverRow = value; }, advance: ms => { clock += ms; } };
+  return { context, state, disk, checkpoints, node, setResolver: value => { resolverRow = value; }, advance: ms => { clock += ms; }, now: () => clock };
 }
 
 /** Keep the real publish ordering, hash checks and settings UI while replacing unrelated Android boundaries. */
@@ -159,12 +161,13 @@ function publishFixture(options = {}) {
   c.enterAndVerifyCaption = () => { assert.equal(c.selectedCaption, "Approved caption"); trace.push("caption-verified"); };
   const write = c.writeCheckpoint;
   c.writeCheckpoint = (phase, extra) => { write(phase, extra); trace.push(phase); snapshots.push(JSON.parse(f.disk.get("/checkpoint").toString())); };
+  const realWaitForCheckpointAck = c.waitForCheckpointAck;
   c.waitForCheckpointAck = phase => { trace.push(`ACK:${phase}`); options.afterAck?.(phase, f); };
   c.clickSemanticCenterOnce = node => { trace.push("POST_CLICK"); return node.click(); };
   c.waitForSubmission = () => {};
   c.refreshProfileGrid = () => {};
   c.findPublicationPost = () => null;
-  return { ...f, trace, snapshots };
+  return { ...f, trace, snapshots, realWaitForCheckpointAck };
 }
 
 test("legacy requests do not fabricate post settings or proof", () => {
@@ -383,6 +386,72 @@ test("publish commits once only after both ACKs and carries the same original pr
   assert.equal(result.retrySafe, false);
   assert.equal(result.nextAction, "recover");
   assert.equal(result.published, false);
+});
+
+test("legacy and EDITOR_READY waits stay 10 seconds even if task input requests a review extension", () => {
+  for (const phase of ["EDITOR_READY", "COMMITTING"]) {
+    const f = fixture();
+    f.context.taskCheckpointAckPath = "/ack";
+    f.context.request = { taskCommittingReviewTimeoutMs: 180000, internalHints: { taskCommittingReviewTimeoutMs: 180000 } };
+    if (phase === "EDITOR_READY") f.context.taskCommittingReviewTimeoutMs = 180000;
+    const start = f.now();
+    assert.throws(() => f.context.waitForCheckpointAck(phase), e => e.code === "CHECKPOINT_ACK_TIMEOUT");
+    assert.equal(f.now() - start, 10000);
+  }
+});
+
+test("only the private wrapper extends COMMITTING, bounded by the task deadline", () => {
+  const f = fixture();
+  f.context.taskCheckpointAckPath = "/ack";
+  f.context.taskCommittingReviewTimeoutMs = 180000;
+  const start = f.now();
+  f.context.sleep = ms => { f.advance(ms); if (f.now() - start >= 12000) f.disk.set("/ack", Buffer.from("COMMITTING")); };
+  f.context.waitForCheckpointAck("COMMITTING");
+  assert.equal(f.now() - start, 12000);
+  f.disk.delete("/ack");
+  f.context.sleep = ms => f.advance(ms);
+  f.context.taskDeadlineAt = f.now() + 2000;
+  const boundedStart = f.now();
+  assert.throws(() => f.context.waitForCheckpointAck("COMMITTING"), e => e.code === "CHECKPOINT_ACK_TIMEOUT");
+  assert.equal(f.now() - boundedStart, 2000);
+});
+
+test("guarded publish emits one same-draft nonce and never clicks Post without COMMITTING release", () => {
+  const f = publishFixture();
+  f.context.taskCheckpointAckPath = "/ack";
+  f.context.taskCommittingReviewTimeoutMs = 180000;
+  f.context.taskDeadlineAt = f.now() + 420000;
+  f.context.waitForCheckpointAck = phase => { if (phase === "COMMITTING") f.realWaitForCheckpointAck(phase); };
+  assert.throws(() => f.context.runPublish(), e => e.code === "CHECKPOINT_ACK_TIMEOUT");
+  assert.equal(f.state.posts, 0);
+  assert.equal(f.context.submitted, false);
+  assert.equal(f.snapshots.at(-1).phase, "COMMITTING");
+  assert.match(f.snapshots.at(-1).checkpointNonce, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  assert.equal(f.snapshots[0].checkpointNonce, undefined);
+});
+
+test("guarded publish reacquires the same draft after release and preserves the original settings proof", () => {
+  const f = publishFixture();
+  f.context.taskCommittingReviewTimeoutMs = 180000;
+  f.context.taskDeadlineAt = f.now() + 420000;
+  f.context.runPublish();
+  assert.equal(f.state.posts, 1);
+  assert.deepEqual(f.snapshots[0].postSettingsEvidence, f.snapshots[1].postSettingsEvidence);
+  assert.equal(f.trace.filter(value => value === "POST_CLICK").length, 1);
+});
+
+test("a changed foreground app or caption after same-draft release stops before Post", () => {
+  for (const change of ["package", "caption"]) {
+    const f = publishFixture({ afterAck: (phase, fixture) => {
+      if (phase !== "COMMITTING") return;
+      if (change === "package") fixture.state.wrongPackage = true;
+      else fixture.state.captionText = "Edited after original review";
+    } });
+    f.context.taskCommittingReviewTimeoutMs = 180000;
+    f.context.taskDeadlineAt = f.now() + 420000;
+    assert.throws(() => f.context.runPublish(), e => e.code === (change === "package" ? "EDITOR_NOT_READY" : "CAPTION_CHANGED_AFTER_REVIEW"));
+    assert.equal(f.state.posts, 0);
+  }
 });
 
 console.log(`${passed} trusted-script settings regressions passed; no device or account was accessed.`);

@@ -12,6 +12,11 @@ names. Copy values into an existing **private** environment file; never commit a
 real environment, campaign, account handle, source evidence, rendered video,
 approval, journal or inquiry record.
 
+For this local operator workflow, set `ONE_AUTOJS6_HTTP_HOST=127.0.0.1` in the PC
+process environment. The CLI reuses its existing port and Bearer token. It checks
+the process's default device before dispatch; pass the reviewed device through a
+process environment override when an old `.env` still names another device.
+
 ## Prepare one reviewable bundle
 
 Use exactly three distinct styles with authorized original photos. The local
@@ -42,6 +47,38 @@ the reviewed MP4 byte-for-byte. The client hashes it before execution, and the
 trusted script hashes it again around the editor/commit boundary. Its filename
 is only a convenience. Do not transfer unreviewed assets or enable a campaign
 merely because its filename contains a hash.
+
+## Same-draft operator hold for the silent pilot
+
+A silent source MP4 does not prove that the TikTok composer added no sound. This
+pilot therefore enables the local phone setting
+`tiktok.commitReview={required:true,timeoutSeconds:180}`. Its default is disabled
+for legacy callers. Only a hash-bound PUBLIC/Your-brand publish job uses it.
+
+At COMMITTING the client first persists the original checkpoint and then waits
+for a private, one-use operator release. It does not ACK that checkpoint while
+waiting. Inspect the **same open draft**, its sound selection and preview, and
+confirm no added music. Stop for unfamiliar controls, legal/rights confirmation,
+account privacy changes or any mismatch. Do not import a new draft and treat an
+earlier sound check as proof for it.
+
+The phone writes a pending JSON record under its private environment state at
+`tiktok/commit-review/`. Copy all its bindings into a separately written
+`release.json`: change status to `APPROVED` and add the actual reviewer,
+`reviewedAt` epoch milliseconds, SHA-256 of private observed evidence, and
+`noAddedMusicVerified:true`. This flag is an operator attestation after inspection;
+never generate it automatically or infer it from the source file. Task/publication
+IDs, nonce, media/caption hashes, frozen settings proof and expiry must all match.
+The client atomically consumes and journals this release before ACK. An expired,
+changed, cancelled or unreviewed draft stops without Post.
+
+This hold is additional to the merchant's approval before dispatch.
+`EDITOR_READY` remains a persistence ACK. After release, the script rechecks the
+foreground, caption, audience/disclosure and file bytes before reacquiring Post.
+After submission, independently play the full public video with sound enabled
+and inspect its attribution before recording public acceptance. Unexpected sound
+holds the remaining campaign; do not automatically delete or repost it. Choosing
+CML background music creates a separate creative/audio review.
 
 ## Private manifest schema
 
