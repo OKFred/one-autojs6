@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { normalizeTikTokRequest } from "./tiktok-contract.js";
 
@@ -47,6 +47,35 @@ export interface CampaignEntry {
   reason?: string;
   publicAcceptance?: { reviewer: string; verifiedAt: string; evidenceSha256: string };
   recoveryTasks?: { taskId: string; action: "status" | "recover"; at: string }[];
+}
+
+/** One explicit operator action, separate from the immutable first attempt. */
+export interface KnownPrecommitResume {
+  publicationId: string;
+  statusTaskId: string;
+  operatorActionId: string;
+  reviewer: string;
+  authorizationEvidenceSha256: string;
+  originalHoldSnapshotFile: string;
+  originalHoldSnapshotSha256: string;
+}
+
+/** A durable, bounded same-publication continuation; never scheduled automatically. */
+export interface CampaignResumeAttempt extends KnownPrecommitResume {
+  schemaVersion: 1;
+  manifestSha256: string;
+  attemptedAt: string;
+  state: "DISPATCHING" | "ACCEPTED" | "HOLD";
+  originalTaskId: string;
+  originalHeldEntry: CampaignEntry;
+  originalTask: Awaited<ReturnType<CampaignTransport["inspect"]>>;
+  nativeStatusTask: Awaited<ReturnType<CampaignTransport["inspect"]>>;
+  originalTaskEvidenceSha256: string;
+  nativeStatusEvidenceSha256: string;
+  requestFingerprint: string;
+  taskId?: string;
+  reason?: string;
+  transitions: Array<{ state: "DISPATCHING" | "ACCEPTED" | "HOLD"; at: string }>;
 }
 
 /** Transport keeps the existing asynchronous v2 task channel intact. */
@@ -169,6 +198,44 @@ export function validateCampaign(manifest: CampaignManifest): void {
   }
 }
 
+/** Return the Shanghai calendar day, independently of the host timezone.
+ * @param value Valid date or timestamp.
+ * @returns YYYY-MM-DD in the approved timezone.
+ */
+function shanghaiDay(value: Date | string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(value));
+  return ["year", "month", "day"].map(type => parts.find(part => part.type === type)!.value).join("-");
+}
+
+/** Compute the same frozen commercial fingerprint used by the native policy.
+ * @param manifest Pinned campaign identity.
+ * @param creative The exact approved creative.
+ * @returns Native-compatible request fingerprint.
+ */
+function creativeFingerprint(manifest: CampaignManifest, creative: CampaignCreative): string {
+  const caption = createHash("sha256").update(JSON.stringify({ title: creative.title, details: creative.caption })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ account: manifest.expectedHandle, media: [creative.sha256], captions: [caption], expectedSha256: creative.sha256, postSettings: creative.postSettings })).digest("hex");
+}
+
+/** Recognize only the known editor failure before any commit or settings proof.
+ * @param task Authenticated original task or fresh native ledger-status task.
+ * @param action Expected original action.
+ * @param manifest Pinned campaign.
+ * @param creative Exact approved creative.
+ * @param minimumTime Earliest permissible task creation time.
+ * @param now Current operator time.
+ * @returns Checked evidence; never inferred from an empty URL alone.
+ */
+function knownPrecommitEvidence(task: Awaited<ReturnType<CampaignTransport["inspect"]>>, action: "publish" | "status", manifest: CampaignManifest, creative: CampaignCreative, minimumTime: number, now: number): void {
+  const result = task.result as Record<string, any> | undefined;
+  assert(task.status === (action === "publish" ? "FAILURE" : "SUCCESS") && task.clientId === manifest.deviceClientId && task.scriptId === "tiktok.post" && Number.isFinite(task.createTimeUtc) && task.createTimeUtc >= minimumTime - 5000 && task.createTimeUtc <= now + 5000, "Original technical failure or native status task is not bound to this device");
+  assert(result?.contractVersion === 2 && result.action === action && result.publicationId === creative.publicationId && ["PRECHECKED", "EDITOR_READY"].includes(result.phase) && result.outcome === "FAILURE" && result.published === false && result.success === false && result.retrySafe === true && result.nextAction === "publish", "Known precommit failure required; uncertain or committed outcomes cannot resume");
+  assert(result.error?.code === "EDITOR_NOT_READY" && result.postSettingsEvidence === undefined && result.account?.verified === true && result.account.matched === true && result.postSettings?.audience === "PUBLIC" && result.postSettings.commercialDisclosure === "YOUR_BRAND", "Known editor failure without settings proof required");
+  assert(result.post && result.post.verified === false && [result.post.shareUrl, result.post.canonicalUrl, result.post.postId, result.postUrl, result.canonicalUrl, result.shareUrl, result.postId].every(value => value === undefined || value === "") && [result.committedAt, result.submittedAt, result.publishedAt].every(value => value === undefined), "A publication or commit indicator blocks resume");
+  const caption = createHash("sha256").update(JSON.stringify({ title: creative.title, details: creative.caption })).digest("hex");
+  assert(result.media?.kind === "video" && result.creativeEvidence?.mediaSha256 === creative.sha256 && result.creativeEvidence.captionSha256 === caption && result.creativeEvidence.requestFingerprint === creativeFingerprint(manifest, creative), "Original creative or native request fingerprint changed");
+}
+
 /** Locked private campaign store. Locks are never force-removed or stolen. */
 export class TikTokCampaign {
   /**
@@ -239,6 +306,93 @@ export class TikTokCampaign {
    * @returns Private campaign ledger entries.
    */
   private entries(): Promise<CampaignEntry[]> { return readJson(path.join(this.directory, "ledger.json"), []); }
+
+  /** Read the separate durable resume chain without changing the first attempt.
+   * @returns Recorded operator continuations, or no attempts.
+   */
+  private async resumeAttempts(): Promise<CampaignResumeAttempt[]> {
+    const attempts = await readJson<CampaignResumeAttempt[]>(path.join(this.directory, "resume-attempts.json"), []);
+    assert(Array.isArray(attempts) && attempts.every(attempt => attempt.schemaVersion === 1 && ["DISPATCHING", "ACCEPTED", "HOLD"].includes(attempt.state)), "Invalid resume attempt chain");
+    return attempts;
+  }
+
+  /** Select the current registered receipt without falling back to a stale first result.
+   * @param entry Preserved original publication entry.
+   * @returns Original, resumed, or later recovery receipt and its own dispatch time.
+   */
+  private async inspectionAttempt(entry: CampaignEntry): Promise<{ taskId: string; attemptedAt: string; publicationAttemptedAt: string }> {
+    const resumes = (await this.resumeAttempts()).filter(attempt => attempt.publicationId === entry.publicationId);
+    const resumed = resumes.at(-1);
+    if (resumed) assert(resumed.manifestSha256 === entry.manifestSha256 && resumed.originalTaskId === entry.taskId && resumed.originalHeldEntry.publicationId === entry.publicationId && resumed.originalHeldEntry.taskId === entry.taskId && resumed.originalTaskEvidenceSha256 === createHash("sha256").update(JSON.stringify(resumed.originalTask)).digest("hex") && resumed.nativeStatusEvidenceSha256 === createHash("sha256").update(JSON.stringify(resumed.nativeStatusTask)).digest("hex"), "Original resume attempt chain changed");
+    const publicationAttemptedAt = resumed?.attemptedAt || entry.attemptedAt;
+    const minimum = Date.parse(publicationAttemptedAt);
+    const recovery = entry.recoveryTasks?.filter(task => Date.parse(task.at) >= minimum).at(-1);
+    if (recovery) return { taskId: recovery.taskId, attemptedAt: recovery.at, publicationAttemptedAt };
+    if (resumed) {
+      assert(resumed.state === "ACCEPTED" && resumed.taskId, "No resume receipt; query the original publication ID only");
+      return { taskId: resumed.taskId, attemptedAt: resumed.attemptedAt, publicationAttemptedAt };
+    }
+    assert(entry.taskId, "No task receipt; use original-ID status/recovery");
+    return { taskId: entry.taskId, attemptedAt: entry.attemptedAt, publicationAttemptedAt };
+  }
+
+  /** Continue one independently proven, known precommit failure under an explicit operator action.
+   * @param request Original identity, registered fresh status receipt and private authorization evidence.
+   * @param now Actual operator time; first dispatch must already have occurred in its approved minute.
+   * @returns One asynchronous receipt state; an unknown delivery cannot be retried.
+   */
+  async resumeKnownPrecommit(request: KnownPrecommitResume, now = new Date()): Promise<string> {
+    return this.locked(async () => {
+      const digest = await this.refresh();
+      const approval = await readJson<CampaignApproval>(path.join(this.directory, "approval.json"));
+      const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+      assert(uuid.test(request.publicationId) && uuid.test(request.statusTaskId) && uuid.test(request.operatorActionId) && request.reviewer.trim() && request.reviewer.length <= 100 && !/[\p{Cc}\p{Cf}]/u.test(request.reviewer) && /^[a-f0-9]{64}$/.test(request.authorizationEvidenceSha256), "Explicit bounded operator action and authorization evidence required");
+      assert(approval.manifestSha256 === digest && approval.reviewer && Date.parse(approval.approvedAt) <= now.getTime(), "Original approved campaign identity required");
+      const entries = await this.entries(), entry = entries.find(value => value.publicationId === request.publicationId);
+      const creative = this.manifest.creatives.find(value => value.publicationId === request.publicationId);
+      assert(entry && creative && entry.state === "HOLD" && entry.taskId && uuid.test(entry.taskId) && entry.manifestSha256 === digest && !entry.canonicalUrl && entries.every(value => value.publicationId === entry.publicationId || value.state === "PUBLIC_ACCEPTED"), "Only the original held publication can continue");
+      const firstAt = Date.parse(entry.attemptedAt), slot = Date.parse(creative.scheduledAt);
+      assert(firstAt >= slot && firstAt < slot + 60000 && Date.parse(approval.approvedAt) <= firstAt && now.getTime() >= firstAt && shanghaiDay(now) === shanghaiDay(entry.attemptedAt), "Only the same-day attempt dispatched in its approved minute can resume");
+      assert(entries.every(value => value.publicationId === entry.publicationId || shanghaiDay(value.attemptedAt) !== shanghaiDay(now)), "Another same-day publication blocks resume");
+      const attempts = await this.resumeAttempts();
+      assert(!attempts.some(attempt => attempt.operatorActionId === request.operatorActionId || attempt.publicationId === request.publicationId), "A bounded resume already exists; inspect the original publication instead");
+      assert(/^[A-Za-z0-9._-]{1,120}\.json$/.test(request.originalHoldSnapshotFile) && /^[a-f0-9]{64}$/.test(request.originalHoldSnapshotSha256), "Original pre-status HOLD snapshot required");
+      const snapshotPath = path.join(this.directory, request.originalHoldSnapshotFile);
+      assert(await fs.realpath(snapshotPath) === snapshotPath, "Original HOLD snapshot cannot follow a link");
+      const snapshotFile = await fs.open(snapshotPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      let originalRaw: Buffer;
+      try { const stat = await snapshotFile.stat(); assert(stat.isFile() && stat.size > 0 && stat.size <= 1024 * 1024, "Original HOLD snapshot bounds invalid"); originalRaw = await snapshotFile.readFile(); }
+      finally { await snapshotFile.close(); }
+      assert(createHash("sha256").update(originalRaw).digest("hex") === request.originalHoldSnapshotSha256, "Original HOLD snapshot hash changed");
+      const originalEntries = JSON.parse(originalRaw.toString("utf8")) as CampaignEntry[];
+      assert(Array.isArray(originalEntries), "Original HOLD snapshot context invalid");
+      const originalEntry = originalEntries.find(value => value.publicationId === entry.publicationId);
+      assert(originalEntries.length === entries.length && originalEntry?.state === "HOLD", "Original HOLD snapshot context invalid");
+      /** Compare immutable entry fields while allowing only the registered status append. @param value Original entry. @returns Immutable fields. */
+      const stripStatus = (value: CampaignEntry) => { const { recoveryTasks, reason, ...rest } = value; return rest; };
+      assert(JSON.stringify(stripStatus(originalEntry)) === JSON.stringify(stripStatus(entry)) && originalEntries.every(value => value.publicationId === entry.publicationId || JSON.stringify(value) === JSON.stringify(entries.find(current => current.publicationId === value.publicationId))), "Original HOLD or another publication changed");
+      const originalStatus = originalEntry.recoveryTasks || [], currentStatus = entry.recoveryTasks || [];
+      assert(currentStatus.length > originalStatus.length && originalStatus.every((value, index) => JSON.stringify(value) === JSON.stringify(currentStatus[index])), "Original status history was replaced");
+      const appended = currentStatus.slice(originalStatus.length), status = appended.at(-1)!;
+      assert(appended.every(value => value.action === "status" && uuid.test(value.taskId) && Number.isFinite(Date.parse(value.at)) && Date.parse(value.at) >= firstAt && Date.parse(value.at) <= now.getTime() + 5000) && new Set(currentStatus.map(value => value.taskId)).size === currentStatus.length && status.taskId === request.statusTaskId && entry.reason === "Original-ID recovery pending", "Only a registered native status append can extend the original HOLD");
+      assert(Date.parse(status.at) >= now.getTime() - 120000, "Fresh native ledger status required");
+      const originalTask = await this.transport.inspect(entry.taskId);
+      const nativeStatusTask = await this.transport.inspect(status.taskId);
+      knownPrecommitEvidence(originalTask, "publish", this.manifest, creative, firstAt, now.getTime());
+      knownPrecommitEvidence(nativeStatusTask, "status", this.manifest, creative, Date.parse(status.at), now.getTime());
+      const originalResult = originalTask.result as Record<string, any>, nativeResult = nativeStatusTask.result as Record<string, any>;
+      assert(nativeStatusTask.createTimeUtc >= now.getTime() - 120000 && nativeResult.phase === originalResult.phase && nativeResult.error.code === originalResult.error.code, "Fresh native ledger differs from the original failure");
+      await this.verifyVideo(creative);
+      const attempt: CampaignResumeAttempt = { schemaVersion: 1, ...request, manifestSha256: digest, attemptedAt: now.toISOString(), state: "DISPATCHING", originalTaskId: entry.taskId, originalHeldEntry: structuredClone(originalEntry), originalTask, nativeStatusTask, originalTaskEvidenceSha256: createHash("sha256").update(JSON.stringify(originalTask)).digest("hex"), nativeStatusEvidenceSha256: createHash("sha256").update(JSON.stringify(nativeStatusTask)).digest("hex"), requestFingerprint: creativeFingerprint(this.manifest, creative), transitions: [{ state: "DISPATCHING", at: now.toISOString() }] };
+      attempts.push(attempt); await writeJson(path.join(this.directory, "resume-attempts.json"), attempts);
+      const params = normalizeTikTokRequest({ contractVersion: 2, action: "publish", publicationId: creative.publicationId, expectedHandle: this.manifest.expectedHandle, media: { mode: "direct", kind: "video", path: creative.devicePath, expectedSha256: creative.sha256 }, content: { title: creative.title, details: creative.caption }, postSettings: creative.postSettings, policy: { minIntervalSeconds: 86400, maxPostsPerDay: 1, materialReuseSeconds: 2592000, captionReuseSeconds: 2592000 } }, {}).params;
+      try { const receipt = await this.transport.dispatch(params, this.manifest.deviceClientId); assert(uuid.test(receipt.taskId) && receipt.taskId !== entry.taskId && !currentStatus.some(value => value.taskId === receipt.taskId), "Invalid bounded resume receipt"); attempt.taskId = receipt.taskId; attempt.state = "ACCEPTED"; }
+      catch { attempt.state = "HOLD"; attempt.reason = "Resume delivery uncertain; query the original publication ID only"; }
+      attempt.transitions.push({ state: attempt.state, at: now.toISOString() });
+      await writeJson(path.join(this.directory, "resume-attempts.json"), attempts);
+      return attempt.state;
+    });
+  }
 
   /**
    * Hash the local video before dispatch without trusting its filename.
@@ -339,22 +493,21 @@ export class TikTokCampaign {
       const approval = await readJson<CampaignApproval>(path.join(this.directory, "approval.json"));
       assert(entry.manifestSha256 === digest && approval.manifestSha256 === digest, "Original approved campaign identity required");
       const creative = this.manifest.creatives.find(c => c.publicationId === publicationId)!;
-      const taskId = entry.recoveryTasks?.at(-1)?.taskId ?? entry.taskId;
-      assert(taskId, "No task receipt; use original-ID status/recovery");
-      const task = await this.transport.inspect(taskId);
+      const inspectedAttempt = await this.inspectionAttempt(entry);
+      const task = await this.transport.inspect(inspectedAttempt.taskId);
       if (["PENDING", "EXECUTING", "RUNNING"].includes(task.status)) return "IN_PROGRESS";
       const result = task.result as Record<string, any> | undefined;
       const escaped = this.manifest.expectedHandle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const url = result?.post?.canonicalUrl;
       const proof = result?.postSettingsEvidence;
       const valid = task.status === "SUCCESS" && task.clientId === this.manifest.deviceClientId && task.scriptId === "tiktok.post" &&
-        task.createTimeUtc >= Date.parse(entry.attemptedAt) - 5000 && task.createTimeUtc <= now.getTime() + 5000 && result?.contractVersion === 2 &&
+        task.createTimeUtc >= Date.parse(inspectedAttempt.attemptedAt) - 5000 && task.createTimeUtc <= now.getTime() + 5000 && result?.contractVersion === 2 &&
         result.publicationId === publicationId && ["publish", "recover", "status"].includes(result.action) &&
         result.phase === "LINK_CONFIRMED" && result.outcome === "SUCCESS" && result.published === true && result.success === true &&
         result.post?.verified === true && typeof url === "string" && new RegExp(`^https://www\\.tiktok\\.com/@${escaped}/video/\\d+$`).test(url) &&
         url.endsWith(`/${result.post?.postId}`) && result.postSettings?.audience === "PUBLIC" && result.postSettings?.commercialDisclosure === "YOUR_BRAND" &&
         proof?.verified === true && proof.audience === "PUBLIC" && proof.commercialDisclosure === "YOUR_BRAND" &&
-        Number.isSafeInteger(proof.verifiedAt) && proof.verifiedAt >= Date.parse(entry.attemptedAt) - 5000 && proof.verifiedAt <= now.getTime() + 5000 &&
+        Number.isSafeInteger(proof.verifiedAt) && proof.verifiedAt >= Date.parse(inspectedAttempt.publicationAttemptedAt) - 5000 && proof.verifiedAt <= now.getTime() + 5000 &&
         result.creativeEvidence?.mediaSha256 === creative.sha256 &&
         result.creativeEvidence?.captionSha256 === createHash("sha256").update(JSON.stringify({ title: creative.title, details: creative.caption })).digest("hex");
       entry.state = valid ? "REVIEW_REQUIRED" : "HOLD";
