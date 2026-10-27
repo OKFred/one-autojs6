@@ -30,14 +30,20 @@ function fixture(options = {}) {
     const child = node(special && state.differentAlias ? "所有人" : label, "", rect(state.outsideBounds && special ? 750 : 140, y + 30, 900, y + 80), {
       className: "android.widget.TextView", checkable: Boolean(special && state.checkableChild), checked: () => false });
     const middle = special && state.nearestMismatch ? node("", "Different row", rect(80, y + 10, 950, y + 110), { checkable: true, checked: () => true, children: [child] }) : child;
+    const icon = special && state.publicIcon ? node(state.iconText ? "Public icon" : "", "公开",
+      rect(state.iconOutside ? 1050 : 60, y + 30, state.iconOutside ? 1090 : 110, y + 80), {
+        className: "android.widget.ImageView", checkable: Boolean(state.iconCheckable), checked: () => Boolean(state.iconChecked),
+        visible: state.iconHidden ? false : true, pkg: state.iconWrongPackage ? "synthetic.other" : "com.zhiliaoapp.musically",
+        click: state.iconClickable ? () => { throw Error("ICON_MUST_NOT_BE_CLICKED"); } : undefined,
+      }) : null;
     const container = node("", special && state.suffix ? label + ", selected" : label,
       rect(20, y, state.outsideBounds && special ? 700 : 1040, y + 130), {
         checkable: !(special && state.parentNotCheckable), visible: special && state.parentHidden ? false : special && state.visibilityUnknown ? null : true,
         pkg: special && state.wrongAncestorPackage ? "synthetic.other" : "com.zhiliaoapp.musically",
         checked: () => special && state.checkedUnknown ? undefined : state.chosen === identity,
-        children: [middle], click: () => { state.rowClicks++; if (!state.doesNotStick) state.chosen = identity; },
+        children: icon && !state.independentIcon ? [middle, icon] : [middle], click: () => { state.rowClicks++; if (!state.doesNotStick) state.chosen = identity; },
       });
-    return { container, child };
+    return { container, child, icon };
   }
   let lastPublic;
   /** Render either one editor entry or complete independent audience choices. */
@@ -47,13 +53,14 @@ function fixture(options = {}) {
       node("", "", rect(30, 100, 1000, 300), { className: "android.widget.EditText" }),
       node("Who can view this post", "", rect(30, 500, 1000, 600), { click: () => { state.screen = "audience"; } }),
       node("Post", "", rect(600, 1950, 1000, 2080), { click: () => { throw Error("POST_MUST_NOT_BE_CLICKED"); } })] });
-    const everyone = row("Everyone", "public", 300, true), friends = row("Friends", "friends", 500), only = row("Only you", "private", 700);
+    const everyone = row(state.publicLabel || "Everyone", "public", 300, true), friends = row("Friends", "friends", 500), only = row("Only you", "private", 700);
     lastPublic = everyone;
     const children = [everyone.container, friends.container, only.container,
       node("Done", "", rect(600, 1100, 1000, 1200), { click: () => { state.doneClicks++; state.screen = "editor"; } })];
     if (state.detachedChild) { everyone.container.childCount = () => 0; everyone.child.parentNode = null; children.push(everyone.child); }
     if (state.duplicatePublic) children.push(row("Everyone", "other-public", 900).container);
     if (state.duplicatePrivate) children.push(row("Only you", "other-private", 900).container);
+    if (state.independentIcon) children.push(everyone.icon);
     return node("", "", full, { children });
   }
   /** Keep ancestor pointers and both text/description matches from the same current synthetic tree. */
@@ -92,6 +99,27 @@ const privateChoice = known.c.findUniqueSettingNode(["Only you"], 1);
 assert.equal(privateChoice.checkable(), true); assert.equal(privateChoice.checked(), false); passed++;
 const sameRow = fixture(); const { container, child } = sameRow.publicPair();
 assert.equal(sameRow.c.canonicalSettingChoiceNode(child, ["Everyone"]), container); passed++;
+for (const publicLabel of ["Everyone", "所有人"]) {
+  const f = fixture({ publicIcon: true, publicLabel });
+  const pair = f.publicPair();
+  assert.equal(f.c.canonicalSettingChoiceNode(pair.icon, ["Everyone", "所有人", "公开"]), pair.container);
+  const choice = f.c.findUniqueSettingNode(["Everyone", "所有人", "公开"], 1);
+  assert.equal(choice.checkable(), true); assert.equal(choice.checked(), true); assert.equal(choice.bounds().left, 20);
+  assert.equal(f.state.rowClicks, 0); passed++;
+}
+for (const option of ["iconClickable", "iconCheckable", "iconChecked", "iconText", "iconOutside", "independentIcon"]) {
+  const f = fixture({ publicIcon: true, [option]: true });
+  assert.throws(() => f.c.findUniqueSettingNode(["Everyone", "所有人", "公开"], 1), e => e.code === "POST_SETTINGS_AMBIGUOUS");
+  assert.equal(f.state.rowClicks, 0); passed++;
+}
+for (const options of [{ publicLabel: "Friends" }, { wrongAncestorPackage: true }, { parentHidden: true },
+    { visibilityUnknown: true }, { checkedUnknown: true }, { iconWrongPackage: true }, { iconHidden: true }]) {
+  const f = fixture({ publicIcon: true, ...options }); const pair = f.publicPair();
+  assert.equal(f.c.canonicalSettingChoiceNode(pair.icon, ["Everyone", "所有人", "公开"]), pair.icon); passed++;
+}
+const duplicateIconRow = fixture({ publicIcon: true, duplicatePublic: true });
+assert.throws(() => duplicateIconRow.c.findUniqueSettingNode(["Everyone", "所有人", "公开"], 1), e => e.code === "POST_SETTINGS_AMBIGUOUS");
+assert.equal(duplicateIconRow.state.rowClicks, 0); passed++;
 for (const option of ["duplicatePublic", "parentNotCheckable", "nearestMismatch", "outsideBounds", "differentAlias", "checkableChild", "checkedUnknown", "visibilityUnknown", "detachedChild"]) {
   const f = fixture({ [option]: true });
   assert.throws(() => f.c.findUniqueSettingNode(["Everyone", "所有人"], 1), e => e.code === "POST_SETTINGS_AMBIGUOUS");
