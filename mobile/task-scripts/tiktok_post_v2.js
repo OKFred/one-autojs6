@@ -15,6 +15,7 @@ var selectedDetails = "";
 var selectedCaption = "";
 var selectedMediaMetadata = null;
 var selectedExpectedSha256 = "";
+var selectedShareIntentVerified = false;
 var requestedPostSettings = null;
 var postSettingsEvidence = null;
 var committingCheckpointNonce = "";
@@ -1259,6 +1260,7 @@ function verifySelectedMediaContentUri(uri) {
  * @returns {void}
  */
 function openSelectedMediaInTikTok() {
+  selectedShareIntentVerified = false;
   assertSelectedMediaIntegrity();
   var builder = new android.os.StrictMode.VmPolicy.Builder();
   android.os.StrictMode.setVmPolicy(builder.build());
@@ -1280,6 +1282,95 @@ function openSelectedMediaInTikTok() {
       android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
   );
   app.startActivity(intent);
+  selectedShareIntentVerified = Boolean(selectedExpectedSha256);
+}
+
+/**
+ * 收集唯一可见的精确分享标签，不把正文或屏幕外节点当作按钮。
+ * @param {string[]} labels - 已识别的完整标签
+ * @returns {UiObject[]} 按可见矩形去重的节点
+ */
+function visibleShareChoiceNodes(labels) {
+  var result = [], seen = {};
+  for (var i = 0; i < labels.length; i++) {
+    var pattern = "(?i)^" + escapeRegex(labels[i]) + "$";
+    var groups = [tikTokTextSelector(pattern).find(), tikTokDescSelector(pattern).find()];
+    for (var g = 0; g < groups.length; g++) {
+      for (var n = 0; groups[g] && n < groups[g].length; n++) {
+        var node = groups[g][n], bounds = node.bounds();
+        if (accessibleBoolean(node, ["visibleToUser", "isVisibleToUser"]) === false ||
+            !bounds || bounds.width() <= 0 || bounds.height() <= 0 ||
+            bounds.left < 0 || bounds.top < 0 || bounds.right > device.width || bounds.bottom > device.height) continue;
+        var key = bounds.left + ":" + bounds.top + ":" + bounds.right + ":" + bounds.bottom;
+        if (!seen[key]) { seen[key] = true; result.push(node); }
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * 确认标题及两个选项属于同一个有界底部面板，而非整个 TikTok 页面。
+ * @param {UiObject} header - 已核验的分享标题
+ * @param {UiObject} video - 视频选项
+ * @param {UiObject} messages - 消息选项
+ * @returns {boolean} 三者是否在同一面板内
+ */
+function sameVideoShareChoicePanel(header, video, messages) {
+  var targets = [header, video, messages].map(function (node) {
+    var b = node.bounds(); return b.left + ":" + b.top + ":" + b.right + ":" + b.bottom;
+  });
+  var container = header.parent();
+  for (var level = 0; container && level < 6; level++, container = container.parent()) {
+    var bounds = container.bounds();
+    if (!bounds || bounds.top <= 0 || bounds.height() >= device.height * 0.9) continue;
+    var queue = [{ node: container, depth: 0 }], found = {};
+    for (var index = 0; index < queue.length && index < 128; index++) {
+      var item = queue[index], b = item.node.bounds();
+      if (b) {
+        var key = b.left + ":" + b.top + ":" + b.right + ":" + b.bottom;
+        if (targets.indexOf(key) >= 0) found[key] = true;
+      }
+      if (item.depth < 6) {
+        var count = Number(item.node.childCount());
+        for (var child = 0; child < count && queue.length < 128; child++) {
+          var next = item.node.child(child);
+          if (next) queue.push({ node: next, depth: item.depth + 1 });
+        }
+      }
+    }
+    if (targets.every(function (key) { return found[key] === true; })) return true;
+  }
+  return false;
+}
+
+/**
+ * 在已核验文件触发的已知分享面板中只选择“视频”，绝不选择消息或发布。
+ * @returns {boolean} 是否已通过一次视频选择
+ */
+function advanceVerifiedVideoShareChoice() {
+  if (currentPackage() !== TIKTOK_PACKAGE) throw taskError("EDITOR_NOT_READY", "TikTok import left the expected application");
+  var headers = visibleShareChoiceNodes(["在 TikTok 上分享", "Share to TikTok"]);
+  var videos = visibleShareChoiceNodes(["视频", "Video"]);
+  var messages = visibleShareChoiceNodes(["消息", "Messages"]);
+  if (!headers.length && !(videos.length && messages.length)) return false;
+  if (headers.length !== 1 || videos.length !== 1 || messages.length !== 1) {
+    throw taskError("VIDEO_SHARE_CHOICE_UNVERIFIED", "TikTok video share choices could not be identified uniquely");
+  }
+  var h = headers[0].bounds(), v = videos[0].bounds(), m = messages[0].bounds();
+  if (!sameVideoShareChoicePanel(headers[0], videos[0], messages[0]) ||
+      v.top < h.bottom || m.top < h.bottom || v.centerX() >= m.centerX() ||
+      Math.abs(v.centerY() - m.centerY()) > Math.max(v.height(), m.height()) ||
+      accessibleBoolean(videos[0], ["enabled", "isEnabled"]) === false) {
+    throw taskError("VIDEO_SHARE_CHOICE_UNVERIFIED", "TikTok video share choices are outside the verified panel");
+  }
+  if (!selectedShareIntentVerified || selectedMediaType !== "video" || !/^[a-f0-9]{64}$/.test(selectedExpectedSha256)) {
+    throw taskError("VIDEO_SHARE_MEDIA_UNVERIFIED", "Video sharing requires the original verified media intent");
+  }
+  assertSelectedMediaIntegrity();
+  selectedShareIntentVerified = false;
+  if (!clickSemanticCenterOnce(videos[0])) throw taskError("VIDEO_SHARE_CHOICE_UNVERIFIED", "TikTok video choice could not be selected");
+  return true;
 }
 
 /**
@@ -1288,8 +1379,16 @@ function openSelectedMediaInTikTok() {
  * @returns {void}
  */
 function reachCaptionEditor() {
+  var shareChoiceSelected = false;
   for (var i = 0; i < 4; i++) {
     assertNoBlockingChallenge();
+    if (advanceVerifiedVideoShareChoice()) {
+      if (shareChoiceSelected) throw taskError("VIDEO_SHARE_CHOICE_UNVERIFIED", "TikTok share choice did not advance");
+      shareChoiceSelected = true;
+      pause(900, 1500);
+      i--;
+      continue;
+    }
     var inputs = getDistinctInputs();
     var post = findSemanticNode(["发布", "Post"], 250, true);
     if (inputs.length && post) return;
