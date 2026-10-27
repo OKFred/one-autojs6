@@ -787,7 +787,58 @@ function assertSelectedMediaIntegrity() {
 }
 
 /**
- * 查找唯一可见语义设置，拒绝同名控件歧义。
+ * Return the exact matched label without conflating different aliases or descriptive text.
+ * @param {UiObject} node - A package-scoped semantic candidate
+ * @param {string[]} labels - Entire permitted labels
+ * @returns {string|null} The one matched label, or an unknown/conflicting identity
+ */
+function exactSettingChoiceLabel(node, labels) {
+  try {
+    var values = [normalizeText(node.text()), normalizeText(node.desc())], matched = null;
+    for (var i = 0; i < labels.length; i++) {
+      var pattern = new RegExp("^" + escapeRegex(labels[i]) + "(?:[,， ]+(?:selected|not selected|checked|unchecked|已选中|未选中|已勾选|未勾选))?$", "i");
+      for (var value = 0; value < values.length; value++) {
+        if (!pattern.test(values[value])) continue;
+        var label = normalizeText(labels[i]).toLowerCase();
+        if (matched !== null && matched !== label) return null;
+        matched = label;
+      }
+    }
+    return matched;
+  } catch (unreadableLabel) { return null; }
+}
+
+/**
+ * Treat a labelled checkable row and its noncheckable text child as one choice.
+ * Only the nearest explicitly checkable ancestor may supply that identity; other rows stay distinct.
+ * @param {UiObject} node - Exact label candidate
+ * @param {string[]} labels - Entire permitted labels
+ * @returns {UiObject} The same candidate or its proven same-choice row
+ */
+function canonicalSettingChoiceNode(node, labels) {
+  var label = exactSettingChoiceLabel(node, labels);
+  if (label === null) return node;
+  try {
+    var origin = node.bounds(), current = node;
+    for (var level = 0; current && level < 4; level++, current = current.parent()) {
+      var className = String(current.className());
+      var checkable = accessibleBoolean(current, ["checkable", "isCheckable"]) === true || /(?:Switch|CheckBox|RadioButton)$/.test(className);
+      if (!checkable) continue;
+      if (current === node) return node;
+      var bounds = current.bounds(), checked = accessibleBoolean(current, ["checked", "isChecked"]);
+      if (typeof checked !== "boolean" || accessibleBoolean(current, ["visibleToUser", "isVisibleToUser"]) !== true ||
+          typeof current.packageName !== "function" || String(current.packageName()) !== TIKTOK_PACKAGE ||
+          exactSettingChoiceLabel(current, labels) !== label || !origin || !bounds ||
+          origin.width() <= 0 || origin.height() <= 0 || bounds.width() <= 0 || bounds.height() <= 0 ||
+          bounds.left > origin.left || bounds.top > origin.top || bounds.right < origin.right || bounds.bottom < origin.bottom) return node;
+      return current;
+    }
+  } catch (unreadableChoice) { return node; }
+  return node;
+}
+
+/**
+ * 查找唯一可见语义设置；同一已核验选择行只计一次，不忽略独立同名控件。
  * @param {string[]} labels - 精确可见标签
  * @param {number} timeoutMs - 最大等待时间
  * @returns {UiObject|null} 唯一节点
@@ -806,6 +857,7 @@ function findUniqueSettingNode(labels, timeoutMs) {
         for (var j = 0; nodes && j < nodes.length; j++) {
           var node = nodes[j];
           if (accessibleBoolean(node, ["visibleToUser", "isVisibleToUser"]) === false) continue;
+          node = canonicalSettingChoiceNode(node, labels);
           var bounds = node.bounds();
           if (!bounds || bounds.width() <= 0 || bounds.height() <= 0) continue;
           var key = bounds.left + ":" + bounds.top + ":" + bounds.right + ":" + bounds.bottom;
