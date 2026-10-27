@@ -969,8 +969,105 @@ function configurePublicAudience(readOnly) {
 }
 
 /**
- * 设置并核对自有品牌商业披露，权利确认弹窗必须由人处理。
- * @param {boolean} readOnly - 是否仅核对现有选择
+ * Wait for the remote disclosure form without guessing while its WebView loads.
+ * @returns {void}
+ */
+function waitForCommercialDisclosureForm() {
+  var endAt = Date.now() + Math.min(15000, remainingTaskMs());
+  do {
+    assertNoBlockingChallenge();
+    if (currentPackage() !== TIKTOK_PACKAGE) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Disclosure left the expected application");
+    var node = findUniqueSettingNode(["Disclose commercial content", "披露商业内容", "商业内容披露"], Math.min(250, Math.max(1, endAt - Date.now())));
+    if (node && settingChoiceState(node) !== null) return;
+    if (Date.now() < endAt) boundedSleep(Math.min(150, endAt - Date.now()));
+  } while (Date.now() < endAt);
+  throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Commercial disclosure form did not become readable within its bound");
+}
+
+/**
+ * Require the observed confirmation's four labels in one bounded dialog, with no extra text.
+ * @param {UiObject[]} targets - Exact title, body, Back and Continue nodes
+ * @param {string[]} labels - Entire known informational copy
+ * @returns {boolean} Whether every target belongs to the same known modal
+ */
+function sameOwnBrandNoticeDialog(targets, labels) {
+  var keys = targets.map(function (node) { var b = node.bounds(); return b.left + ":" + b.top + ":" + b.right + ":" + b.bottom; });
+  var container = targets[0].parent();
+  for (var level = 0; container && level < 8; level++, container = container.parent()) {
+    var bounds = container.bounds();
+    if (!bounds || bounds.left <= 0 || bounds.top <= 0 || bounds.right >= device.width || bounds.bottom >= device.height ||
+        bounds.width() <= 0 || bounds.height() <= 0 || bounds.width() >= device.width * 0.98 || bounds.height() >= device.height * 0.9) continue;
+    if (!targets.every(function (node) { var b = node.bounds(); return b.left >= bounds.left && b.top >= bounds.top && b.right <= bounds.right && b.bottom <= bounds.bottom; })) continue;
+    var queue = [{ node: container, depth: 0 }], found = {}, unknownText = false;
+    for (var index = 0; index < queue.length && index < 160; index++) {
+      var item = queue[index], b = item.node.bounds();
+      if (b) { var key = b.left + ":" + b.top + ":" + b.right + ":" + b.bottom; if (keys.indexOf(key) >= 0) found[key] = true; }
+      if (accessibleBoolean(item.node, ["visibleToUser", "isVisibleToUser"]) !== false) {
+        try {
+          var texts = [normalizeText(item.node.text()), normalizeText(item.node.desc())];
+          for (var text = 0; text < texts.length; text++) if (texts[text] && labels.indexOf(texts[text]) < 0) unknownText = true;
+        } catch (unreadableText) { unknownText = true; }
+      }
+      if (item.depth < 8) {
+        var count = Number(item.node.childCount());
+        for (var child = 0; child < count && queue.length < 160; child++) {
+          var next = item.node.child(child); if (next) queue.push({ node: next, depth: item.depth + 1 });
+        }
+      }
+    }
+    if (keys.every(function (key) { return found[key] === true; })) return !unknownText;
+  }
+  return false;
+}
+
+/**
+ * Acknowledge only the observed label notice after this function's verified own-brand Save.
+ * This is not a generic Continue or rights/contract confirmation handler.
+ * @param {boolean} ownedSave - This call just clicked Save after verified requested choices
+ * @returns {void}
+ */
+function confirmSavedOwnBrandNotice(ownedSave) {
+  if (!ownedSave || !requestedPostSettings || requestedPostSettings.commercialDisclosure !== "YOUR_BRAND") {
+    throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "An owned disclosure Save is required");
+  }
+  var titleLabel = "内容公开设置已开启";
+  var bodyLabel = "你的作品将被标记为“推广内容”。作品上线后将无法更改此标记。";
+  var endAt = Date.now() + Math.min(15000, remainingTaskMs());
+  do {
+    assertNoBlockingChallenge();
+    if (currentPackage() !== TIKTOK_PACKAGE) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Disclosure confirmation left the expected application");
+    var title = findUniqueSettingNode([titleLabel], 120), body = findUniqueSettingNode([bodyLabel], 120);
+    if (title || body) {
+      var previous = findUniqueSettingNode(["返回"], 200), proceed = findUniqueSettingNode(["继续"], 200);
+      if (!title || !body || !previous || !proceed ||
+          !sameOwnBrandNoticeDialog([title, body, previous, proceed], [titleLabel, bodyLabel, "返回", "继续"])) {
+        throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Disclosure confirmation differs from the known informational notice");
+      }
+      var t = title.bounds(), b = body.bounds(), left = previous.bounds(), right = proceed.bounds();
+      if (b.top < t.bottom || left.top < b.bottom || right.top < b.bottom || left.centerX() >= right.centerX() ||
+          Math.abs(left.centerY() - right.centerY()) > Math.max(left.height(), right.height()) ||
+          accessibleBoolean(proceed, ["enabled", "isEnabled"]) === false) {
+        throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Disclosure confirmation controls are outside the known dialog");
+      }
+      assertNoBlockingChallenge();
+      if (!clickSemanticCenterOnce(proceed)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Disclosure notice could not be acknowledged");
+      pause(550, 850);
+      if (findUniqueSettingNode([titleLabel], 150) || findUniqueSettingNode([bodyLabel], 150)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Disclosure confirmation did not close");
+      return;
+    }
+    if (findUniqueSettingNode(["继续", "Continue", "Agree", "I agree", "同意", "我同意", "同意并继续"], 100)) {
+      throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "An unknown disclosure confirmation requires an operator");
+    }
+    if ((getDistinctInputs().length && findSemanticNode(["发布", "Post"], 100, true)) ||
+        findUniqueSettingNode(["Content disclosure and ads", "内容披露和广告", "内容披露与广告", "商业内容披露"], 100)) return;
+    if (Date.now() < endAt) boundedSleep(Math.min(150, endAt - Date.now()));
+  } while (Date.now() < endAt);
+  throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Disclosure save did not reach a known page within its bound");
+}
+
+/**
+ * Set and verify the approved own-brand disclosure; read-only checks never Save or Continue.
+ * @param {boolean} readOnly - Whether existing choices may only be verified
  * @returns {void}
  */
 function configureCommercialDisclosure(readOnly) {
@@ -982,15 +1079,20 @@ function configureCommercialDisclosure(readOnly) {
   }
   if (!entry || !performSemanticClick(entry)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Commercial disclosure settings are unavailable");
   pause(550, 850);
+  waitForCommercialDisclosureForm();
   requireSettingChoice(["Disclose commercial content", "披露商业内容", "商业内容披露"], true, readOnly, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
   requireSettingChoice(["Your brand", "你的品牌", "您的品牌", "自己的品牌", "自有品牌"], true, readOnly, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
   requireSettingChoice(["Branded content", "品牌内容", "品牌合作内容"], false, readOnly, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
+  if (readOnly) { returnToPostEditor(); return; }
+  requireSettingChoice(["Disclose commercial content", "披露商业内容", "商业内容披露"], true, true, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
+  requireSettingChoice(["Your brand", "你的品牌", "您的品牌", "自己的品牌", "自有品牌"], true, true, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
+  requireSettingChoice(["Branded content", "品牌内容", "品牌合作内容"], false, true, "COMMERCIAL_DISCLOSURE_NOT_VERIFIED");
   var save = findUniqueSettingNode(["Save", "保存", "Done", "完成"], 1000);
-  if (save) {
-    if (!performSemanticClick(save)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Commercial disclosure could not be saved");
-    pause(550, 850);
-  }
+  if (!save || !performSemanticClick(save)) throw taskError("COMMERCIAL_DISCLOSURE_NOT_VERIFIED", "Commercial disclosure could not be saved");
+  pause(550, 850);
+  confirmSavedOwnBrandNotice(true);
   returnToPostEditor();
+  configureCommercialDisclosure(true);
 }
 
 /**
