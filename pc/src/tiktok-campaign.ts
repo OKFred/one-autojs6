@@ -60,9 +60,15 @@ export interface KnownPrecommitResume {
   originalHoldSnapshotSha256: string;
 }
 
+/** One additional explicitly authorized correction of a proven pre-checkpoint ambiguity. */
+export interface KnownPrecommitAmbiguityContinuation extends KnownPrecommitResume {
+  previousResumeSnapshotFile: string;
+  previousResumeChainSha256: string;
+}
+
 /** A durable, bounded same-publication continuation; never scheduled automatically. */
 export interface CampaignResumeAttempt extends KnownPrecommitResume {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   manifestSha256: string;
   attemptedAt: string;
   state: "DISPATCHING" | "ACCEPTED" | "HOLD";
@@ -73,6 +79,11 @@ export interface CampaignResumeAttempt extends KnownPrecommitResume {
   originalTaskEvidenceSha256: string;
   nativeStatusEvidenceSha256: string;
   requestFingerprint: string;
+  previousResumeSnapshotFile?: string;
+  previousResumeChainSha256?: string;
+  precedingResumeTaskId?: string;
+  failedResumeTask?: Awaited<ReturnType<CampaignTransport["inspect"]>>;
+  failedResumeTaskEvidenceSha256?: string;
   taskId?: string;
   reason?: string;
   transitions: Array<{ state: "DISPATCHING" | "ACCEPTED" | "HOLD"; at: string }>;
@@ -224,13 +235,14 @@ function creativeFingerprint(manifest: CampaignManifest, creative: CampaignCreat
  * @param creative Exact approved creative.
  * @param minimumTime Earliest permissible task creation time.
  * @param now Current operator time.
+ * @param expectedError One exact failure supported by its separately invoked operator action.
  * @returns Checked evidence; never inferred from an empty URL alone.
  */
-function knownPrecommitEvidence(task: Awaited<ReturnType<CampaignTransport["inspect"]>>, action: "publish" | "status", manifest: CampaignManifest, creative: CampaignCreative, minimumTime: number, now: number): void {
+function knownPrecommitEvidence(task: Awaited<ReturnType<CampaignTransport["inspect"]>>, action: "publish" | "status", manifest: CampaignManifest, creative: CampaignCreative, minimumTime: number, now: number, expectedError: "EDITOR_NOT_READY" | "POST_SETTINGS_AMBIGUOUS" = "EDITOR_NOT_READY"): void {
   const result = task.result as Record<string, any> | undefined;
   assert(task.status === (action === "publish" ? "FAILURE" : "SUCCESS") && task.clientId === manifest.deviceClientId && task.scriptId === "tiktok.post" && Number.isFinite(task.createTimeUtc) && task.createTimeUtc >= minimumTime - 5000 && task.createTimeUtc <= now + 5000, "Original technical failure or native status task is not bound to this device");
   assert(result?.contractVersion === 2 && result.action === action && result.publicationId === creative.publicationId && ["PRECHECKED", "EDITOR_READY"].includes(result.phase) && result.outcome === "FAILURE" && result.published === false && result.success === false && result.retrySafe === true && result.nextAction === "publish", "Known precommit failure required; uncertain or committed outcomes cannot resume");
-  assert(result.error?.code === "EDITOR_NOT_READY" && result.postSettingsEvidence === undefined && result.account?.verified === true && result.account.matched === true && result.postSettings?.audience === "PUBLIC" && result.postSettings.commercialDisclosure === "YOUR_BRAND", "Known editor failure without settings proof required");
+  assert(result.error?.code === expectedError && result.postSettingsEvidence === undefined && result.account?.verified === true && result.account.matched === true && result.postSettings?.audience === "PUBLIC" && result.postSettings.commercialDisclosure === "YOUR_BRAND", "Known editor failure without settings proof required");
   assert(result.post && result.post.verified === false && [result.post.shareUrl, result.post.canonicalUrl, result.post.postId, result.postUrl, result.canonicalUrl, result.shareUrl, result.postId].every(value => value === undefined || value === "") && [result.committedAt, result.submittedAt, result.publishedAt].every(value => value === undefined), "A publication or commit indicator blocks resume");
   const caption = createHash("sha256").update(JSON.stringify({ title: creative.title, details: creative.caption })).digest("hex");
   assert(result.media?.kind === "video" && result.creativeEvidence?.mediaSha256 === creative.sha256 && result.creativeEvidence.captionSha256 === caption && result.creativeEvidence.requestFingerprint === creativeFingerprint(manifest, creative), "Original creative or native request fingerprint changed");
@@ -312,8 +324,32 @@ export class TikTokCampaign {
    */
   private async resumeAttempts(): Promise<CampaignResumeAttempt[]> {
     const attempts = await readJson<CampaignResumeAttempt[]>(path.join(this.directory, "resume-attempts.json"), []);
-    assert(Array.isArray(attempts) && attempts.every(attempt => attempt.schemaVersion === 1 && ["DISPATCHING", "ACCEPTED", "HOLD"].includes(attempt.state)), "Invalid resume attempt chain");
+    assert(Array.isArray(attempts) && attempts.every(attempt => [1, 2].includes(attempt.schemaVersion) && ["DISPATCHING", "ACCEPTED", "HOLD"].includes(attempt.state)), "Invalid resume attempt chain");
+    for (let index = 0; index < attempts.length; index++) {
+      const attempt = attempts[index];
+      if (attempt.schemaVersion !== 2) continue;
+      const preceding = attempts.slice(0, index).filter(value => value.publicationId === attempt.publicationId);
+      assert(preceding.length === 1 && preceding[0].schemaVersion === 1 && preceding[0].state === "ACCEPTED" && preceding[0].taskId === attempt.precedingResumeTaskId && attempt.failedResumeTask && attempt.failedResumeTaskEvidenceSha256 === createHash("sha256").update(JSON.stringify(attempt.failedResumeTask)).digest("hex"), "Additional continuation has no immutable preceding failure");
+      const previousRaw = await this.sealedResumeSnapshot(attempt.previousResumeSnapshotFile!, attempt.previousResumeChainSha256!);
+      assert(JSON.stringify(JSON.parse(previousRaw.toString("utf8"))) === JSON.stringify(attempts.slice(0, index)), "Previous raw resume chain was replaced");
+    }
     return attempts;
+  }
+
+  /** Read an explicitly sealed previous raw chain without following a link.
+   * @param filename Private snapshot basename.
+   * @param expectedSha256 Reviewed original-byte hash.
+   * @returns Exact preserved bytes.
+   */
+  private async sealedResumeSnapshot(filename: string, expectedSha256: string): Promise<Buffer> {
+    assert(/^[A-Za-z0-9._-]{1,120}\.json$/.test(filename || "") && /^[a-f0-9]{64}$/.test(expectedSha256 || ""), "Previous raw resume snapshot and SHA required");
+    const filePath = path.join(this.directory, filename);
+    assert(await fs.realpath(filePath) === filePath, "Previous resume snapshot cannot follow a link");
+    const file = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await file.stat(); assert(stat.isFile() && stat.size > 0 && stat.size <= 1024 * 1024, "Previous resume snapshot bounds invalid");
+      const raw = await file.readFile(); assert(raw.length === stat.size && createHash("sha256").update(raw).digest("hex") === expectedSha256, "Previous raw resume snapshot hash changed"); return raw;
+    } finally { await file.close(); }
   }
 
   /** Select the current registered receipt without falling back to a stale first result.
@@ -342,6 +378,25 @@ export class TikTokCampaign {
    * @returns One asynchronous receipt state; an unknown delivery cannot be retried.
    */
   async resumeKnownPrecommit(request: KnownPrecommitResume, now = new Date()): Promise<string> {
+    return this.performKnownPrecommitResume(request, now, false);
+  }
+
+  /** Allow exactly one additional, explicitly reviewed correction of a latest pre-checkpoint ambiguity.
+   * @param request Fresh native status, authorization and sealed previous raw chain.
+   * @param now Current same-day operator time.
+   * @returns One asynchronous receipt state; never a scheduled or generic retry.
+   */
+  async continueKnownPrecommitAmbiguity(request: KnownPrecommitAmbiguityContinuation, now = new Date()): Promise<string> {
+    return this.performKnownPrecommitResume(request, now, true);
+  }
+
+  /** Enforce common immutable first-attempt and explicit-action gates before one bounded dispatch.
+   * @param request Explicit original or one additional correction request.
+   * @param now Actual operator time.
+   * @param ambiguityContinuation Whether only the proven ambiguity continuation is allowed.
+   * @returns Durable asynchronous attempt state.
+   */
+  private async performKnownPrecommitResume(request: KnownPrecommitResume | KnownPrecommitAmbiguityContinuation, now: Date, ambiguityContinuation: boolean): Promise<string> {
     return this.locked(async () => {
       const digest = await this.refresh();
       const approval = await readJson<CampaignApproval>(path.join(this.directory, "approval.json"));
@@ -355,7 +410,19 @@ export class TikTokCampaign {
       assert(firstAt >= slot && firstAt < slot + 60000 && Date.parse(approval.approvedAt) <= firstAt && now.getTime() >= firstAt && shanghaiDay(now) === shanghaiDay(entry.attemptedAt), "Only the same-day attempt dispatched in its approved minute can resume");
       assert(entries.every(value => value.publicationId === entry.publicationId || shanghaiDay(value.attemptedAt) !== shanghaiDay(now)), "Another same-day publication blocks resume");
       const attempts = await this.resumeAttempts();
-      assert(!attempts.some(attempt => attempt.operatorActionId === request.operatorActionId || attempt.publicationId === request.publicationId), "A bounded resume already exists; inspect the original publication instead");
+      assert(!attempts.some(attempt => attempt.operatorActionId === request.operatorActionId), "This explicit operator action already exists");
+      const preceding = attempts.filter(attempt => attempt.publicationId === request.publicationId);
+      let prior: CampaignResumeAttempt | undefined;
+      if (ambiguityContinuation) {
+        const continuation = request as KnownPrecommitAmbiguityContinuation;
+        assert(preceding.length === 1 && preceding[0].schemaVersion === 1 && preceding[0].state === "ACCEPTED" && uuid.test(preceding[0].taskId || ""), "Only one additional proven ambiguity correction is allowed");
+        prior = preceding[0];
+        const previousRaw = await this.sealedResumeSnapshot(continuation.previousResumeSnapshotFile, continuation.previousResumeChainSha256);
+        const actualRaw = await fs.readFile(path.join(this.directory, "resume-attempts.json"));
+        assert(previousRaw.equals(actualRaw) && JSON.stringify(JSON.parse(previousRaw.toString("utf8"))) === JSON.stringify(attempts), "The exact previous raw resume chain must remain unchanged");
+        assert(prior.manifestSha256 === digest && prior.originalTaskId === entry.taskId && prior.requestFingerprint === creativeFingerprint(this.manifest, creative) && prior.originalHeldEntry.publicationId === entry.publicationId && prior.originalHeldEntry.taskId === entry.taskId && shanghaiDay(prior.attemptedAt) === shanghaiDay(now), "Preceding resume identity changed");
+        assert(prior.originalTaskEvidenceSha256 === createHash("sha256").update(JSON.stringify(prior.originalTask)).digest("hex") && prior.nativeStatusEvidenceSha256 === createHash("sha256").update(JSON.stringify(prior.nativeStatusTask)).digest("hex"), "Preceding resume proofs changed");
+      } else assert(preceding.length === 0, "A bounded resume already exists; inspect the original publication instead");
       assert(/^[A-Za-z0-9._-]{1,120}\.json$/.test(request.originalHoldSnapshotFile) && /^[a-f0-9]{64}$/.test(request.originalHoldSnapshotSha256), "Original pre-status HOLD snapshot required");
       const snapshotPath = path.join(this.directory, request.originalHoldSnapshotFile);
       assert(await fs.realpath(snapshotPath) === snapshotPath, "Original HOLD snapshot cannot follow a link");
@@ -372,6 +439,7 @@ export class TikTokCampaign {
       const stripStatus = (value: CampaignEntry) => { const { recoveryTasks, reason, ...rest } = value; return rest; };
       assert(JSON.stringify(stripStatus(originalEntry)) === JSON.stringify(stripStatus(entry)) && originalEntries.every(value => value.publicationId === entry.publicationId || JSON.stringify(value) === JSON.stringify(entries.find(current => current.publicationId === value.publicationId))), "Original HOLD or another publication changed");
       const originalStatus = originalEntry.recoveryTasks || [], currentStatus = entry.recoveryTasks || [];
+      if (prior) assert(originalStatus.some(value => value.taskId === prior!.statusTaskId && value.action === "status") && currentStatus.filter(value => Date.parse(value.at) >= Date.parse(prior!.attemptedAt)).every(value => value.action === "status"), "The additional correction must preserve the registered preceding status chain");
       assert(currentStatus.length > originalStatus.length && originalStatus.every((value, index) => JSON.stringify(value) === JSON.stringify(currentStatus[index])), "Original status history was replaced");
       const appended = currentStatus.slice(originalStatus.length), status = appended.at(-1)!;
       assert(appended.every(value => value.action === "status" && uuid.test(value.taskId) && Number.isFinite(Date.parse(value.at)) && Date.parse(value.at) >= firstAt && Date.parse(value.at) <= now.getTime() + 5000) && new Set(currentStatus.map(value => value.taskId)).size === currentStatus.length && status.taskId === request.statusTaskId && entry.reason === "Original-ID recovery pending", "Only a registered native status append can extend the original HOLD");
@@ -379,16 +447,28 @@ export class TikTokCampaign {
       const originalTask = await this.transport.inspect(entry.taskId);
       const nativeStatusTask = await this.transport.inspect(status.taskId);
       knownPrecommitEvidence(originalTask, "publish", this.manifest, creative, firstAt, now.getTime());
-      knownPrecommitEvidence(nativeStatusTask, "status", this.manifest, creative, Date.parse(status.at), now.getTime());
-      const originalResult = originalTask.result as Record<string, any>, nativeResult = nativeStatusTask.result as Record<string, any>;
-      assert(nativeStatusTask.createTimeUtc >= now.getTime() - 120000 && nativeResult.phase === originalResult.phase && nativeResult.error.code === originalResult.error.code, "Fresh native ledger differs from the original failure");
+      let failedResumeTask: Awaited<ReturnType<CampaignTransport["inspect"]>> | undefined;
+      let comparison = originalTask.result as Record<string, any>;
+      if (prior) {
+        assert(createHash("sha256").update(JSON.stringify(originalTask)).digest("hex") === prior.originalTaskEvidenceSha256 && Date.parse(status.at) > Date.parse(prior.attemptedAt), "Original failure or additional status chronology changed");
+        failedResumeTask = await this.transport.inspect(prior.taskId!);
+        knownPrecommitEvidence(failedResumeTask, "publish", this.manifest, creative, Date.parse(prior.attemptedAt), now.getTime(), "POST_SETTINGS_AMBIGUOUS");
+        comparison = failedResumeTask.result as Record<string, any>;
+        assert(comparison.phase === "PRECHECKED", "Only a pre-checkpoint ambiguity without settings proof can continue");
+      }
+      knownPrecommitEvidence(nativeStatusTask, "status", this.manifest, creative, Date.parse(status.at), now.getTime(), prior ? "POST_SETTINGS_AMBIGUOUS" : "EDITOR_NOT_READY");
+      const nativeResult = nativeStatusTask.result as Record<string, any>;
+      assert(nativeStatusTask.createTimeUtc >= now.getTime() - 120000 && nativeResult.phase === comparison.phase && nativeResult.error.code === comparison.error.code, "Fresh native ledger differs from the latest known failure");
       await this.verifyVideo(creative);
-      const attempt: CampaignResumeAttempt = { schemaVersion: 1, ...request, manifestSha256: digest, attemptedAt: now.toISOString(), state: "DISPATCHING", originalTaskId: entry.taskId, originalHeldEntry: structuredClone(originalEntry), originalTask, nativeStatusTask, originalTaskEvidenceSha256: createHash("sha256").update(JSON.stringify(originalTask)).digest("hex"), nativeStatusEvidenceSha256: createHash("sha256").update(JSON.stringify(nativeStatusTask)).digest("hex"), requestFingerprint: creativeFingerprint(this.manifest, creative), transitions: [{ state: "DISPATCHING", at: now.toISOString() }] };
+      const attempt: CampaignResumeAttempt = { schemaVersion: prior ? 2 : 1, ...request, manifestSha256: digest, attemptedAt: now.toISOString(), state: "DISPATCHING", originalTaskId: entry.taskId, originalHeldEntry: structuredClone(originalEntry), originalTask, nativeStatusTask, originalTaskEvidenceSha256: createHash("sha256").update(JSON.stringify(originalTask)).digest("hex"), nativeStatusEvidenceSha256: createHash("sha256").update(JSON.stringify(nativeStatusTask)).digest("hex"), requestFingerprint: creativeFingerprint(this.manifest, creative), transitions: [{ state: "DISPATCHING", at: now.toISOString() }] };
+      if (prior) Object.assign(attempt, { precedingResumeTaskId: prior.taskId, failedResumeTask, failedResumeTaskEvidenceSha256: createHash("sha256").update(JSON.stringify(failedResumeTask)).digest("hex") });
+      const previousPrefix = JSON.stringify(attempts);
       attempts.push(attempt); await writeJson(path.join(this.directory, "resume-attempts.json"), attempts);
       const params = normalizeTikTokRequest({ contractVersion: 2, action: "publish", publicationId: creative.publicationId, expectedHandle: this.manifest.expectedHandle, media: { mode: "direct", kind: "video", path: creative.devicePath, expectedSha256: creative.sha256 }, content: { title: creative.title, details: creative.caption }, postSettings: creative.postSettings, policy: { minIntervalSeconds: 86400, maxPostsPerDay: 1, materialReuseSeconds: 2592000, captionReuseSeconds: 2592000 } }, {}).params;
-      try { const receipt = await this.transport.dispatch(params, this.manifest.deviceClientId); assert(uuid.test(receipt.taskId) && receipt.taskId !== entry.taskId && !currentStatus.some(value => value.taskId === receipt.taskId), "Invalid bounded resume receipt"); attempt.taskId = receipt.taskId; attempt.state = "ACCEPTED"; }
+      try { const receipt = await this.transport.dispatch(params, this.manifest.deviceClientId); assert(uuid.test(receipt.taskId) && receipt.taskId !== entry.taskId && !attempts.some(value => value !== attempt && value.taskId === receipt.taskId) && !currentStatus.some(value => value.taskId === receipt.taskId), "Invalid bounded resume receipt"); attempt.taskId = receipt.taskId; attempt.state = "ACCEPTED"; }
       catch { attempt.state = "HOLD"; attempt.reason = "Resume delivery uncertain; query the original publication ID only"; }
       attempt.transitions.push({ state: attempt.state, at: now.toISOString() });
+      assert(JSON.stringify(attempts.slice(0, -1)) === previousPrefix, "Existing resume records must never be rewritten");
       await writeJson(path.join(this.directory, "resume-attempts.json"), attempts);
       return attempt.state;
     });

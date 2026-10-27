@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { TikTokCampaign, manifestDigest, type CampaignManifest, type CampaignTransport, type KnownPrecommitResume } from "../src/tiktok-campaign.js";
+import { TikTokCampaign, manifestDigest, type CampaignManifest, type CampaignTransport, type KnownPrecommitResume, type KnownPrecommitAmbiguityContinuation } from "../src/tiktok-campaign.js";
 const slot="2026-10-26T13:00:00.000Z", first="2026-10-26T13:00:10.000Z", statusAt="2026-10-26T13:04:30.000Z", now=new Date("2026-10-26T13:05:00.000Z");
 /** Hash exact synthetic bytes. @param value Fixture data. @returns SHA256. */
 const sha=(value:string)=>createHash("sha256").update(value).digest("hex");
@@ -13,8 +13,8 @@ async function fixture(t:any){
  const dir=await fs.mkdtemp(path.join(tmpdir(),"campaign-precommit-"));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
  const creatives=[];for(let i=0;i<3;i++){const videoPath=path.join(dir,`synthetic-${i}.mp4`),data=`synthetic-video-${i}`;await fs.writeFile(videoPath,data);const hash=sha(data);creatives.push({publicationId:randomUUID(),sku:`SHUSHA-L${1300+i}`,videoPath,devicePath:`/sdcard/Download/synthetic-${hash.slice(0,16)}.mp4`,sha256:hash,title:`Synthetic ${i}`,caption:`Synthetic wholesale ${i}`,landingUrl:"https://shop.this-time.com/wholesale?utm_source=tiktok",sourceVerifiedAt:"2026-10-25T12:00:00.000Z",sourceEvidenceSha256:"a".repeat(64),scheduledAt:`2026-10-${26+i*2}T13:00:00.000Z`,postSettings:{audience:"PUBLIC" as const,commercialDisclosure:"YOUR_BRAND" as const}});}
  const manifest:CampaignManifest={schemaVersion:1,campaignId:"synthetic-precommit",expectedHandle:"synthetic_shop",deviceClientId:"synthetic-device",timezone:"Asia/Shanghai",creatives};await fs.writeFile(path.join(dir,"manifest.json"),JSON.stringify(manifest));
- const ids={original:randomUUID(),status:randomUUID(),resume:randomUUID()},calls:any[]=[],inspections:string[]=[],tasks=new Map<string,any>();let failResume=false;
- const transport:CampaignTransport={dispatch:async(params,clientId)=>{calls.push({params,clientId});if(calls.length===3&&failResume)throw Error("Synthetic lost response");return{taskId:[ids.original,ids.status,ids.resume][calls.length-1]||randomUUID()};},inspect:async id=>{inspections.push(id);assert(tasks.has(id));return structuredClone(tasks.get(id));}};
+ const ids={original:randomUUID(),status:randomUUID(),resume:randomUUID()},calls:any[]=[],inspections:string[]=[],tasks=new Map<string,any>();let failResume=false,failAt=0;
+ const transport:CampaignTransport={dispatch:async(params,clientId)=>{calls.push({params,clientId});if((calls.length===3&&failResume)||calls.length===failAt)throw Error("Synthetic lost response");return{taskId:[ids.original,ids.status,ids.resume][calls.length-1]||randomUUID()};},inspect:async id=>{inspections.push(id);assert(tasks.has(id));return structuredClone(tasks.get(id));}};
  const campaign=await TikTokCampaign.open(dir,transport);await campaign.approve(manifestDigest(manifest),"synthetic-merchant",new Date("2026-10-25T13:00:00Z"));await campaign.tick(new Date(first),true);
  const c=creatives[0],caption=sha(JSON.stringify({title:c.title,details:c.caption})),fingerprint=sha(JSON.stringify({account:manifest.expectedHandle,media:[c.sha256],captions:[caption],expectedSha256:c.sha256,postSettings:c.postSettings}));
  /** Create an authenticated-shaped synthetic native result. @param action Original publish or ledger-only status. @returns Synthetic result. */
@@ -23,7 +23,7 @@ async function fixture(t:any){
  const originalRaw=await fs.readFile(path.join(dir,"ledger.json")),snapshot="original-hold.before-status.json";await fs.writeFile(path.join(dir,snapshot),originalRaw);await campaign.recover(c.publicationId,"status",new Date(statusAt));
  tasks.set(ids.status,{status:"SUCCESS",clientId:manifest.deviceClientId,scriptId:"tiktok.post",createTimeUtc:Date.parse(statusAt),result:result("status")});
  const request:KnownPrecommitResume={publicationId:c.publicationId,statusTaskId:ids.status,operatorActionId:randomUUID(),reviewer:"synthetic-observer",authorizationEvidenceSha256:"b".repeat(64),originalHoldSnapshotFile:snapshot,originalHoldSnapshotSha256:sha(originalRaw.toString())};
- return{dir,manifest,campaign,request,calls,tasks,ids,inspections,originalRaw,setFailResume:()=>failResume=true};
+ return{dir,manifest,campaign,request,calls,tasks,ids,inspections,originalRaw,setFailResume:()=>failResume=true,setFailAt:(n:number)=>failAt=n};
 }
 
 test("one explicit resume keeps original HOLD/task and exact creative, with separate durable proof",async t=>{
@@ -59,4 +59,45 @@ test("later native status may retain the original resumed settings proof without
 
 test("tampering with saved original resume evidence blocks inspection",async t=>{
  const f=await fixture(t);await f.campaign.resumeKnownPrecommit(f.request,now);const file=path.join(f.dir,"resume-attempts.json"),a=JSON.parse(await fs.readFile(file,"utf8"));a[0].originalTask.result.phase="COMMITTING";await fs.writeFile(file,JSON.stringify(a));await assert.rejects(f.campaign.inspect(f.request.publicationId,now),/chain changed/);
+});
+
+
+/** Retain the exact first resume and prepare only a fresh synthetic ambiguity-status append. */
+async function ambiguityFixture(t:any){
+ const f=await fixture(t);await f.campaign.resumeKnownPrecommit(f.request,now);
+ const previousRaw=await fs.readFile(path.join(f.dir,"resume-attempts.json")),previous=JSON.parse(previousRaw.toString()),previousFile="resume-before-ambiguity.json";await fs.writeFile(path.join(f.dir,previousFile),previousRaw);
+ const heldRaw=await fs.readFile(path.join(f.dir,"ledger.json")),heldFile="hold-before-ambiguity-status.json";await fs.writeFile(path.join(f.dir,heldFile),heldRaw);
+ const failure=structuredClone(f.tasks.get(f.ids.original));failure.createTimeUtc=now.getTime();failure.result.error.code="POST_SETTINGS_AMBIGUOUS";f.tasks.set(f.ids.resume,failure);
+ const freshAt=new Date("2026-10-26T13:10:30Z"),statusTask=await f.campaign.recover(f.request.publicationId,"status",freshAt),native=structuredClone(failure);native.status="SUCCESS";native.createTimeUtc=freshAt.getTime();native.result.action="status";f.tasks.set(statusTask,native);
+ const request:KnownPrecommitAmbiguityContinuation={...f.request,statusTaskId:statusTask,operatorActionId:randomUUID(),originalHoldSnapshotFile:heldFile,originalHoldSnapshotSha256:sha(heldRaw.toString()),previousResumeSnapshotFile:previousFile,previousResumeChainSha256:sha(previousRaw.toString())};
+ return{...f,continuation:request,previousRaw,previous,statusTask,when:new Date("2026-10-26T13:11Z")};
+}
+
+test("one additional explicit ambiguity continuation preserves the full original chain and HOLD",async t=>{
+ const f=await ambiguityFixture(t),held=await fs.readFile(path.join(f.dir,"ledger.json"));assert.equal(await f.campaign.continueKnownPrecommitAmbiguity(f.continuation,f.when),"ACCEPTED");assert.equal(f.calls.length,5);
+ const chain=JSON.parse(await fs.readFile(path.join(f.dir,"resume-attempts.json"),"utf8"));assert.equal(chain.length,2);assert.deepEqual(chain[0],f.previous[0]);assert.equal(chain[1].schemaVersion,2);assert.equal(chain[1].precedingResumeTaskId,f.ids.resume);assert.equal(chain[1].originalTaskId,f.ids.original);assert.equal(chain[1].failedResumeTask.result.error.code,"POST_SETTINGS_AMBIGUOUS");assert.equal(chain[1].failedResumeTaskEvidenceSha256,sha(JSON.stringify(chain[1].failedResumeTask)));assert.equal(chain[1].nativeStatusTask.result.error.code,"POST_SETTINGS_AMBIGUOUS");assert.deepEqual(await fs.readFile(path.join(f.dir,f.continuation.previousResumeSnapshotFile)),f.previousRaw);assert.deepEqual(await fs.readFile(path.join(f.dir,"ledger.json")),held);assert.deepEqual(f.calls[4].params,f.calls[0].params);
+ await assert.rejects(f.campaign.continueKnownPrecommitAmbiguity({...f.continuation,operatorActionId:randomUUID()},f.when),/Only one additional/);await assert.rejects(f.campaign.resumeKnownPrecommit({...f.request,operatorActionId:randomUUID()},f.when),/already exists/);assert.equal(f.calls.length,5);
+});
+
+for(const changed of ["TIMEOUT","REJECTED","EXECUTING","SUCCESS","HOLD-prior","unknown","COMMITTING","EDITOR_READY","settings-proof","url","fingerprint","wrong-code","wrong-native-code"]){test(`additional continuation refuses latest ${changed} evidence`,async t=>{
+ const f=await ambiguityFixture(t),task=f.tasks.get(f.ids.resume),result=task.result;
+ if(["TIMEOUT","REJECTED","EXECUTING","SUCCESS"].includes(changed))task.status=changed;if(changed==="unknown")result.outcome="PUBLISH_OUTCOME_UNKNOWN";if(["COMMITTING","EDITOR_READY"].includes(changed))result.phase=changed;if(changed==="settings-proof")result.postSettingsEvidence={verified:true};if(changed==="url")result.post.postId="existing-post";if(changed==="fingerprint")result.creativeEvidence.requestFingerprint="c".repeat(64);if(changed==="wrong-code")result.error.code="EDITOR_NOT_READY";if(changed==="wrong-native-code")f.tasks.get(f.statusTask).result.error.code="EDITOR_NOT_READY";
+ if(changed==="HOLD-prior"){const file=path.join(f.dir,"resume-attempts.json"),a=JSON.parse(await fs.readFile(file,"utf8"));a[0].state="HOLD";const raw=Buffer.from(JSON.stringify(a));await fs.writeFile(file,raw);await fs.writeFile(path.join(f.dir,f.continuation.previousResumeSnapshotFile),raw);f.continuation.previousResumeChainSha256=sha(raw.toString());}
+ await assert.rejects(f.campaign.continueKnownPrecommitAmbiguity(f.continuation,f.when));assert.equal(f.calls.length,4);
+});}
+
+test("additional action requires sealed byte-exact prefix, fresh status, same day and distinct operator action",async t=>{
+ for(const kind of ["missing-previous","wrong-sha","rewritten-prefix","rewritten-current","stale","next-day","reused-action","unregistered-status","recover-after-prior"]){const f=await ambiguityFixture(t),r={...f.continuation};let when=f.when;
+ if(kind==="missing-previous")r.previousResumeSnapshotFile="missing.json";if(kind==="wrong-sha")r.previousResumeChainSha256="c".repeat(64);if(kind==="rewritten-prefix"){const a=structuredClone(f.previous);a[0].reason="rewritten";const raw=Buffer.from(JSON.stringify(a));await fs.writeFile(path.join(f.dir,r.previousResumeSnapshotFile),raw);r.previousResumeChainSha256=sha(raw.toString());}if(kind==="rewritten-current"){const a=structuredClone(f.previous);a[0].originalTask.result.phase="COMMITTING";await fs.writeFile(path.join(f.dir,"resume-attempts.json"),JSON.stringify(a));}if(kind==="stale")when=new Date("2026-10-26T13:14Z");if(kind==="next-day")when=new Date("2026-10-26T16:01Z");if(kind==="reused-action")r.operatorActionId=f.previous[0].operatorActionId;if(kind==="unregistered-status")r.statusTaskId=randomUUID();if(kind==="recover-after-prior"){const file=path.join(f.dir,"ledger.json"),a=JSON.parse(await fs.readFile(file,"utf8"));a[0].recoveryTasks.at(-1).action="recover";await fs.writeFile(file,JSON.stringify(a));}
+ await assert.rejects(f.campaign.continueKnownPrecommitAmbiguity(r,when));assert.equal(f.calls.length,4);}
+});
+
+test("lost additional delivery cannot create a third attempt or fall back to a stale task",async t=>{
+ const f=await ambiguityFixture(t);f.setFailAt(5);assert.equal(await f.campaign.continueKnownPrecommitAmbiguity(f.continuation,f.when),"HOLD");const chain=JSON.parse(await fs.readFile(path.join(f.dir,"resume-attempts.json"),"utf8"));assert.equal(chain[1].taskId,undefined);assert.deepEqual(chain[0],f.previous[0]);await assert.rejects(f.campaign.continueKnownPrecommitAmbiguity({...f.continuation,operatorActionId:randomUUID()},f.when),/Only one additional/);await assert.rejects(f.campaign.inspect(f.request.publicationId,f.when),/No resume receipt/);assert.equal(f.calls.length,5);
+});
+
+test("inspection selects the additional receipt and checks the immutable previous raw prefix",async t=>{
+ const f=await ambiguityFixture(t);await f.campaign.continueKnownPrecommitAmbiguity(f.continuation,f.when);const chain=JSON.parse(await fs.readFile(path.join(f.dir,"resume-attempts.json"),"utf8")),latest=chain[1].taskId,c=f.manifest.creatives[0],url="https://www.tiktok.com/@synthetic_shop/video/123456";
+ f.tasks.set(latest,{status:"SUCCESS",clientId:f.manifest.deviceClientId,scriptId:"tiktok.post",createTimeUtc:f.when.getTime(),result:{contractVersion:2,action:"publish",publicationId:c.publicationId,phase:"LINK_CONFIRMED",outcome:"SUCCESS",published:true,success:true,post:{canonicalUrl:url,postId:"123456",verified:true},postSettings:c.postSettings,postSettingsEvidence:{...c.postSettings,verified:true,verifiedAt:f.when.getTime()+1000},creativeEvidence:{mediaSha256:c.sha256,captionSha256:sha(JSON.stringify({title:c.title,details:c.caption}))}}});assert.equal(await f.campaign.inspect(c.publicationId,new Date("2026-10-26T13:12Z")),"REVIEW_REQUIRED");assert.equal(f.inspections.at(-1),latest);
+ await fs.writeFile(path.join(f.dir,f.continuation.previousResumeSnapshotFile),"[]");await assert.rejects(f.campaign.inspect(c.publicationId,new Date("2026-10-26T13:12Z")),/snapshot hash/);
 });

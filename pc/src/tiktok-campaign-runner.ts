@@ -55,13 +55,13 @@ export function startCampaignWorker(env: NodeJS.ProcessEnv = process.env): () =>
  */
 export async function runCampaignCommand(args: string[], env: NodeJS.ProcessEnv = process.env, output: (value: string) => void = console.log, fetchImpl: typeof fetch = globalThis.fetch): Promise<void> {
   const [command, directory, ...values] = args;
-  if (!directory) throw new Error("Usage: campaign <review|approve|tick|observed-first|inspect|status|recover|accept-public|reschedule|resume-precommit> <private-directory> [...]");
+  if (!directory) throw new Error("Usage: campaign <review|approve|tick|observed-first|inspect|status|recover|accept-public|reschedule|resume-precommit|continue-precommit-ambiguity> <private-directory> [...]");
   if (command === "review") {
     const manifest = JSON.parse(await fs.readFile(path.join(directory, "manifest.json"), "utf8")) as CampaignManifest;
     validateCampaign(manifest);
     output(JSON.stringify({ campaignId: manifest.campaignId, manifestSha256: manifestDigest(manifest), count: manifest.creatives.length })); return;
   }
-  const taskCommand = ["tick", "observed-first", "inspect", "status", "recover", "resume-precommit"].includes(command);
+  const taskCommand = ["tick", "observed-first", "inspect", "status", "recover", "resume-precommit", "continue-precommit-ambiguity"].includes(command);
   let transport: CampaignTransport = {
     dispatch: async () => { throw new Error("Filesystem-only operator commands cannot dispatch"); },
     inspect: async () => { throw new Error("Filesystem-only operator commands cannot inspect tasks"); },
@@ -75,6 +75,7 @@ export async function runCampaignCommand(args: string[], env: NodeJS.ProcessEnv 
   if (command === "approve") await campaign.approve(values[0], values[1]);
   else if (command === "tick" || command === "observed-first") output(await campaign.tick(new Date(), command === "observed-first"));
   else if (command === "resume-precommit") output(await campaign.resumeKnownPrecommit({ publicationId: values[0], statusTaskId: values[1], operatorActionId: values[2], reviewer: values[3], authorizationEvidenceSha256: values[4], originalHoldSnapshotFile: values[5], originalHoldSnapshotSha256: values[6] }));
+  else if (command === "continue-precommit-ambiguity") output(await campaign.continueKnownPrecommitAmbiguity({ publicationId: values[0], statusTaskId: values[1], operatorActionId: values[2], reviewer: values[3], authorizationEvidenceSha256: values[4], originalHoldSnapshotFile: values[5], originalHoldSnapshotSha256: values[6], previousResumeSnapshotFile: values[7], previousResumeChainSha256: values[8] }));
   else if (command === "inspect") output(await campaign.inspect(values[0]));
   else if (command === "status" || command === "recover") output(await campaign.recover(values[0], command));
   else if (command === "accept-public") await campaign.acceptPublic(values[0], values[1], values[2], values[3]);
