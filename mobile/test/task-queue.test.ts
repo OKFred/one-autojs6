@@ -35,10 +35,10 @@ function task(
 }
 
 const queue: QueuedDeviceTask[] = [];
-insertQueuedTask(queue, { request: task("normal_001", "NORMAL"), sequence: 0 });
-insertQueuedTask(queue, { request: task("low_000001", "LOW"), sequence: 1 });
-insertQueuedTask(queue, { request: task("high_00001", "HIGH"), sequence: 2 });
-insertQueuedTask(queue, { request: task("normal_002", "NORMAL"), sequence: 3 });
+insertQueuedTask(queue, { request: task("normal_001", "NORMAL"), sequence: 0, enqueuedAt: 0 });
+insertQueuedTask(queue, { request: task("low_000001", "LOW"), sequence: 1, enqueuedAt: 1 });
+insertQueuedTask(queue, { request: task("high_00001", "HIGH"), sequence: 2, enqueuedAt: 2 });
+insertQueuedTask(queue, { request: task("normal_002", "NORMAL"), sequence: 3, enqueuedAt: 3 });
 assert.deepEqual(
   queue.map((entry) => entry.request.taskId),
   ["high_00001", "normal_001", "normal_002", "low_000001"],
@@ -81,9 +81,9 @@ assert.equal(
 );
 
 const evictionQueue: QueuedDeviceTask[] = [
-  { request: task("normal_old1", "NORMAL"), sequence: 0 },
-  { request: task("low_old_001", "LOW"), sequence: 1 },
-  { request: task("low_new_001", "LOW"), sequence: 2 },
+  { request: task("normal_old1", "NORMAL"), sequence: 0, enqueuedAt: 0 },
+  { request: task("low_old_001", "LOW"), sequence: 1, enqueuedAt: 1 },
+  { request: task("low_new_001", "LOW"), sequence: 2, enqueuedAt: 2 },
 ];
 assert.equal(
   findHighPriorityEvictionIndex(evictionQueue, task("high_evict1", "HIGH")),
@@ -92,7 +92,7 @@ assert.equal(
 );
 assert.equal(
   findHighPriorityEvictionIndex(
-    [{ request: task("high_only01", "HIGH"), sequence: 0 }],
+    [{ request: task("high_only01", "HIGH"), sequence: 0, enqueuedAt: 0 }],
     task("high_reject", "HIGH"),
   ),
   -1,

@@ -381,10 +381,12 @@ export function loadConfig(): { config: Autojs6Config; configPath: string } {
           typeof tasks.maxTimeoutMs === "number"
             ? tasks.maxTimeoutMs
             : DEFAULT_CONFIG.tasks.maxTimeoutMs,
-        queueLimit:
-          typeof tasks.queueLimit === "number"
-            ? tasks.queueLimit
-            : DEFAULT_CONFIG.tasks.queueLimit,
+        queueLimit: boundedInteger(
+          tasks.queueLimit,
+          DEFAULT_CONFIG.tasks.queueLimit,
+          1,
+          256,
+        ),
         resultPollIntervalMs:
           typeof tasks.resultPollIntervalMs === "number"
             ? tasks.resultPollIntervalMs

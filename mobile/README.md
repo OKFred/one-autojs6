@@ -236,6 +236,20 @@ manifest；调试 helper 时可将构建产物临时放到 `/data/local/tmp` 做
 
 任务包含 `callbackUrl` 时，手机会同时发送 MQTT 结果和 HTTP 结果。Node Server 通过 taskId、deviceId、scriptId、traceId 幂等落库：Node 运行时可依赖 MQTT Listener，Worker 运行时通过 HTTP callback 收取结果。
 
+## 任务堆栈与终止
+
+手机客户端将当前运行项和优先级队列以 QoS 1 retained 快照发布到
+`autojs6/v2/devices/<deviceId>/task-state`，并使用设备令牌把同一载荷 POST 到
+`<report.httpBaseUrl>/report/task-state`，因此 Node 与 Worker 使用同一合同。状态变化时立即上报，静默期间每 15 秒重发。快照包含每进程固定的 `sessionId/sessionStartedAt` 和 session 内严格递增的 `revision`；服务端必须按三者幂等，重复或旧 revision 不得刷新观察时间。`createdAt` 是手机实际入队时间，`position` 从 1 开始并保持真实出队顺序。手机客户端队列最多 256 项，完整快照拒绝超过 256 KiB。快照只包含任务 ID、脚本 ID、优先级、时间、位置和是否可取消，绝不包含参数、素材路径或文案。
+
+服务端可向 `autojs6/v2/devices/<deviceId>/task-control` 发送严格的单任务取消命令：
+
+```json
+{"protocolVersion":2,"action":"CANCEL","commandId":"command_123","taskId":"task_12345","createdAt":1762310400000,"expiresAt":1762310460000}
+```
+
+取消命令必须非 retained，有效期最长 5 分钟。排队任务会直接返回 `CANCELLED/OPERATOR_CANCELLED`。运行任务先停止对应 AutoJS 引擎，必要时才使用整包停止兜底；已经越过 TikTok 提交边界时返回 `CANCELLED/PUBLISH_OUTCOME_UNKNOWN` 且 `retrySafe=false`。处于本地预检和准备阶段的短暂 `STARTING` 状态不可取消。MQTT PUBACK 只代表命令送达 Broker，控制端必须等待原任务终态，不能提前显示“已终止”。
+
 ## 手机健康遥测
 
 `phoneHealthTelemetry` 使用独立的不透明 `siteId/gatewayId/deviceId`，不会复用或输出 IMEI、序列号、手机号及 RPA 任务内容。默认关闭；部署配置显式启用后，每 60 秒向以下主题发布一次 QoS 1、非 retained 的 schema v2 遥测：

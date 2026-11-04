@@ -42,6 +42,14 @@ import {
   insertQueuedTask,
   type QueuedDeviceTask,
 } from "./task-queue.js";
+import {
+  buildTaskStateSnapshot,
+  canCancelActiveTask,
+  canUsePackageFallback,
+  parseTaskControlCommand,
+  type DeviceTaskStateSnapshot,
+} from "./task-state.js";
+import { deliverPersistedTaskResult } from "./task-result-delivery.js";
 import { TikTokLedger } from "./tiktok-ledger.js";
 import { TikTokCommitAckGate, tikTokCommitReviewTimeoutMs } from "./tiktok-commit-ack.js";
 import {
@@ -100,6 +108,7 @@ const runtimeDeployment = deploymentRuntimeInfo(releaseManifest);
 const clientVersion = releaseManifest.packageVersion;
 const rtcSidecarDigest = releaseManifest.files[RTC_SIDECAR_RELEASE_PATH];
 const RESULT_OUTBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TASK_STATE_MAX_BYTES = 256 * 1024;
 
 /** 格式化本地日期。 */
 function formatLocalDate(date: Date, withTime = false): string {
@@ -170,6 +179,8 @@ const tempScriptDirectory =
   );
 const tasksTopic = `autojs6/v2/devices/${deviceId}/tasks`;
 const resultsTopic = `autojs6/v2/devices/${deviceId}/results`;
+const taskControlTopic = `autojs6/v2/devices/${deviceId}/task-control`;
+const taskStateTopic = `autojs6/v2/devices/${deviceId}/task-state`;
 const eventsTopic = `autojs6/v2/devices/${deviceId}/events`;
 const presenceTopic = `autojs6/v2/devices/${deviceId}/presence`;
 const infoTopic = `autojs6/v2/devices/${deviceId}/info`;
@@ -264,7 +275,9 @@ function redactBrokerUrl(value: string): string {
 
 interface ActiveTask {
   request: DeviceTaskRequest;
+  enqueuedAt: number;
   startedAt: number;
+  launched: boolean;
   deadlineAt: number;
   sideEffectCommitted: boolean;
   checkpointPhase: string;
@@ -353,8 +366,18 @@ const queuedTaskIds = new Set<string>();
 const deliveringResultIds = new Set<string>();
 let activeTask: ActiveTask | null = null;
 let isStartingTask = false;
+let startingTask: {
+  request: DeviceTaskRequest;
+  enqueuedAt: number;
+  startedAt: number;
+} | null = null;
+const taskStateSessionId = crypto.randomUUID();
+const taskStateSessionStartedAt = Date.now();
+let taskStateRevision = 0;
+let taskStateTimer: NodeJS.Timeout | null = null;
 let queueSequence = 0;
 let taskIntakeChain = Promise.resolve();
+let taskControlIntakeChain = Promise.resolve();
 let deploymentIntakeChain = Promise.resolve();
 let remoteSessionIntakeChain = Promise.resolve();
 let remoteSessionPeer: RemoteSessionPeer | null = null;
@@ -407,6 +430,56 @@ const mqttClient = mqtt.connect(brokerUrl, {
       }
     : {}),
 });
+
+/** Publish the current privacy-safe task stack as a retained MQTT snapshot. */
+function publishTaskState(): void {
+  taskStateRevision += 1;
+  const snapshot = buildTaskStateSnapshot({
+    deviceId,
+    sessionId: taskStateSessionId,
+    sessionStartedAt: taskStateSessionStartedAt,
+    revision: taskStateRevision,
+    timestamp: Date.now(),
+    active: activeTask
+      ? {
+          request: activeTask.request,
+          enqueuedAt: activeTask.enqueuedAt,
+          startedAt: activeTask.startedAt,
+          launched: activeTask.launched,
+        }
+      : null,
+    starting: startingTask,
+    queue: taskQueue,
+  });
+  const serialized = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized, "utf8") > TASK_STATE_MAX_BYTES) {
+    console.error("[TASK] Refused oversized task state snapshot");
+    return;
+  }
+  if (mqttClient.connected) {
+    mqttClient.publish(taskStateTopic, serialized, {
+      qos: 1,
+      retain: true,
+    });
+  }
+  void postReport("task-state", snapshot).catch((error) =>
+    console.warn("[TASK] HTTPS task state upload failed", error),
+  );
+}
+
+/** Mark one dequeued task as preparing and refresh the retained stack. */
+function markTaskStarting(request: DeviceTaskRequest, enqueuedAt: number): void {
+  isStartingTask = true;
+  startingTask = { request, enqueuedAt, startedAt: Date.now() };
+  publishTaskState();
+}
+
+/** Clear the short preparation phase and refresh the retained stack. */
+function clearTaskStarting(taskId: string): void {
+  if (startingTask?.request.taskId === taskId) startingTask = null;
+  isStartingTask = false;
+  publishTaskState();
+}
 
 /** 强制管理 MQTT 套接字按当前默认路由重新建立。 */
 function reconnectManagementMqtt(): Promise<void> {
@@ -468,12 +541,14 @@ async function postReport(
     | "info"
     | "event"
     | "deployment"
-    | "network-routing",
+    | "network-routing"
+    | "task-state",
   payload:
     | DevicePresencePayload
     | DeviceInfoPayload
     | DeviceEventPayload
     | DeviceDeploymentEvent
+    | DeviceTaskStateSnapshot
     | (NetworkRoutingStatus & { protocolVersion: 1; deviceId: string }),
 ): Promise<void> {
   if (!usesHttpReporting || !config.report.httpBaseUrl || !reportToken) return;
@@ -774,19 +849,21 @@ async function postTaskResult(entry: TaskResultOutboxEntry): Promise<void> {
   }
 }
 
-/** 同时尝试可信结果通道，任一确认后清除 outbox。 */
+/** Deliver through MQTT, but require HTTP authority whenever callbackUrl exists. */
 async function deliverTaskResult(entry: TaskResultOutboxEntry): Promise<void> {
   const taskId = entry.result.taskId;
   if (deliveringResultIds.has(taskId)) return;
-  const deliveries: Array<Promise<void>> = [];
-  if (usesMqttReporting && mqttClient.connected)
-    deliveries.push(publishTaskResultMqtt(entry.result));
-  if (entry.callbackUrl && reportToken) deliveries.push(postTaskResult(entry));
-  if (deliveries.length === 0) return;
   deliveringResultIds.add(taskId);
   try {
-    await Promise.any(deliveries);
-    removePersistedTaskResult(taskId);
+    const delivered = await deliverPersistedTaskResult({
+      callbackRequired: Boolean(entry.callbackUrl),
+      mqtt:
+        usesMqttReporting && mqttClient.connected
+          ? () => publishTaskResultMqtt(entry.result)
+          : undefined,
+      http: entry.callbackUrl ? () => postTaskResult(entry) : undefined,
+    });
+    if (delivered) removePersistedTaskResult(taskId);
   } catch (error) {
     console.warn(`[TASK] Result delivery pending for ${taskId}`, error);
   } finally {
@@ -1054,7 +1131,7 @@ function completePreparedTikTokTask(
     tikTokPublicationResult(prepared),
   );
   queuedTaskIds.delete(request.taskId);
-  isStartingTask = false;
+  clearTaskStarting(request.taskId);
   setTimeout(processNextTask, 100);
 }
 
@@ -1107,7 +1184,10 @@ async function cleanupActiveTask(): Promise<void> {
       );
     }
     queuedTaskIds.delete(current.request.taskId);
-    if (activeTask === current) activeTask = null;
+    if (activeTask === current) {
+      activeTask = null;
+      publishTaskState();
+    }
     setTimeout(processNextTask, 100);
   })().catch((error) => {
     console.error(
@@ -1156,20 +1236,34 @@ async function stopActiveTaskEngine(current: ActiveTask): Promise<boolean> {
 /**
  * 优先停止指定任务引擎；失败时才终止 AutoJS6 整包并恢复无障碍。
  */
-async function terminateActiveTask(current: ActiveTask): Promise<boolean> {
+async function terminateActiveTask(
+  current: ActiveTask,
+  allowPackageFallback = true,
+): Promise<boolean> {
   try {
     if (await stopActiveTaskEngine(current)) {
       console.log(`[TASK] Stopped task engine ${current.request.taskId}`);
       return true;
     }
-    console.warn(
-      `[TASK] Target engine was not stopped; using package fallback for ${current.request.taskId}`,
-    );
+    console.warn(`[TASK] Target engine was not stopped ${current.request.taskId}`);
   } catch (error) {
     console.warn(
-      `[TASK] Target engine stop failed; using package fallback for ${current.request.taskId}`,
+      `[TASK] Target engine stop failed ${current.request.taskId}`,
       error,
     );
+  }
+  if (
+    !canUsePackageFallback(
+      allowPackageFallback,
+      current.request.taskId,
+      activeTask?.request.taskId || null,
+      Boolean(current.cleanupPromise),
+    )
+  ) {
+    console.warn(
+      `[TASK] Refused package fallback without a current exact task binding ${current.request.taskId}`,
+    );
+    return false;
   }
   try {
     await runRootCommand(`am force-stop ${autojsPackageName}`);
@@ -1246,6 +1340,7 @@ function scheduleActiveTaskTimeout(current: ActiveTask): void {
 async function preemptActiveTask(incoming: DeviceTaskRequest): Promise<void> {
   const current = activeTask;
   if (!current) return;
+  if (!current.launched) return;
   if (current.cleanupPromise) return;
   if (
     current.sideEffectCommitted &&
@@ -1282,6 +1377,81 @@ async function preemptActiveTask(incoming: DeviceTaskRequest): Promise<void> {
   setTimeout(() => void applyObserverConfig(), 2000);
 }
 
+/** Cancel one queued or running task after a trusted MQTT control command. */
+async function handleTaskControl(value: unknown): Promise<void> {
+  let command;
+  try {
+    command = parseTaskControlCommand(value);
+  } catch (error) {
+    console.warn("[TASK] Ignored malformed task control command", error);
+    return;
+  }
+  if (command.expiresAt <= Date.now()) {
+    console.warn("[TASK] Ignored expired task control command");
+    return;
+  }
+
+  const queuedIndex = taskQueue.findIndex(
+    ({ request }) => request.taskId === command.taskId,
+  );
+  if (queuedIndex >= 0) {
+    const [queued] = taskQueue.splice(queuedIndex, 1);
+    queuedTaskIds.delete(queued.request.taskId);
+    publishTaskResult(
+      queued.request,
+      Date.now(),
+      "CANCELLED",
+      "OPERATOR_CANCELLED",
+      "Task was cancelled before execution",
+      { commandId: command.commandId, retrySafe: true },
+    );
+    publishTaskState();
+    return;
+  }
+
+  const current = activeTask;
+  if (
+    !current ||
+    !canCancelActiveTask(
+      command.taskId,
+      current.request.taskId,
+      current.launched,
+      Boolean(current.cleanupPromise),
+    )
+  ) {
+    publishTaskState();
+    return;
+  }
+  if (current.timeoutTimer) {
+    clearTimeout(current.timeoutTimer);
+    current.timeoutTimer = null;
+  }
+  if (!(await terminateActiveTask(current, false))) {
+    if (activeTask === current) scheduleActiveTaskTimeout(current);
+    return;
+  }
+  if (activeTask !== current) return;
+  const resultCode = current.sideEffectCommitted
+    ? "PUBLISH_OUTCOME_UNKNOWN"
+    : "OPERATOR_CANCELLED";
+  recordTikTokFailure(current.tiktok, resultCode, current.sideEffectCommitted);
+  publishTaskResult(
+    current.request,
+    current.startedAt,
+    "CANCELLED",
+    resultCode,
+    current.sideEffectCommitted
+      ? "Task was stopped after its external side effect may have been committed"
+      : "Task was cancelled by an operator",
+    {
+      commandId: command.commandId,
+      retrySafe: !current.sideEffectCommitted,
+    },
+  );
+  await cleanupActiveTask();
+  setTimeout(() => void applyObserverConfig(), 2000);
+}
+
 /** 取消部署进入排空态前已经排队但尚未启动的业务任务。 */
 function cancelQueuedTasksForDeployment(deploymentId: string): void {
   while (taskQueue.length > 0) {
@@ -1297,6 +1467,7 @@ function cancelQueuedTasksForDeployment(deploymentId: string): void {
       { deploymentId },
     );
   }
+  publishTaskState();
 }
 
 /** 强制部署时停止当前任务，并确认设备级清理已经完成。 */
@@ -1374,7 +1545,7 @@ function rejectQueuedTask(
 ): void {
   publishTaskResult(request, Date.now(), "REJECTED", code, message);
   queuedTaskIds.delete(request.taskId);
-  isStartingTask = false;
+  clearTaskStarting(request.taskId);
   setTimeout(processNextTask, 100);
 }
 
@@ -1427,7 +1598,10 @@ try {
 }
 
 /** 执行一项已经完成协议校验的可信脚本任务。 */
-async function executeTask(request: DeviceTaskRequest): Promise<void> {
+async function executeTask(
+  request: DeviceTaskRequest,
+  enqueuedAt: number,
+): Promise<void> {
   const definition = getRegisteredScript(request.scriptId);
   if (
     !definition ||
@@ -1457,7 +1631,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
       "Task expired before execution",
     );
     queuedTaskIds.delete(request.taskId);
-    isStartingTask = false;
+    clearTaskStarting(request.taskId);
     setTimeout(processNextTask, 100);
     return;
   }
@@ -1512,7 +1686,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
       result.data,
     );
     queuedTaskIds.delete(request.taskId);
-    isStartingTask = false;
+    clearTaskStarting(request.taskId);
     setTimeout(processNextTask, 100);
     return;
   }
@@ -1581,7 +1755,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
           tikTokPublicationResult(tiktok),
         );
         queuedTaskIds.delete(request.taskId);
-        isStartingTask = false;
+        clearTaskStarting(request.taskId);
         setTimeout(processNextTask, 100);
         return;
       }
@@ -1622,7 +1796,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         tikTokPublicationResult(tiktok),
       );
       queuedTaskIds.delete(request.taskId);
-      isStartingTask = false;
+      clearTaskStarting(request.taskId);
       setTimeout(processNextTask, 100);
       return;
     }
@@ -1642,7 +1816,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         tikTokPublicationResult(tiktok),
       );
       queuedTaskIds.delete(request.taskId);
-      isStartingTask = false;
+      clearTaskStarting(request.taskId);
       setTimeout(processNextTask, 100);
       return;
     }
@@ -1665,7 +1839,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         tikTokPublicationResult(tiktok),
       );
       queuedTaskIds.delete(request.taskId);
-      isStartingTask = false;
+      clearTaskStarting(request.taskId);
       if (restorePending) {
         console.error(
           "[TikTok] AdbKeyboard rollback is pending; restarting client",
@@ -1687,7 +1861,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
         tikTokPublicationResult(tiktok),
       );
       queuedTaskIds.delete(request.taskId);
-      isStartingTask = false;
+      clearTaskStarting(request.taskId);
       try {
         if (adbKeyboardActive) await adbKeyboardManager.restore();
       } catch (error) {
@@ -1735,7 +1909,7 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
           tikTokPublicationResult(tiktok as PreparedTikTokTask),
         );
         queuedTaskIds.delete(request.taskId);
-        isStartingTask = false;
+        clearTaskStarting(request.taskId);
         console.error("[TikTok] AdbKeyboard restore failed", restoreError);
         setTimeout(() => process.exit(1), 250);
         return;
@@ -1859,7 +2033,9 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
 
   const currentTask: ActiveTask = {
     request,
+    enqueuedAt,
     startedAt,
+    launched: false,
     deadlineAt,
     sideEffectCommitted: false,
     checkpointPhase: "",
@@ -1876,23 +2052,22 @@ async function executeTask(request: DeviceTaskRequest): Promise<void> {
   };
   activeTask = currentTask;
   scheduleActiveTaskTimeout(currentTask);
-  isStartingTask = false;
-
-  const queuedPreemptor = taskQueue.find((queued) =>
-    canPreemptRunning(queued.request, request),
-  );
-  if (queuedPreemptor) {
-    await preemptActiveTask(queuedPreemptor.request);
-    if (activeTask !== currentTask) return;
-  }
+  clearTaskStarting(request.taskId);
 
   try {
     await runRootCommand(
       `am start -n ${autojsPackageName}/org.autojs.autojs.external.open.RunIntentActivity -d file://${targetPath} -t text/javascript`,
     );
+    if (activeTask !== currentTask || currentTask.cleanupPromise) return;
+    currentTask.launched = true;
+    publishTaskState();
     console.log(
       `[TASK] Started ${request.taskId} ${request.scriptId} timeout=${timeoutMs}ms`,
     );
+    const queuedPreemptor = taskQueue.find((queued) =>
+      canPreemptRunning(queued.request, request),
+    );
+    if (queuedPreemptor) await preemptActiveTask(queuedPreemptor.request);
   } catch (error) {
     recordTikTokFailure(tiktok, "AUTOJS_LAUNCH_FAILED");
     publishTaskResult(
@@ -1918,8 +2093,8 @@ function processNextTask(): void {
   const queued = taskQueue.shift();
   if (queued) {
     const request = queued.request;
-    isStartingTask = true;
-    void executeTask(request).catch((error) => {
+    markTaskStarting(request, queued.enqueuedAt);
+    void executeTask(request, queued.enqueuedAt).catch((error) => {
       publishTaskResult(
         request,
         Date.now(),
@@ -1928,7 +2103,7 @@ function processNextTask(): void {
         error instanceof Error ? error.message : String(error),
       );
       queuedTaskIds.delete(request.taskId);
-      isStartingTask = false;
+      clearTaskStarting(request.taskId);
       setTimeout(processNextTask, 100);
     });
   }
@@ -1992,7 +2167,12 @@ async function enqueueTask(value: unknown): Promise<void> {
     );
   }
   queuedTaskIds.add(request.taskId);
-  insertQueuedTask(taskQueue, { request, sequence: queueSequence++ });
+  insertQueuedTask(taskQueue, {
+    request,
+    sequence: queueSequence++,
+    enqueuedAt: Date.now(),
+  });
+  publishTaskState();
   if (activeTask) await preemptActiveTask(request);
   processNextTask();
 }
@@ -2198,7 +2378,11 @@ let mqttConnectionHandled = false;
 function handleMqttConnect(): void {
   if (mqttConnectionHandled) return;
   mqttConnectionHandled = true;
-  const managementTopics = [tasksTopic, deploymentCommandsTopic];
+  const managementTopics = [
+    tasksTopic,
+    taskControlTopic,
+    deploymentCommandsTopic,
+  ];
   if (config.ops.enabled) managementTopics.push(opsCommandsTopic);
   if (config.remoteControl.enabled) {
     managementTopics.push(remoteSessionCommandsTopic);
@@ -2225,6 +2409,7 @@ function handleMqttConnect(): void {
       );
       void replayDeploymentOutcomes();
       void phoneHealthReporter.replay();
+      publishTaskState();
       void reportDeploymentReady().catch((readyError) =>
         console.error("[DEPLOYMENT] Health report failed", readyError),
       );
@@ -2247,9 +2432,10 @@ mqttClient.on("close", () => {
 // 持久路由恢复发生在事件处理器注册之前；补偿恢复期间已经建立的首个连接。
 if (mqttClient.connected) handleMqttConnect();
 
-mqttClient.on("message", (topic, payload) => {
+mqttClient.on("message", (topic, payload, packet) => {
   if (
     topic !== tasksTopic &&
+    topic !== taskControlTopic &&
     topic !== deploymentCommandsTopic &&
     topic !== opsCommandsTopic &&
     topic !== remoteSessionCommandsTopic
@@ -2257,6 +2443,18 @@ mqttClient.on("message", (topic, payload) => {
     return;
   try {
     const value: unknown = JSON.parse(payload.toString());
+    if (topic === taskControlTopic) {
+      if (packet.retain) {
+        console.warn("[TASK] Ignored retained task control command");
+        return;
+      }
+      taskControlIntakeChain = taskControlIntakeChain
+        .then(() => handleTaskControl(value))
+        .catch((error) =>
+          console.error("[TASK] Failed to process task control command", error),
+        );
+      return;
+    }
     if (topic === deploymentCommandsTopic) {
       deploymentIntakeChain = deploymentIntakeChain
         .then(() => deploymentManager.handle(value))
@@ -2326,10 +2524,16 @@ function startDeviceReporting(): void {
     30_000,
   );
   void replayTaskResultOutbox();
+  if (taskStateTimer) clearInterval(taskStateTimer);
+  publishTaskState();
+  taskStateTimer = setInterval(publishTaskState, 15_000);
   phoneHealthReporter.start();
 }
 
-process.once("exit", () => phoneHealthReporter.stop());
+process.once("exit", () => {
+  if (taskStateTimer) clearInterval(taskStateTimer);
+  phoneHealthReporter.stop();
+});
 
 mqttClient.connect();
 startDeviceReporting();
