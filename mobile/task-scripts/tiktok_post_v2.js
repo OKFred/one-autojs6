@@ -809,7 +809,25 @@ function exactSettingChoiceLabel(node, labels) {
 }
 
 /**
- * Treat a labelled checkable row and its noncheckable text child as one choice.
+ * Recognize only the observed decorative Public icon inside an Everyone choice row.
+ * A text-bearing, clickable or checkable node remains an independent candidate.
+ * @param {UiObject} node - Exact label candidate
+ * @param {string} label - Candidate label matched by the caller
+ * @param {string|null} parentLabel - Nearest checkable ancestor's exact label
+ * @returns {boolean} Whether this noninteractive icon may share the proven parent identity
+ */
+function isDecorativePublicChoiceIcon(node, label, parentLabel) {
+  return label === "公开" && (parentLabel === "所有人" || parentLabel === "everyone") &&
+    String(node.className()) === "android.widget.ImageView" && normalizeText(node.text()) === "" &&
+    normalizeText(node.desc()) === "公开" && String(node.packageName()) === TIKTOK_PACKAGE &&
+    accessibleBoolean(node, ["visibleToUser", "isVisibleToUser"]) === true &&
+    accessibleBoolean(node, ["checkable", "isCheckable"]) === false &&
+    accessibleBoolean(node, ["checked", "isChecked"]) === false &&
+    accessibleBoolean(node, ["clickable", "isClickable"]) === false;
+}
+
+/**
+ * Treat a labelled checkable row and its noncheckable text/decorative Public icon child as one choice.
  * Only the nearest explicitly checkable ancestor may supply that identity; other rows stay distinct.
  * @param {UiObject} node - Exact label candidate
  * @param {string[]} labels - Entire permitted labels
@@ -826,9 +844,10 @@ function canonicalSettingChoiceNode(node, labels) {
       if (!checkable) continue;
       if (current === node) return node;
       var bounds = current.bounds(), checked = accessibleBoolean(current, ["checked", "isChecked"]);
+      var parentLabel = exactSettingChoiceLabel(current, labels);
       if (typeof checked !== "boolean" || accessibleBoolean(current, ["visibleToUser", "isVisibleToUser"]) !== true ||
           typeof current.packageName !== "function" || String(current.packageName()) !== TIKTOK_PACKAGE ||
-          exactSettingChoiceLabel(current, labels) !== label || !origin || !bounds ||
+          (parentLabel !== label && !isDecorativePublicChoiceIcon(node, label, parentLabel)) || !origin || !bounds ||
           origin.width() <= 0 || origin.height() <= 0 || bounds.width() <= 0 || bounds.height() <= 0 ||
           bounds.left > origin.left || bounds.top > origin.top || bounds.right < origin.right || bounds.bottom < origin.bottom) return node;
       return current;
