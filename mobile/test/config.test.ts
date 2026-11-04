@@ -60,6 +60,7 @@ try {
         intervalSeconds: 1,
         outboxLimit: 5000,
       },
+      tasks: { queueLimit: 999 },
     }),
   );
   process.env.AUTOJS6_CONFIG_PATH = configPath;
@@ -82,6 +83,7 @@ try {
     intervalSeconds: 60,
     outboxLimit: 1440,
   });
+  assert.equal(loaded.tasks.queueLimit, 256);
   for (const [input, expected] of [
     [{ required: true, timeoutSeconds: 180 }, { required: true, timeoutSeconds: 180 }],
     [{ required: "true", timeoutSeconds: 999 }, { required: false, timeoutSeconds: 180 }],

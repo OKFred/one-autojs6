@@ -310,8 +310,8 @@ PC Server provides the following HTTP endpoints:
 
 1. **Serial Task Queue**:
    The mobile daemon inherently supports task queuing. Regardless of how many tasks are dispatched concurrently, they enter an in-memory queue. The next task only executes when the previous one finishes (success, failure, or timeout), completely eliminating UI automation contention.
-2. **Instant Force Kill**:
-   By dispatching a task with `cat = "kill"`, the mobile client will instantly **clear all pending tasks in the queue** and execute `am force-stop` to kill the currently running Auto.js process, providing a one-click "emergency brake".
+2. **Task Stack and Cancellation**:
+   The v2 client publishes a retained, privacy-safe snapshot to `autojs6/v2/devices/<deviceId>/task-state` and posts the same snapshot through the authenticated device reporting API for Worker compatibility. A trusted `CANCEL` command on `autojs6/v2/devices/<deviceId>/task-control` can remove one queued task or stop one running task. MQTT acknowledgement means only that the command reached the broker; callers must wait for the task's `CANCELLED` terminal result before showing it as stopped.
 3. **Mobile Local Fallback**:
    Upon receiving a task, the mobile client starts a timer. If the execution exceeds `timeout` seconds, the client executes Root Shell commands to force-stop the apps:
    - `su -c "am force-stop org.autojs.autojs6"` (Kill Auto.js)

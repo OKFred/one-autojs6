@@ -4,6 +4,7 @@ import type { DeviceTaskRequest, TaskPriority } from "./protocol.js";
 export interface QueuedDeviceTask {
   request: DeviceTaskRequest;
   sequence: number;
+  enqueuedAt: number;
 }
 
 const PRIORITY_RANK: Record<TaskPriority, number> = {
