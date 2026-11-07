@@ -258,6 +258,8 @@ manifest；调试 helper 时可将构建产物临时放到 `/data/local/tmp` 做
 
 连接关闭时使用 MQTT.js 公开 API 精确移除该主题未确认的 presence 在途包，防止重连先补发旧心跳；任务结果和健康遥测队列继续保留。
 
+HTTP presence 接口继续只接收 `protocolVersion/deviceId/status/timestamp` 四个旧字段。双通道模式在 HTTP 序列化前投影这四个字段，MQTT 保留完整标准状态信封，兼容现有封闭 HTTP Schema。
+
 `phoneHealthTelemetry` 使用独立的不透明 `siteId/gatewayId/deviceId`，不会复用或输出 IMEI、序列号、手机号及 RPA 任务内容。默认关闭；部署配置显式启用后，每 60 秒向以下主题发布一次 QoS 1、非 retained 的 schema v2 遥测：
 
 `iot/v1/<siteId>/<gatewayId>/devices/<deviceId>/telemetry`

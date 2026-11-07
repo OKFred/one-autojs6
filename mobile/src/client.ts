@@ -85,6 +85,7 @@ import { forceReconnectMqtt } from "./mqtt-reconnect.js";
 import { AndroidNetworkChangeMonitor } from "./network-change-monitor.js";
 import type { NetworkRoutingStatus } from "./network-routing.js";
 import { createHttpReportError } from "./report-error.js";
+import { toHttpPresence } from "./report-presence.js";
 import { PhoneHealthReporter } from "./phone-health.js";
 import { MqttPresence, discardPresenceOnDisconnect } from "./mqtt-presence.js";
 
@@ -574,7 +575,11 @@ async function postReport(
       "Content-Type": "application/json",
       "X-Device-Token": reportToken,
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(
+      kind === "presence"
+        ? toHttpPresence(payload as DevicePresencePayload)
+        : payload,
+    ),
     signal: AbortSignal.timeout(config.report.requestTimeoutMs),
   });
   const responseBody: unknown = await response.json().catch(() => null);
