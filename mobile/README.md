@@ -252,6 +252,14 @@ manifest；调试 helper 时可将构建产物临时放到 `/data/local/tmp` 做
 
 ## 手机健康遥测
 
+启用健康遥测并使用 MQTT 上报时，现有 `autojs6/v2/devices/<MQTT deviceId>/presence` 同时携带标准 schema v1 在线状态；保留任务协议的 `protocolVersion`、`deviceId`、`status`、`timestamp`。标准站点、网关、设备来自 `phoneHealthTelemetry`；`reporter_id` 使用其中不透明的 `deviceId`，避免将旧 MQTT 硬件标识写入标准状态记录，实际 MQTT client ID 和主题保持兼容。一条连接只能注册一个遗嘱，因此不另外创建第二个 IoT 状态主题。
+
+连接实例在每次 CONNECT 前轮换；在线、心跳和正常退出状态使用新事件标识，异常断连遗嘱的标准源时间、uptime 和序号为 null。心跳沿用原上报计时器且间隔不超过 60 秒，独立于温度是否读取成功；presence 不进入健康遥测 outbox。需要新增精确订阅时，使用此现有 presence 主题并按标准身份映射，勿把 MQTT client ID 与健康设备 ID 混用。
+
+连接关闭时使用 MQTT.js 公开 API 精确移除该主题未确认的 presence 在途包，防止重连先补发旧心跳；任务结果和健康遥测队列继续保留。
+
+HTTP presence 接口继续只接收 `protocolVersion/deviceId/status/timestamp` 四个旧字段。双通道模式在 HTTP 序列化前投影这四个字段，MQTT 保留完整标准状态信封，兼容现有封闭 HTTP Schema。
+
 `phoneHealthTelemetry` 使用独立的不透明 `siteId/gatewayId/deviceId`，不会复用或输出 IMEI、序列号、手机号及 RPA 任务内容。默认关闭；部署配置显式启用后，每 60 秒向以下主题发布一次 QoS 1、非 retained 的 schema v2 遥测：
 
 `iot/v1/<siteId>/<gatewayId>/devices/<deviceId>/telemetry`
