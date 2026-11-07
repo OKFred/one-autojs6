@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import * as ts from "typescript";
 import { MqttPresence } from "../src/mqtt-presence.js";
 import { toHttpPresence } from "../src/report-presence.js";
+
+const legacyDeviceId = "mobile_00000000000000";
+const healthDeviceId = "00000000-0000-4000-8000-000000000001";
+const clientSource = ts.createSourceFile("client.ts", readFileSync(new URL("../src/client.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+const initializer = clientSource.statements.filter(ts.isVariableStatement)
+  .flatMap((statement) => [...statement.declarationList.declarations])
+  .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "mqttPresence")?.initializer;
+assert.ok(initializer);
+const actualPresence: MqttPresence = runInNewContext(initializer.getText(clientSource), {
+  config: { phoneHealthTelemetry: { enabled: true, siteId: "example-site", gatewayId: "mobile", deviceId: healthDeviceId } },
+  deviceId: legacyDeviceId,
+  MqttPresence,
+});
+for (const value of [actualPresence.begin(), actualPresence.message(true), actualPresence.message(true), actualPresence.message(false)]) {
+  assert.equal(value.reporter_id, healthDeviceId);
+  assert.equal(value.device_id, healthDeviceId);
+  assert.equal(value.deviceId, legacyDeviceId);
+  assert.equal(toHttpPresence(value).deviceId, legacyDeviceId);
+}
 
 const clock = { value: 1000 };
 const p = new MqttPresence({ site_id: "example-site", gateway_id: "mobile", device_id: "example-phone", reporter_id: "example-task-client" }, "example-task-client", () => clock.value);

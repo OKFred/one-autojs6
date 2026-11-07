@@ -392,7 +392,7 @@ const mqttPresence = config.phoneHealthTelemetry.enabled ? new MqttPresence({
   site_id: config.phoneHealthTelemetry.siteId,
   gateway_id: config.phoneHealthTelemetry.gatewayId,
   device_id: config.phoneHealthTelemetry.deviceId,
-  reporter_id: deviceId,
+  reporter_id: config.phoneHealthTelemetry.deviceId,
 }, deviceId) : null;
 const lastPublishedEvents = new Map<
   string,

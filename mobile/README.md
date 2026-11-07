@@ -252,7 +252,7 @@ manifest；调试 helper 时可将构建产物临时放到 `/data/local/tmp` 做
 
 ## 手机健康遥测
 
-启用健康遥测并使用 MQTT 上报时，现有 `autojs6/v2/devices/<MQTT deviceId>/presence` 同时携带标准 schema v1 在线状态；保留任务协议的 `protocolVersion`、`deviceId`、`status`、`timestamp`。标准站点、网关、设备来自 `phoneHealthTelemetry`，`reporter_id` 是现有 MQTT client ID。一条连接只能注册一个遗嘱，因此不另外创建第二个 IoT 状态主题。
+启用健康遥测并使用 MQTT 上报时，现有 `autojs6/v2/devices/<MQTT deviceId>/presence` 同时携带标准 schema v1 在线状态；保留任务协议的 `protocolVersion`、`deviceId`、`status`、`timestamp`。标准站点、网关、设备来自 `phoneHealthTelemetry`；`reporter_id` 使用其中不透明的 `deviceId`，避免将旧 MQTT 硬件标识写入标准状态记录，实际 MQTT client ID 和主题保持兼容。一条连接只能注册一个遗嘱，因此不另外创建第二个 IoT 状态主题。
 
 连接实例在每次 CONNECT 前轮换；在线、心跳和正常退出状态使用新事件标识，异常断连遗嘱的标准源时间、uptime 和序号为 null。心跳沿用原上报计时器且间隔不超过 60 秒，独立于温度是否读取成功；presence 不进入健康遥测 outbox。需要新增精确订阅时，使用此现有 presence 主题并按标准身份映射，勿把 MQTT client ID 与健康设备 ID 混用。
 
