@@ -86,6 +86,7 @@ import { AndroidNetworkChangeMonitor } from "./network-change-monitor.js";
 import type { NetworkRoutingStatus } from "./network-routing.js";
 import { createHttpReportError } from "./report-error.js";
 import { PhoneHealthReporter } from "./phone-health.js";
+import { MqttPresence, discardPresenceOnDisconnect } from "./mqtt-presence.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const sourceDirectory = path.dirname(currentFile);
@@ -386,6 +387,12 @@ let observersStarted = false;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 let resultOutboxRetryTimer: NodeJS.Timeout | null = null;
 let deploymentBlockId: string | null = null;
+const mqttPresence = config.phoneHealthTelemetry.enabled ? new MqttPresence({
+  site_id: config.phoneHealthTelemetry.siteId,
+  gateway_id: config.phoneHealthTelemetry.gatewayId,
+  device_id: config.phoneHealthTelemetry.deviceId,
+  reporter_id: deviceId,
+}, deviceId) : null;
 const lastPublishedEvents = new Map<
   string,
   { key: string; timestamp: number }
@@ -393,6 +400,9 @@ const lastPublishedEvents = new Map<
 
 /** 构造最小在线状态消息。 */
 function presence(status: "ONLINE" | "OFFLINE"): DevicePresencePayload {
+  if (mqttPresence && usesMqttReporting && mqttClient.connected) {
+    return mqttPresence.message(status === "ONLINE");
+  }
   return {
     protocolVersion: PROTOCOL_VERSION,
     deviceId,
@@ -423,12 +433,18 @@ const mqttClient = mqtt.connect(brokerUrl, {
     ? {
         will: {
           topic: presenceTopic,
-          payload: JSON.stringify(presence("OFFLINE")),
-          qos: config.mqtt.qos,
+          payload: JSON.stringify(mqttPresence ? mqttPresence.begin() : presence("OFFLINE")),
+          qos: 1 as const,
           retain: true,
         },
       }
     : {}),
+});
+if (usesMqttReporting && mqttPresence) discardPresenceOnDisconnect(mqttClient, presenceTopic);
+mqttClient.on("reconnect", () => {
+  if (usesMqttReporting && mqttPresence && mqttClient.options.will) {
+    mqttClient.options.will.payload = JSON.stringify(mqttPresence.begin());
+  }
 });
 
 /** Publish the current privacy-safe task stack as a retained MQTT snapshot. */
@@ -576,7 +592,7 @@ function publishReport(
 ): void {
   if (usesMqttReporting && mqttClient.connected) {
     mqttClient.publish(topic, JSON.stringify(payload), {
-      qos: config.mqtt.qos,
+      qos: kind === "presence" && mqttPresence ? 1 : config.mqtt.qos,
       retain,
     });
   }
@@ -777,6 +793,7 @@ function publishMqttWithAck(
   topic: string,
   payload: unknown,
   retain: boolean,
+  qos = config.mqtt.qos,
 ): Promise<void> {
   if (!mqttClient.connected)
     return Promise.reject(new Error("MQTT client is disconnected"));
@@ -784,7 +801,7 @@ function publishMqttWithAck(
     mqttClient.publish(
       topic,
       JSON.stringify(payload),
-      { qos: config.mqtt.qos, retain },
+      { qos, retain },
       (error) => {
         if (error) reject(error);
         else resolve();
@@ -2517,7 +2534,7 @@ function startDeviceReporting(): void {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = setInterval(() => {
     publishReport("presence", presenceTopic, presence("ONLINE"), true);
-  }, config.report.heartbeatSeconds * 1000);
+  }, Math.min(config.report.heartbeatSeconds, 60) * 1000);
   if (resultOutboxRetryTimer) clearInterval(resultOutboxRetryTimer);
   resultOutboxRetryTimer = setInterval(
     () => void replayTaskResultOutbox(),
@@ -2534,6 +2551,26 @@ process.once("exit", () => {
   if (taskStateTimer) clearInterval(taskStateTimer);
   phoneHealthReporter.stop();
 });
+
+let presenceShutdown = false;
+/** Report a bounded graceful offline before the existing process terminates. @returns Completion after MQTT teardown. */
+async function shutdownPresence(): Promise<void> {
+  if (presenceShutdown) return;
+  presenceShutdown = true;
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  if (taskStateTimer) clearInterval(taskStateTimer);
+  if (resultOutboxRetryTimer) clearInterval(resultOutboxRetryTimer);
+  phoneHealthReporter.stop();
+  networkChangeMonitor.stop();
+  if (usesMqttReporting && mqttClient.connected) {
+    try { await Promise.race([publishMqttWithAck(presenceTopic, presence("OFFLINE"), true, 1), delay(3000)]); }
+    catch { /* The registered LWT covers a lost connection. */ }
+  }
+  mqttClient.end(true, {}, () => process.exit(0));
+  setTimeout(() => process.exit(0), 1000).unref();
+}
+process.once("SIGTERM", () => void shutdownPresence());
+process.once("SIGINT", () => void shutdownPresence());
 
 mqttClient.connect();
 startDeviceReporting();
